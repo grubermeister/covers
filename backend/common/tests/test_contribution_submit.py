@@ -119,10 +119,14 @@ class ContributionSubmitMarkingEditTests(TestCase):
             submitted_data={"state": "VA", "town": "Richmond"},
             status=Contribution.STATUS_APPROVED,
             marking=self.marking,
+            created_by=self.user,
+            modified_by=self.user,
         )
         edit = Contribution.objects.create(
             contributor=self.user,
             collection=self.collection,
+            created_by=self.user,
+            modified_by=self.user,
             submitted_data={
                 "edit_postmark_id": self.marking.pk,
                 "submission_kind": "marking",

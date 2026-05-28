@@ -117,6 +117,8 @@ def _make_cover_contribution(user, submitted_data, collection, status=Contributi
         collection=collection,
         submitted_data=submitted_data,
         status=status,
+        created_by=user,
+        modified_by=user,
     )
 
 

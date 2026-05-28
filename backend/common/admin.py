@@ -735,10 +735,10 @@ class CustomUserAdmin(DjangoUserAdmin):
 
 @admin.register(Contribution)
 class ContributionAdmin(admin.ModelAdmin):
-    list_display = ["id", "contributor", "status", "get_state", "get_town", "reviewer", "created_at"]
+    list_display = ["id", "contributor", "status", "get_state", "get_town", "reviewer", "created_date"]
     list_filter = ["status"]
     search_fields = ["contributor__username", "submitted_data"]
-    readonly_fields = ["created_at", "updated_at", "marking"]
+    readonly_fields = ["created_date", "modified_date", "created_by", "modified_by", "marking"]
     actions = ["reject_contributions"]
 
     def get_state(self, obj):
@@ -757,7 +757,8 @@ class ContributionAdmin(admin.ModelAdmin):
                 continue
             contrib.status = Contribution.STATUS_REJECTED
             contrib.reviewer = request.user
-            contrib.save(update_fields=["status", "reviewer", "updated_at"])
+            contrib.modified_by = request.user
+            contrib.save(update_fields=["status", "reviewer", "modified_date", "modified_by"])
             rejected += 1
         if rejected:
             self.message_user(

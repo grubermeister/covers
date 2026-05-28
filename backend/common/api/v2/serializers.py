@@ -819,6 +819,11 @@ class ContributionListSerializer(serializers.ModelSerializer):
     town_display = serializers.SerializerMethodField()
     type_display = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    # Wire format kept as created_at / updated_at for frontend stability; the
+    # underlying model fields are created_date / modified_date from
+    # TimestampedModel.
+    created_at = serializers.DateTimeField(source="created_date", read_only=True)
+    updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
 
     class Meta:
         model = Contribution
@@ -884,6 +889,8 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
     contributor_username = serializers.CharField(source="contributor.username", read_only=True)
     reviewer_username = serializers.CharField(source="reviewer.username", read_only=True, allow_null=True)
     marking_id = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(source="created_date", read_only=True)
+    updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
 
     class Meta:
         model = Contribution

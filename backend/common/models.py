@@ -222,11 +222,16 @@ class Marking(TimestampedModel):
         return f'{self.type} #{self.pk}'
 
 
-class Contribution(models.Model):
+class Contribution(TimestampedModel):
     """
     Moderation ticket for catalog contributions.
     Submissions create a Contribution instead of directly updating the catalog.
     Editors approve/reject; on approval, submitted_data is applied to Marking.
+
+    Inherits TimestampedModel: created_date / modified_date / created_by /
+    modified_by. The `contributor` and `reviewer` FKs are workflow roles
+    (who authored the submission, who reviewed it) and are distinct from
+    created_by / modified_by (which user wrote which row revision).
     """
     STATUS_DRAFT = "draft"
     STATUS_PENDING = "pending"
@@ -251,14 +256,12 @@ class Contribution(models.Model):
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_contributions')
     review_notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'Contributions'
         verbose_name = 'Contribution'
         verbose_name_plural = 'Contributions'
-        ordering = ['-created_at']
+        ordering = ['-created_date']
         permissions = [
             ('review_contribution', 'Can review (approve / reject) contributions'),
         ]

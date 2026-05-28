@@ -1585,7 +1585,7 @@ class ContributionViewSet(
     serializer_class = ContributionDetailSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["status"]
-    ordering = ["-created_at"]
+    ordering = ["-created_date"]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
@@ -1745,12 +1745,14 @@ class ContributionViewSet(
                     contrib.status = Contribution.STATUS_APPROVED
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
+                    contrib.modified_by = request.user
                     update_fields = [
                         "status",
                         "reviewer",
                         "review_notes",
                         "submitted_data",
-                        "updated_at",
+                        "modified_date",
+                        "modified_by",
                     ]
                     if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
                         contrib.marking = parent_marking
@@ -1790,7 +1792,8 @@ class ContributionViewSet(
                     contrib.status = Contribution.STATUS_APPROVED
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
-                    update_fields = ["status", "reviewer", "review_notes", "updated_at"]
+                    contrib.modified_by = request.user
+                    update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
                     if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
                         contrib.marking = marking
                         update_fields.append("marking")
@@ -1834,7 +1837,8 @@ class ContributionViewSet(
         contrib.status = Contribution.STATUS_REJECTED
         contrib.reviewer = request.user
         contrib.review_notes = review_notes
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "updated_at"])
+        contrib.modified_by = request.user
+        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_REJECT,
             actor=request.user,
@@ -1867,7 +1871,8 @@ class ContributionViewSet(
         contrib.status = Contribution.STATUS_NEEDS_REVISION
         contrib.reviewer = request.user
         contrib.review_notes = review_notes
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "updated_at"])
+        contrib.modified_by = request.user
+        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_EDIT_SUBMISSION,
             actor=request.user,
@@ -2222,7 +2227,7 @@ class ContributionSubmitView(APIView):
                         status=Contribution.STATUS_DRAFT,
                     )
                     .filter(value_filter)
-                    .order_by("-updated_at")
+                    .order_by("-modified_date")
                     .first()
                 )
                 if existing_draft is not None:
@@ -2277,7 +2282,8 @@ class ContributionSubmitView(APIView):
             existing_sd.update(submitted_data)
             contrib.submitted_data = existing_sd
             contrib.collection = collection
-            update_fields = ["submitted_data", "collection", "updated_at"]
+            contrib.modified_by = request.user
+            update_fields = ["submitted_data", "collection", "modified_date", "modified_by"]
             if transition_to_pending:
                 contrib.status = Contribution.STATUS_PENDING
                 contrib.reviewer = None
@@ -2339,6 +2345,8 @@ class ContributionSubmitView(APIView):
             collection=collection,
             submitted_data=submitted_data,
             status=Contribution.STATUS_DRAFT if is_draft else Contribution.STATUS_PENDING,
+            created_by=request.user,
+            modified_by=request.user,
         )
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_SUBMIT,
