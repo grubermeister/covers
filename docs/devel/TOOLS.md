@@ -85,7 +85,7 @@ See [RUNBOOK.md](RUNBOOK.md) for the required sudoers entries and full host-boot
 
 **Purpose:** `rebuild_staging_db.sh` drops and recreates the staging database. `setup_worldcovers_db.sql` is the SQL it uses to create the schema from scratch.
 
-**When to run:** Only when you need to reset the staging database to a clean state. This is destructive — all data is lost.
+**When to run:** Only when you need to reset the staging database to a clean state. This is destructive -- all data is lost.
 
 **Prerequisites:** `mysql.cnf` must be present at the repo root (same file Django reads; see [BUILD.md](BUILD.md)).
 
@@ -114,13 +114,13 @@ Open with Jupyter: `jupyter notebook tools/apmc_data_munger.ipynb`. These notebo
 
 ### `tools/wip/`
 
-Scratch area — contents are not stable. `tools/wip/in/` holds raw input data; `tools/wip/out/` holds the CSV exports consumed by `import_v2_data`. Do not commit production data here.
+Scratch area -- contents are not stable. `tools/wip/in/` holds raw input data; `tools/wip/out/` holds the CSV exports consumed by `import_v2_data`. Do not commit production data here.
 
 ---
 
 ## Management commands (`backend/common/management/commands/`)
 
-### `import_v2_data` — primary v2 catalog import
+### `import_v2_data` -- primary v2 catalog import
 
 The primary command for importing v2 catalog data. Works on a fresh database with no prior legacy import required. Idempotent: re-running updates existing records.
 
@@ -145,9 +145,9 @@ These are produced by the APMC notebooks in `tools/`.
 
 **Import order:** lookups (colors, shapes, etc.) -> Covers -> Ratemarks -> Postmarks -> Auxmarks -> DateObserved -> junction tables (CoverPostmark, PostmarkRatemark, MarkFraming) -> PostmarkValuation.
 
-**Known limitation:** `post_offices.csv` has a blank `region_id` column — all PostOffice rows are assigned to a placeholder `Region("UNKNOWN")`. `postmark_valuation.csv` has empty `appraisal_date` so valuations are skipped.
+**Known limitation:** `post_offices.csv` has a blank `region_id` column -- all PostOffice rows are assigned to a placeholder `Region("UNKNOWN")`. `postmark_valuation.csv` has empty `appraisal_date` so valuations are skipped.
 
-**Recovery:** The command is idempotent — re-run after fixing the CSV to update records. Use `--missing-postmark-strategy=error` to abort on the first missing Postmark instead of creating stubs.
+**Recovery:** The command is idempotent -- re-run after fixing the CSV to update records. Use `--missing-postmark-strategy=error` to abort on the first missing Postmark instead of creating stubs.
 
 ---
 
@@ -165,7 +165,7 @@ Accepts the same `--dir` and `--user` flags as `import_v2_data`. `--tag` is a hu
 
 ---
 
-### `import_catalog_images` — postmark image import
+### `import_catalog_images` -- postmark image import
 
 Import catalog-extracted images as `Image` records (`subject_type='MARKING'`).
 
@@ -207,7 +207,7 @@ Shared image utilities live at [backend/common/images.py](../backend/common/imag
 
 ### DateFormat admin import
 
-Import date formats through the Django admin UI — useful for re-importing or updating the `DateFormat` table without a management command.
+Import date formats through the Django admin UI -- useful for re-importing or updating the `DateFormat` table without a management command.
 
 **URL:** `/admin/postmarks/dateformat/import/`
 
@@ -218,8 +218,8 @@ Import date formats through the Django admin UI — useful for re-importing or u
 | `date_format_id` | Primary key (from legacy `nTownmarkDateFormatID`) |
 | `format_name` | From legacy `txtTownmarkDateFormat` |
 | `format_description` | Optional; from legacy `memTownmarkDateFormat` |
-| `created_by` | **User ID** (integer, required — e.g. `1`) |
-| `modified_by` | **User ID** (integer, required — e.g. `1`) |
+| `created_by` | **User ID** (integer, required -- e.g. `1`) |
+| `modified_by` | **User ID** (integer, required -- e.g. `1`) |
 
 **Column mapping from the legacy export:**
 
@@ -231,7 +231,7 @@ Import date formats through the Django admin UI — useful for re-importing or u
 | (none) | `created_by` (add manually) |
 | (none) | `modified_by` (add manually) |
 
-Drop `nOrder`, `ynActive`, `ynDeleted`, `dtEntered`, `dtUpdated` — the importer ignores them.
+Drop `nOrder`, `ynActive`, `ynDeleted`, `dtEntered`, `dtUpdated` -- the importer ignores them.
 
 **Quick conversion script** (generates an import-ready CSV from the legacy file):
 ```sh
@@ -245,7 +245,7 @@ Then upload `dateformat_import.csv` at `/admin/postmarks/dateformat/import/`.
 
 ---
 
-### `backup_auth` and `restore_auth` — user account backup
+### `backup_auth` and `restore_auth` -- user account backup
 
 Export and restore user accounts, groups, email addresses, state collections, and editor collection assignments using django-import-export resources.
 
@@ -258,7 +258,7 @@ Run `backup_auth` before destructive DB operations. `restore_auth` is idempotent
 
 ---
 
-### `set_user_password` — set a password without the shell
+### `set_user_password` -- set a password without the shell
 
 ```sh
 woco set_user_password <username> <new_password>
@@ -279,7 +279,7 @@ woco backfill_listing_states
 
 ---
 
-### `check_listing_admin` — diagnostic
+### `check_listing_admin` -- diagnostic
 
 Verifies that the Django admin listing configuration is consistent. Prints any mismatches to stdout. No writes.
 
