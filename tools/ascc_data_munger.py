@@ -1756,7 +1756,7 @@ def main(argv=None):
     # ======================================================================
     _apostrophe_re = re.compile(r"[\u2019']")  # straight + curly apostrophe
     _amp_re        = re.compile(r"\s*&\s*")
-    _strip_punct   = re.compile(r"[,/=()\[\]:`*]")
+    _strip_punct   = re.compile(r"[,/=()\[\]:`*?]")
     _double_dash   = re.compile(r"-{2,}")
     _multi_space   = re.compile(r"\s+")
     _edge_trim     = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
@@ -2618,6 +2618,11 @@ def main(argv=None):
         out["created_by"]    = AUDIT_USER_ID
         out["modified_by"]   = AUDIT_USER_ID
         return out
+
+    def _csv_scalar(value):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            return ""
+        return str(value)
     tm_idx_by_listing = _by_listing(townmarks_df, "townmark_id") if (townmarks_df is not None and "townmark_id" in townmarks_df.columns) else {}
     rm_idx_by_listing = _by_listing(ratemarks_df, "ratemark_id") if (ratemarks_df is not None and "ratemark_id" in ratemarks_df.columns) else {}
     ax_idx_by_listing = _by_listing(auxmarks_df, "auxmark_id")  if (auxmarks_df  is not None and "auxmark_id"  in auxmarks_df.columns)  else {}
@@ -2851,6 +2856,133 @@ def main(argv=None):
     )
     citations_out.insert(0, "id", range(1, len(citations_out) + 1))
     citations_out = _stamp(citations_out)
+
+    lineage_rows = []
+    for kind, src_id, mk_id in emit_order:
+        if kind == "TM":
+            r = _src_row_by(townmarks_df, "townmark_id", src_id)
+            kind_label = "TM"
+            type_label = "TOWNMARK"
+            color_name = r.get("color_name") if r is not None else None
+            local_index = r.get("townmark_id") if r is not None else None
+            parent_mark_type = ""
+            parent_mark_id = ""
+            parent_local_index = ""
+            fanout_idx = ""
+            if r is not None:
+                siblings = townmarks_df[townmarks_df["source_listing_idx"] == r.get("source_listing_idx")]
+                local_index = int((siblings["townmark_id"] < src_id).sum())
+                fanout_idx = int(local_index)
+        elif kind == "RM":
+            r = _src_row_by(ratemarks_df, "ratemark_id", src_id)
+            kind_label = "RM"
+            type_label = "RATEMARK"
+            color_name = None
+            local_index = 0
+            parent_mark_type = "TOWNMARK"
+            parent_mark_id = ""
+            parent_local_index = ""
+            fanout_idx = ""
+            if r is not None:
+                tmr_sel = townmark_ratemark_df[townmark_ratemark_df["ratemark_id"] == src_id]
+                if len(tmr_sel):
+                    parent_mark_id = int(tmr_sel.iloc[0]["townmark_id"])
+                    parent_tm = _src_row_by(townmarks_df, "townmark_id", parent_mark_id)
+                    if parent_tm is not None:
+                        color_name = parent_tm.get("color_name")
+                        tm_siblings = townmarks_df[
+                            townmarks_df["source_listing_idx"] == parent_tm.get("source_listing_idx")
+                        ]
+                        parent_local_index = int((tm_siblings["townmark_id"] < parent_mark_id).sum())
+                        sibling_rms = townmark_ratemark_df[
+                            townmark_ratemark_df["townmark_id"] == parent_mark_id
+                        ]["ratemark_id"].tolist()
+                        local_index = sibling_rms.index(src_id)
+        else:
+            r = _src_row_by(auxmarks_df, "auxmark_id", src_id)
+            kind_label = "AX"
+            type_label = "AUXMARK"
+            color_name = None
+            local_index = 0
+            parent_mark_type = ""
+            parent_mark_id = ""
+            parent_local_index = ""
+            fanout_idx = ""
+            if r is not None:
+                parent_mark_type = _csv_scalar(r.get("parent_mark_type"))
+                parent_mark_id = _csv_scalar(r.get("parent_mark_id"))
+                if parent_mark_type == "TOWNMARK":
+                    parent_tm = _src_row_by(townmarks_df, "townmark_id", r.get("parent_mark_id"))
+                    if parent_tm is not None:
+                        color_name = parent_tm.get("color_name")
+                        tm_siblings = townmarks_df[
+                            townmarks_df["source_listing_idx"] == parent_tm.get("source_listing_idx")
+                        ]
+                        parent_local_index = int((tm_siblings["townmark_id"] < r.get("parent_mark_id")).sum())
+                        aux_sel = auxmarks_df[
+                            (auxmarks_df["parent_mark_type"] == "TOWNMARK") &
+                            (auxmarks_df["parent_mark_id"] == r.get("parent_mark_id"))
+                        ]["auxmark_id"].tolist()
+                        local_index = aux_sel.index(src_id)
+                elif parent_mark_type == "RATEMARK":
+                    parent_rm = _src_row_by(ratemarks_df, "ratemark_id", r.get("parent_mark_id"))
+                    if parent_rm is not None:
+                        tmr_sel = townmark_ratemark_df[
+                            townmark_ratemark_df["ratemark_id"] == r.get("parent_mark_id")
+                        ]
+                        if len(tmr_sel):
+                            parent_tm = _src_row_by(townmarks_df, "townmark_id", tmr_sel.iloc[0]["townmark_id"])
+                            if parent_tm is not None:
+                                color_name = parent_tm.get("color_name")
+                        rm_sel = ratemarks_df[
+                            ratemarks_df["source_listing_idx"] == parent_rm.get("source_listing_idx")
+                        ]
+                        parent_local_index = int((rm_sel["ratemark_id"] < r.get("parent_mark_id")).sum())
+                        aux_sel = auxmarks_df[
+                            (auxmarks_df["parent_mark_type"] == "RATEMARK") &
+                            (auxmarks_df["parent_mark_id"] == r.get("parent_mark_id"))
+                        ]["auxmark_id"].tolist()
+                        local_index = aux_sel.index(src_id)
+
+        if r is None:
+            continue
+
+        src_idx = int(r.get("source_listing_idx"))
+        src_listing = listings.loc[src_idx]
+        family_root_idx = src_idx
+        parent_idx = src_listing.get("parent_idx")
+        if parent_idx is not None and not (isinstance(parent_idx, float) and pd.isna(parent_idx)):
+            family_root_idx = int(parent_idx)
+        family_root = listings.loc[family_root_idx]
+        lineage_rows.append({
+            "marking_id": mk_id,
+            "marking_code": f"{RW_CODE}-{REGION_ABBREV}-{mk_id}",
+            "mark_type": type_label,
+            "mark_kind": kind_label,
+            "local_index": int(local_index),
+            "source_listing_idx": src_idx,
+            "source_chunk": _csv_scalar(src_listing.get("Chunk")),
+            "source_page": _csv_scalar(src_listing.get("Page")),
+            "family_root_idx": family_root_idx,
+            "family_root_chunk": _csv_scalar(family_root.get("Chunk")),
+            "family_root_page": _csv_scalar(family_root.get("Page")),
+            "family_role": "parent" if src_idx == family_root_idx else "child",
+            "parent_mark_type": parent_mark_type,
+            "parent_mark_source_id": parent_mark_id,
+            "parent_local_index": _csv_scalar(parent_local_index),
+            "color_name": _csv_scalar(color_name),
+            "fanout_index": _csv_scalar(fanout_idx),
+            "inscription_txt": _csv_scalar(r.get("inscription_text")),
+            "catalog_txt": _csv_scalar(markings_out.loc[markings_out["id"] == mk_id, "catalog_txt"].iloc[0]) if len(markings_out[markings_out["id"] == mk_id]) else "",
+            "rate_raw": _csv_scalar(r.get("rate_raw")),
+        })
+    lineage_out = pd.DataFrame(lineage_rows) if lineage_rows else pd.DataFrame(columns=[
+        "marking_id", "marking_code", "mark_type", "mark_kind", "local_index",
+        "source_listing_idx", "source_chunk", "source_page", "family_root_idx",
+        "family_root_chunk", "family_root_page", "family_role",
+        "parent_mark_type", "parent_mark_source_id", "parent_local_index", "color_name",
+        "fanout_index", "inscription_txt", "catalog_txt", "rate_raw",
+    ])
     GENERATED = [
         ("colors",           colors_out,           ["id", "name", "hex_val", "pantone_code"]),
         ("letterings",       letterings_out,       ["id", "name"]),
@@ -2884,6 +3016,10 @@ def main(argv=None):
         print(f"  {stem + '.csv':<22s} {_row_count:>5d} rows  ->  {dst}  (passthrough)")
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
     print("Load via: python manage.py import_ascc_bundle " + OUT_DIR)
+
+    _lineage_path = os.path.join(OUT_DIR, "marking_lineage.csv")
+    lineage_out.to_csv(_lineage_path, index=False)
+    print(f'  {"marking_lineage.csv":<22s} {len(lineage_out):>5d} rows  ->  {_lineage_path}  (sidecar)')
 
     # ======================================================================
     # Step 11: Images Table Assembly
