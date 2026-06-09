@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Pagination, PaginationContent, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious, PaginationEllipsis } from "@/components/ui/pagination";
-import { Search as SearchIcon, SlidersHorizontal, Loader2, Plus, ArrowUp, ArrowDown } from "lucide-react";
+import { Grid3x3, List, Search as SearchIcon, SlidersHorizontal, Loader2, Plus, ArrowUp, ArrowDown } from "lucide-react";
 import { useState, useEffect, useRef, useMemo } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
@@ -243,6 +243,7 @@ function SortableLabel({
 
 const Search = () => {
   const [searchParams, setSearchParams] = useSearchParams();
+  const [viewMode, setViewMode] = useState<"gallery" | "list">("list");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -859,6 +860,30 @@ const Search = () => {
                       <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
                     </div>
                   )}
+                  <div className="flex border border-border rounded-md" aria-label="Catalog result view mode">
+                    <Button
+                      type="button"
+                      variant={viewMode === "list" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("list")}
+                      className="rounded-r-none"
+                      aria-label="Show results as list"
+                      aria-pressed={viewMode === "list"}
+                    >
+                      <List className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={viewMode === "gallery" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("gallery")}
+                      className="rounded-l-none"
+                      aria-label="Show results as gallery"
+                      aria-pressed={viewMode === "gallery"}
+                    >
+                      <Grid3x3 className="h-4 w-4" />
+                    </Button>
+                  </div>
                   <Button
                     size="sm"
                     onClick={() => navigate("/contribute", { state: { from: "/search" } })}
@@ -880,7 +905,7 @@ const Search = () => {
                 <div className="flex justify-center items-center py-12">
                   <p className="text-muted-foreground">No catalog records found.</p>
                 </div>
-              ) : (
+              ) : viewMode === "list" ? (
                 <div className="space-y-4">
                   {paginatedResults.map((record) => {
                     const row = buildCatalogSearchRow(record);
@@ -912,6 +937,58 @@ const Search = () => {
                               <CatalogRecordFields row={row} record={record} variant="search" />
                             </div>
                           </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {paginatedResults.map((record) => {
+                    const row = buildCatalogSearchRow(record);
+                    return (
+                      <Card
+                        key={row.cardId}
+                        className="shadow-archival-md hover:shadow-archival-lg transition-shadow cursor-pointer overflow-hidden"
+                        onClick={() =>
+                          navigate(`/record/${record.id}`, {
+                            state: { fromSearch: true },
+                          })
+                        }
+                      >
+                        {row.image2 ? (
+                          <div className="grid grid-cols-2 gap-1 bg-muted">
+                            <div className="h-48 border-r border-border p-2">
+                              <ImageOrPlaceholder
+                                src={row.image}
+                                alt={row.title}
+                                className="h-full w-full object-contain"
+                              />
+                            </div>
+                            <div className="h-48 p-2">
+                              <ImageOrPlaceholder
+                                src={row.image2}
+                                alt={`${row.title} (2)`}
+                                className="h-full w-full object-contain"
+                              />
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="h-48 border-b border-border bg-muted p-2">
+                            <ImageOrPlaceholder
+                              src={row.image}
+                              alt={row.title}
+                              className="h-full w-full object-contain"
+                            />
+                          </div>
+                        )}
+                        <CardContent className="p-4">
+                          <div className="flex items-start justify-between gap-2 mb-2">
+                            <h3 className="font-heading text-lg font-semibold text-foreground">
+                              {row.title}
+                            </h3>
+                          </div>
+                          <CatalogRecordFields row={row} record={record} variant="search" />
                         </CardContent>
                       </Card>
                     );
