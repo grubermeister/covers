@@ -355,13 +355,19 @@ export default function CoverContributionDetail({ initialContribution = null }: 
 
     setSubmitting(true);
     try {
-      await decideContribution(contribution.id, kind, {
+      const result = await decideContribution(contribution.id, kind, {
         reviewNotes: comment.trim() || undefined,
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && parentMarkingId != null) {
-        navigate(`/record/${parentMarkingId}`, { state: { fromDashboard: true } });
+      if (kind === "approve" && result.coverId != null) {
+        if (parentMarkingId != null) {
+          navigate(`/record/${parentMarkingId}/cover/${result.coverId}`, {
+            state: { fromDashboard: true },
+          });
+          return;
+        }
+        navigate(`/covers/${result.coverId}`, { state: { fromDashboard: true } });
         return;
       }
       navigate("/dashboard", { state: { tab: "editor" } });

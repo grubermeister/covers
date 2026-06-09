@@ -165,7 +165,8 @@ const ContributionDetail = () => {
   // send approved contributions there. Top-level effect (not in render body) to
   // keep hook order stable; reads the contribution state directly.
   useEffect(() => {
-    if (contribution?.status === "approved" && contribution.postmarkId != null) {
+    const isCover = isCoverContributionData(contribution?.submittedData);
+    if (!isCover && contribution?.status === "approved" && contribution.postmarkId != null) {
       navigate(`/record/${contribution.postmarkId}`, {
         replace: true,
         state: { fromDashboard: true },
@@ -234,7 +235,9 @@ const ContributionDetail = () => {
   // Approved submissions are being redirected to the entry page by the effect
   // above; show the spinner rather than flashing the contribution view first.
   const isRedirectingToRecord =
-    contribution?.status === "approved" && contribution.postmarkId != null;
+    !isCoverContributionData(contribution?.submittedData) &&
+    contribution?.status === "approved" &&
+    contribution.postmarkId != null;
 
   if (loading || isRedirectingToRecord) {
     return (

@@ -23,6 +23,7 @@ from common.contribution_apply import (
     apply_contribution_to_catalog,
     apply_cover_contribution_to_catalog,
 )
+from common.api.v2.serializers import ContributionDetailSerializer, ContributionListSerializer
 from common.models import (
     Citation,
     Collection,
@@ -291,6 +292,10 @@ class CoverContributionApproveEndpointTests(APITestCase):
         self.assertEqual(contrib.marking_id, self.parent.pk)
         self.assertEqual(contrib.submitted_data.get("cover_marking_id"),
                          CoverMarking.objects.get(cover_id=cover_id).pk)
+        list_data = ContributionListSerializer(contrib).data
+        detail_data = ContributionDetailSerializer(contrib).data
+        self.assertEqual(list_data["cover_id"], cover_id)
+        self.assertEqual(detail_data["cover_id"], cover_id)
 
         cover_marking = CoverMarking.objects.get(cover_id=cover_id)
         self.assertEqual(cover_marking.review_status, CoverMarking.REVIEW_APPROVED)

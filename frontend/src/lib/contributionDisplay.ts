@@ -35,6 +35,13 @@ export function parentMarkingIdFromContribution(sd: Record<string, unknown>): nu
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
+export function materializedCoverIdFromContribution(sd: Record<string, unknown>): number | null {
+  const raw = sd.cover_id ?? sd.coverId;
+  if (raw == null || raw === "") return null;
+  const n = parseInt(String(raw), 10);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 export function coverContributionDisplayName(
   sd: Record<string, unknown>,
   contributionId: number,

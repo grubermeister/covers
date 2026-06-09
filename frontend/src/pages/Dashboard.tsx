@@ -20,7 +20,11 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { formatSizeFromSubmittedData } from "@/lib/dimensionsMm";
-import { isCoverContributionData, parentMarkingIdFromContribution } from "@/lib/contributionDisplay";
+import {
+  isCoverContributionData,
+  materializedCoverIdFromContribution,
+  parentMarkingIdFromContribution,
+} from "@/lib/contributionDisplay";
 import { useAuth } from "@/hooks/useAuth";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { cn } from "@/lib/utils";
@@ -124,6 +128,7 @@ interface DashboardItem {
   description?: string;
   image_url: string | null;
   marking_id?: number | null;
+  cover_id?: number | null;
   /** True when this is a suggested edit to an existing catalog entry (not a new submission). */
   isSuggestion?: boolean;
   /** True when this contribution is a cover (vs a marking); routes editing to CoverEdit. */
@@ -142,10 +147,12 @@ interface EditorHistoryItem {
   shape_display: string;
   color_display: string;
   marking_id: number | null;
+  cover_id: number | null;
   status: string;
   created_at: string;
   review_notes: string | null;
   image_url: string | null;
+  isCover?: boolean;
 }
 
 type SortDir = "asc" | "desc";
@@ -277,6 +284,39 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       return;
     }
     navigate(`/contribute?edit=${s.id}`);
+  };
+
+  const goOpenDashboardItem = (item: {
+    id: number;
+    status: string;
+    marking_id?: number | null;
+    cover_id?: number | null;
+    isCover?: boolean;
+  }) => {
+    const statusNorm = String(item.status || "").toLowerCase();
+    if (statusNorm === "draft") {
+      goEditDraft(item as DashboardItem);
+      return;
+    }
+    if (statusNorm !== "approved") {
+      navigate(`/contribution/${item.id}`, { state: { fromDashboard: true } });
+      return;
+    }
+    if (item.cover_id != null) {
+      if (item.marking_id != null) {
+        navigate(`/record/${item.marking_id}/cover/${item.cover_id}`, {
+          state: { fromDashboard: true },
+        });
+        return;
+      }
+      navigate(`/covers/${item.cover_id}`, { state: { fromDashboard: true } });
+      return;
+    }
+    if (item.marking_id != null) {
+      navigate(`/record/${item.marking_id}`, { state: { fromDashboard: true } });
+      return;
+    }
+    navigate(`/contribution/${item.id}`, { state: { fromDashboard: true } });
   };
   const [activeTab, setActiveTab] = useState<DashboardTab>(initialTab);
 
@@ -429,6 +469,12 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
           const sd = submittedData as Record<string, unknown>;
           const isCover = isCoverContributionData(sd);
           const coverParentMarkingId = isCover ? parentMarkingIdFromContribution(sd) : null;
+          const coverId =
+            typeof c.cover_id === "number"
+              ? c.cover_id
+              : typeof c.coverId === "number"
+                ? c.coverId
+                : materializedCoverIdFromContribution(sd);
           const displayName = isCover
             ? String(c.display_name || c.displayName || "").trim() || `Cover submission #${c.id}`
             : contributionTitleFromSubmittedData(submittedData, c.id);
@@ -476,6 +522,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
             description: c.description || submittedData.description || "",
             image_url: imageUrl,
             marking_id: markingId ?? null,
+            cover_id: coverId,
             isSuggestion,
             isCover,
             cover_parent_marking_id: coverParentMarkingId,
@@ -662,6 +709,8 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
           const submittedData = (c as { submitted_data?: Record<string, unknown>; submittedData?: Record<string, unknown> }).submitted_data
             ?? (c as { submittedData?: Record<string, unknown> }).submittedData
             ?? {};
+          const sd = submittedData as Record<string, unknown>;
+          const isCover = isCoverContributionData(sd);
           return {
             id: c.id,
             contributor_username: c.contributor_username ?? (c as { contributorUsername?: string }).contributorUsername ?? "",
@@ -682,6 +731,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                 ?? "",
             ),
             marking_id: c.marking_id ?? (c as { markingId?: number | null }).markingId ?? null,
+            cover_id:
+              c.cover_id ??
+              (c as { coverId?: number | null }).coverId ??
+              materializedCoverIdFromContribution(sd),
+            isCover,
             status: String(c.status ?? "pending"),
             created_at: String(c.created_at ?? (c as { createdAt?: string }).createdAt ?? ""),
             review_notes: c.review_notes ?? (c as { reviewNotes?: string | null }).reviewNotes ?? null,
@@ -1439,21 +1493,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                         <div className="flex gap-6 md:flex-row flex-col">
                           <button
                             type="button"
-                            onClick={() => {
-                              const statusNorm = String(submission.status || "").toLowerCase();
-                              if (statusNorm === "draft") {
-                                goEditDraft(submission);
-                              } else if (statusNorm === "approved" && submission.marking_id) {
-                                // Approved submissions live on the entry detail page now.
-                                navigate(`/record/${submission.marking_id}`, {
-                                  state: { fromDashboard: true },
-                                });
-                              } else {
-                                navigate(`/contribution/${submission.id}`, {
-                                  state: { fromDashboard: true },
-                                });
-                              }
-                            }}
+                            onClick={() => goOpenDashboardItem(submission)}
                             className="md:w-32 md:h-32 w-full h-48 shrink-0 p-0 border-0 bg-transparent cursor-pointer rounded overflow-hidden focus:outline-none focus:ring-2 focus:ring-ring"
                             aria-label={`Open ${submission.name}`}
                           >
@@ -2127,15 +2167,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                           <div className="flex items-center gap-4 min-w-0 flex-1">
                             <button
                               type="button"
-                              onClick={() => {
-                                // Approved entries open the catalog detail page; everything
-                                // else stays on the standalone contribution page.
-                                if (item.status === "approved" && item.marking_id) {
-                                  navigate(`/record/${item.marking_id}`, { state: { fromDashboard: true } });
-                                } else {
-                                  navigate(`/contribution/${item.id}`, { state: { fromDashboard: true } });
-                                }
-                              }}
+                              onClick={() => goOpenDashboardItem(item)}
                               className="w-16 h-16 shrink-0 p-0 border-0 bg-transparent cursor-pointer rounded overflow-hidden focus:outline-none focus:ring-2 focus:ring-ring"
                               aria-label={`Open ${displayLabel}`}
                             >

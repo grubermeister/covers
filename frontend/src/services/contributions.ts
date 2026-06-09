@@ -41,6 +41,8 @@ export interface ContributionApiItem {
   postmarkId?: number | null;
   marking_id?: number | null;
   markingId?: number | null;
+  cover_id?: number | null;
+  coverId?: number | null;
   // ContributionDetailSerializer exposes the approved marking link as plain
   // "marking" (the FK pk), distinct from the list serializer's "marking_id".
   marking?: number | null;
@@ -74,6 +76,7 @@ export interface Contribution {
   /** Unified postmark / postmark_id / postmarkId (set once approved). */
   postmarkId: number | null;
   markingId: number | null;
+  coverId: number | null;
 }
 
 function toNumberOrNull(v: unknown): number | null {
@@ -116,6 +119,7 @@ export function mapApiItemToContribution(item: ContributionApiItem): Contributio
       firstDefined(item.postmark_id, item.postmarkId, item.postmark, item.marking_id, item.markingId, item.marking),
     ),
     markingId: toNumberOrNull(firstDefined(item.marking_id, item.markingId, item.marking)),
+    coverId: toNumberOrNull(firstDefined(item.cover_id, item.coverId)),
   };
 }
 
@@ -176,6 +180,7 @@ export async function getContribution(id: number): Promise<Contribution> {
 export interface ContributionWriteResult {
   contributionId: number | null;
   postmarkId: number | null;
+  coverId: number | null;
   raw: Record<string, unknown>;
 }
 
@@ -186,6 +191,7 @@ function mapWriteResult(raw: unknown): ContributionWriteResult {
       firstDefined(o.contributionId, o.contribution_id, o.id),
     ),
     postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark, o.marking_id, o.markingId)),
+    coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
 }
@@ -230,6 +236,7 @@ export interface DecideOptions {
 
 export interface DecideResult {
   postmarkId: number | null;
+  coverId: number | null;
   raw: Record<string, unknown>;
 }
 
@@ -254,6 +261,7 @@ export async function decideContribution(
   const o = res.data && typeof res.data === "object" ? (res.data as Record<string, unknown>) : {};
   return {
     postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark, o.marking_id, o.markingId)),
+    coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
 }

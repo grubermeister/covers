@@ -810,11 +810,26 @@ def _contribution_target_marking_id(obj):
     return value if value > 0 else None
 
 
+def _contribution_target_cover_id(obj):
+    sd = obj.submitted_data or {}
+    if not _contribution_submitted_data_is_cover(sd):
+        return None
+    raw = sd.get("cover_id") or sd.get("coverId")
+    if raw in (None, ""):
+        return None
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
 class ContributionListSerializer(serializers.ModelSerializer):
     """List view for contributions (moderation queue)."""
     contributor_username = serializers.CharField(source="contributor.username", read_only=True)
     reviewer_username = serializers.CharField(source="reviewer.username", read_only=True, allow_null=True)
     marking_id = serializers.SerializerMethodField()
+    cover_id = serializers.SerializerMethodField()
     state_display = serializers.SerializerMethodField()
     town_display = serializers.SerializerMethodField()
     type_display = serializers.SerializerMethodField()
@@ -833,6 +848,7 @@ class ContributionListSerializer(serializers.ModelSerializer):
             "contributor_username",
             "marking",
             "marking_id",
+            "cover_id",
             "collection",
             "status",
             "reviewer",
@@ -850,6 +866,9 @@ class ContributionListSerializer(serializers.ModelSerializer):
 
     def get_marking_id(self, obj):
         return _contribution_target_marking_id(obj)
+
+    def get_cover_id(self, obj):
+        return _contribution_target_cover_id(obj)
 
     def get_state_display(self, obj):
         return (obj.submitted_data or {}).get("state", "-")
@@ -889,6 +908,7 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
     contributor_username = serializers.CharField(source="contributor.username", read_only=True)
     reviewer_username = serializers.CharField(source="reviewer.username", read_only=True, allow_null=True)
     marking_id = serializers.SerializerMethodField()
+    cover_id = serializers.SerializerMethodField()
     created_at = serializers.DateTimeField(source="created_date", read_only=True)
     updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
 
@@ -900,6 +920,7 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
             "contributor_username",
             "marking",
             "marking_id",
+            "cover_id",
             "collection",
             "submitted_data",
             "status",
@@ -913,6 +934,9 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
 
     def get_marking_id(self, obj):
         return _contribution_target_marking_id(obj)
+
+    def get_cover_id(self, obj):
+        return _contribution_target_cover_id(obj)
 
 
 class ContributionApproveRejectSerializer(serializers.Serializer):
