@@ -1,90 +1,104 @@
 # WorldCovers
 
+WorldCovers is a Django and React application for cataloging stampless covers
+and postal markings.
 
-Welcome to _**WorldCovers**_, a stampless cover and postmark catalog application
-
-This build, nicknamed _Warp_, is version **2.0.0** (beta).
-
-> Another success is the post-office, with its educating energy augmented by cheapness and guarded by a certain religious sentiment in mankind; so that the power of a wafer or a drop of wax or gluten to guard a letter, as it flies over sea over land and comes to its address as if a battalion of artillery brought it, I look upon as a fine meter of civilization.
-
-&nbsp;&nbsp;&nbsp;&nbsp;-- _Ralph Waldo Emerson_
-
-## Table of Contents
-- [Project Overview](#project-overview)
-- [Building](#building)
-- [Configuration](#configuration)
-- [Execution](#execution)
-- [Errata](#errata)
-
+The public beta runs at [hellowoco.app](https://hellowoco.app/).
 
 ## Project Overview
 
-Version strings follow the **MAJOR**(\d+) . **MINOR**(\d+) . **REVISION**(\d+) format.
+WorldCovers has three main code areas:
 
-Current planned Milestones are `alpha`, `beta`, and `rtm`.  
+- [Common model](./backend/common): shared Django models, admin resources,
+  API resources, and management commands.
+- [WoCo server](./backend/woco): Django settings, URL routing, and server
+  entry points.
+- [Web UI](./frontend): React SPA served by Django in production and by Vite
+  during frontend development.
 
-Currently only tested on Chromium (TODO: version?) on Windows 11, and Brave (1.82.170-arm64) on macOS Sequoia & Tahoe.
+Public Help content is served from Markdown files in [docs](./docs) by
+`backend/common/api/help.py`. Files under `docs/devel/` are internal
+developer and operator docs and are not exposed in the live Help page.
 
-For licensing details, see [LICENSE](LICENSE)
+For design and scope details, see [docs/devel/design.md](./docs/devel/design.md)
+and [docs/devel/scope.md](./docs/devel/scope.md).
 
-###  **Apps**:
-* [Common Model](./backend/common)
-  * The core of the application. Describes Django data structures used by both server and clients.
-* [WoCo Server](./backend/woco)
-  * The Django application powering the REST interface and URL routing. Contains configuration in `settings.py`.
-* [Web UI](./frontend)
-  * The public UI at [hellowoco.app](https://hellowoco.app) is a React SPA (e.g. from Lovable) contained in `frontend`. Django serves it as the site home and all frontend routes, with API and admin staying under the `/api/` and `/admin/` URLs.
+## Quickstart
 
+Prerequisites:
 
-For more details see [design.md](./docs/design.md)
+- Python 3.13, pinned by [.python-version](./.python-version)
+- `uv`, installed with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Node.js and npm for the frontend build
+- MySQL 8 with credentials in `mysql.cnf`
 
+From the repo root:
 
-## Building
-
-### Quickstart
-
-This project uses `uv` (Python toolchain + venv manager) and `django`. Install uv with `curl -LsSf https://astral.sh/uv/install.sh | sh`; it auto-installs the Python version pinned in `.python-version` (3.13). All Django commands use `woco <cmd>` -- for example `./woco runserver`. (`./woco` is a bash shim at the repo root; symlink it onto your PATH if you want it available from anywhere.)
-
-For full setup instructions (dependencies, database credentials, frontend build, migrations), see [docs/BUILD.md](./docs/BUILD.md).
-
-To have the site home and routes served by the React app (e.g. at hellowoco.app), add your frontend in [frontend/](./frontend) and **run `npm run build` there before deployment**. The built output (`frontend/dist/`) is not in git, so your **deploy must run the frontend build** (e.g. `cd frontend && npm ci && npm run build`) before starting Django. See [docs/DEPLOY.md](./docs/DEPLOY.md) and [frontend/README.md](./frontend/README.md).
-
-
-## Configuration
-
-### TODO
-
-## Execution
-
-To run **WorldCovers** in production, deploy with `tools/deploy.sh` then manage the process via systemd:
 ```sh
-sudo systemctl start worldcovers
+uv sync
+cp mysql.cnf.example mysql.cnf
+cd frontend && npm ci && npm run build && cd ..
+./woco migrate
+./woco collectstatic --noinput
+./woco dev
 ```
 
-To run in development, use the one-command launcher (frontend HMR + Django autoreload, sharing one terminal, single Ctrl+C kills both):
+`./woco` is the repo-local CLI shim for Django management commands. It wraps
+`uv run woco`, which calls `woco_cli.py` and then Django's
+`execute_from_command_line`.
+
+For full setup details, see [docs/devel/BUILD.md](./docs/devel/BUILD.md).
+
+## Development
+
+For day-to-day development, run:
+
 ```sh
-woco dev
+./woco dev
 ```
 
-`woco dev` reads Django's `DEBUG`: with `DEBUG=True` (the default) it runs the Vite dev server on :8080 and Django on :8000 -- open `http://localhost:8080`. With `DEBUG=False` it builds `frontend/dist/` and lets Django serve it at :8000 (useful for a final pre-push sanity check). See [docs/devel/BUILD.md](./docs/devel/BUILD.md) for details.
+With `DEBUG=True`, this starts Vite on `http://localhost:8080` and Django on
+`http://localhost:8000`. Open the Vite URL for frontend hot reload. API,
+admin, media, and static requests are proxied to Django.
 
-For day-to-day operator tasks (restarts, imports, backups, approving contributions), see [docs/RUNBOOK.md](./docs/RUNBOOK.md).
+With `DEBUG=False`, `./woco dev` builds `frontend/dist/` and serves the built
+SPA through Django at `http://127.0.0.1:8000`.
 
-For data import and management commands, see [docs/TOOLS.md](./docs/TOOLS.md).
+## Deployment And Operations
 
+The staging deployment source of truth is:
 
-## Errata
+- [.github/workflows/build-and-deploy.yml](./.github/workflows/build-and-deploy.yml)
+- [tools/deploy.sh](./tools/deploy.sh)
+- [tools/worldcovers.service](./tools/worldcovers.service)
 
-TODO:  Links to repo wiki
+The GitHub Actions workflow stops and starts the `worldcovers` service and
+installs the systemd unit when it changes. `tools/deploy.sh` runs dependency
+sync, migrations, frontend build, and Django static collection.
 
-TODO:  Links to user documentation
+For deployment details, see [docs/devel/DEPLOY.md](./docs/devel/DEPLOY.md).
+For operator tasks, see [docs/devel/RUNBOOK.md](./docs/devel/RUNBOOK.md).
+For ETL and management commands, see [docs/devel/TOOLS.md](./docs/devel/TOOLS.md).
+For the ASCC catalog pipeline, see [docs/devel/PIPELINE.md](./docs/devel/PIPELINE.md).
 
-TODO:  Links to developer/contributor documentation
+## Public Documentation
 
-Of course, make sure you also visit our sponsor [The US Philatelic Classics Society](https://www.uspcs.org/), and see [our live version of this app](https://hellowoco.app/)!
+The live Help page is backed by these repo-level Markdown files:
 
-> For any issues or contributions to **WorldCovers**, please refer to our [issue tracker](#) or [contributing guide](#).
+- [docs/faq.md](./docs/faq.md)
+- [docs/glossary.md](./docs/glossary.md)
+- [docs/vision.md](./docs/vision.md)
+- [docs/acknowledgements.md](./docs/acknowledgements.md)
 
-> Parts of this codebase were generated by AI.  No PRs are automatically accepted without human review, and a good faith effort is being made to avoid leaked proprietary code and usage without attribution.  Do not hesitate to contact us with questions/comments/concerns!
+Developer and operator docs stay under `docs/devel/` and are intentionally
+excluded from the Help API.
 
-_We hope you enjoy WorldCovers!_
+## License And Contributions
+
+For licensing details, see [LICENSE](./LICENSE).
+
+Contribution policy and public issue-tracker links are not defined in this
+repository yet. Until they are, coordinate changes through the project team.
+
+Parts of this codebase were generated with AI assistance. Changes still require
+human review before acceptance.

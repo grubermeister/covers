@@ -34,16 +34,19 @@ from munger.relationships import OR_ALIAS_RE, TOWN_HEADING_RE, _is_abbrev_of, _n
 from munger.segment import classify_entry_form, decompose_tail, segment_entry, split_paren_fields, split_valuation_tiers
 from munger.text_utils import strip_dot_leaders
 
+TOOLS_DIR = Path(__file__).resolve().parent
+WIP_DIR = TOOLS_DIR / "wip"
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--input", default="./wip/in/VA_ASCC_CTLG.csv")
+    ap.add_argument("--input", default=WIP_DIR / "in" / "VA_ASCC_CTLG.csv")
     ap.add_argument("--input-dir", default=None)
-    ap.add_argument("--out-dir", default="./wip/out/")
+    ap.add_argument("--out-dir", default=WIP_DIR / "out")
     args = ap.parse_args(argv)
 
-    INPUT_CSV = args.input
-    INPUT_DIR = args.input_dir if args.input_dir is not None else (os.path.dirname(INPUT_CSV) + "/")
-    OUT_DIR = args.out_dir
+    INPUT_CSV = Path(args.input)
+    INPUT_DIR = Path(args.input_dir) if args.input_dir is not None else INPUT_CSV.parent
+    OUT_DIR = Path(args.out_dir)
 
 
     # ======================================================================
@@ -3015,7 +3018,7 @@ def main(argv=None):
         _row_count = sum(1 for _ in open(dst, "r", encoding="utf-8")) - 1
         print(f"  {stem + '.csv':<22s} {_row_count:>5d} rows  ->  {dst}  (passthrough)")
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
-    print("Load via: python manage.py import_ascc_bundle " + OUT_DIR)
+    print(f"Load via: ./woco import_ascc_bundle {OUT_DIR}")
 
     _lineage_path = os.path.join(OUT_DIR, "marking_lineage.csv")
     lineage_out.to_csv(_lineage_path, index=False)

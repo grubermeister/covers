@@ -12,7 +12,7 @@ The American Postal Markings Catalog is a project of the U.S. Philatelic Classic
 
 ## Past Editors of the Catalogue
 
-With gratitude to the editors who carried the catalogue across nearly a century of printed editions: **Harry M. Konwiser**, **E. N. Sampson**, **David G. Phillips**, **Benjamin Wishnietsky**, **Hubert C. Skinner**, **Gordon L. Hudson**, **James S. Leonardo**, **Kenneth L. Gilman**, **Kristi Johnson**, **Robert Dalton Harris**, and — for the accumulated revisions that form the backbone of the data behind WorldCovers — **Van Koppersmith**.
+With gratitude to the editors who carried the catalogue across nearly a century of printed editions: **Harry M. Konwiser**, **E. N. Sampson**, **David G. Phillips**, **Benjamin Wishnietsky**, **Hubert C. Skinner**, **Gordon L. Hudson**, **James S. Leonardo**, **Kenneth L. Gilman**, **Kristi Johnson**, **Robert Dalton Harris**, and -- for the accumulated revisions that form the backbone of the data behind WorldCovers -- **Van Koppersmith**.
 
 ## Donors
 

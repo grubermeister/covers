@@ -1,77 +1,107 @@
 # Operator Runbook
 
-Day-to-day tasks for running WorldCovers on staging/production.
+Day-to-day commands for running WorldCovers on staging.
 
-## Service management
+Source of truth:
 
-WorldCovers runs as a systemd service (`worldcovers`) backed by gunicorn.
+- Deployment flow: `.github/workflows/build-and-deploy.yml`
+- App build steps: `tools/deploy.sh`
+- Data refresh: `tools/reload_data.sh`
+- Service definition: `tools/worldcovers.service`
 
-```sh
-sudo systemctl restart worldcovers   # restart after a deploy or config change
-sudo systemctl status worldcovers    # check current state
-sudo systemctl stop worldcovers      # stop the service
-sudo journalctl -u worldcovers -f    # tail the live log
-```
+## Service Management
 
-The canonical unit file lives in the repo at [tools/worldcovers.service](../tools/worldcovers.service).
-
-### First-time install on a fresh host
+WorldCovers runs as the `worldcovers` systemd service backed by gunicorn.
 
 ```sh
-sudo install -m 644 tools/worldcovers.service /etc/systemd/system/worldcovers.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now worldcovers
+sudo systemctl status worldcovers
+sudo systemctl stop worldcovers
+sudo systemctl start worldcovers
+sudo systemctl restart worldcovers
+sudo journalctl -u worldcovers -f
 ```
 
-The `wocod` deploy user needs a narrow sudoers entry to allow the deploy script to update the unit and restart the service:
+Expected exit code for successful commands: `0`.
 
-```
-# /etc/sudoers.d/wocod-deploy
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart worldcovers
-wocod ALL=(ALL) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/worldcovers.service
-```
+## Manual Deploy
 
-## Deploying
+From the staging host:
 
 ```sh
 cd /srv/woco
-git pull
-tools/deploy.sh
+sudo -n /bin/systemctl stop worldcovers
+git fetch origin
+git reset --hard origin/staging
+./tools/deploy.sh
+sudo -n /bin/systemctl start worldcovers
 ```
 
-`tools/deploy.sh` installs Python deps, runs migrations, builds the frontend, collects static files, and restarts the service. See [docs/DEPLOY.md](DEPLOY.md) for full deploy details, host identity, and CI setup.
+`tools/deploy.sh` syncs Python dependencies, runs migrations, builds the
+frontend, and collects static files. It does not start or stop the service.
 
-## Data imports
+For the full unit-file update flow and sudoers requirements, see
+[DEPLOY.md](DEPLOY.md).
 
-For importing postmark data, running the catalog pipeline, and other ETL commands, see [docs/TOOLS.md](TOOLS.md).
+## Data Refresh
 
-## Approving contributions
+From a local checkout with prepared `tools/wip/` and `backend/media/` data:
 
-1. Log in to `/admin/` as a staff user.
-2. Navigate to **Contributions**.
-3. Select pending contributions and use the **Approve** action.
+```sh
+./tools/push_data.sh --dry-run
+./tools/push_data.sh --import
+```
 
-## Backups
+`--import` runs `tools/reload_data.sh` on the server as `wocod`.
 
-Database backups are stored in `backups/`. To restore:
+Current server-side reload sequence:
+
+```sh
+uv run python backend/manage.py import_ascc_bundle tools/wip/cache/ascc1
+uv run python backend/manage.py apply_ascc2_overlay ...
+```
+
+This refresh does not call `wipe_user_data` and does not pass `--truncate`.
+Existing rows are updated in place by the import and overlay commands.
+
+## Auth Backups
+
+Run before destructive staging refreshes when you need a portable copy of
+users, groups, email addresses, collections, and assignments:
+
+```sh
+./woco backup_auth users.csv groups.csv emails.csv collections.csv assignments.csv
+./woco restore_auth users.csv groups.csv emails.csv collections.csv assignments.csv
+```
+
+These files may contain email addresses and password hashes. Store them as
+sensitive artifacts.
+
+## Database Restore
+
+Database backups live under `backups/` when present.
 
 ```sh
 mysql -u wocod -p worldcovers < backups/worldcovers_YYYY-MM-DD.sql
-woco migrate
+./woco migrate
 ```
 
-## Checking the admin
+Expected exit code: `0`.
 
-Spot-check admin health at `/admin/`:
+## Admin Checks
 
-- **Postmarks** — verify catalog data looks correct
-- **Contributions** — clear the queue of pending contributions
-- **Users** — manage staff and editor assignments
+Spot-check these paths after deploys and data refreshes:
 
-## Environment
+- `/admin/`
+- `/admin/common/contribution/`
+- `/search`
+- `/help`
 
-The production service reads:
+For management command details, see [TOOLS.md](TOOLS.md).
 
-- `/srv/woco/mysql.cnf` — database user and password (same format as the dev `mysql.cnf`; see [docs/BUILD.md](BUILD.md) for the format)
-- `/srv/woco/backend/.env` — `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`
+## Runtime Environment
+
+Production and staging read:
+
+- `/srv/woco/mysql.cnf`: database credentials.
+- `/srv/woco/backend/.env`: `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`, and any
+  other decouple-backed Django settings.

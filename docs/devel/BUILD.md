@@ -25,7 +25,7 @@ Copy the example credentials file and fill in your MySQL details:
 cp mysql.cnf.example mysql.cnf
 ```
 
-Edit `mysql.cnf` with your database user and password. Django reads this file at startup via `read_default_file` — **`migrate` will fail without it**.
+Edit `mysql.cnf` with your database user and password. Django reads this file at startup via `read_default_file` -- **`migrate` will fail without it**.
 
 ```ini
 [client]
@@ -77,8 +77,8 @@ The built SPA is served at `/`. The API lives under `/api/` and the admin at `/a
 
 ## Seeding and ETL
 
-For importing catalog data and running ETL pipelines, see [docs/TOOLS.md](TOOLS.md).
+For importing catalog data and running ETL pipelines, see [TOOLS.md](TOOLS.md).
 
 ## Deployment
 
-For deploying to staging/production, see [docs/DEPLOY.md](DEPLOY.md).
+For deploying to staging/production, see [DEPLOY.md](DEPLOY.md).

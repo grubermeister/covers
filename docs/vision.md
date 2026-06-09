@@ -6,7 +6,7 @@
 
 ## **Background**
 
-Postal marking catalogs — references documenting town markings (including cancellations), rate marks, and auxiliary/instructional markings found in manuscript or via handstamp on mail covers — are largely preserved in specialized print publications maintained by individual experts or small volunteer groups. These catalogs are often out of print, use inconsistent and unclear formats, and accessible only within narrow expert circles. This fragmentation creates barriers to research, collaboration, and knowledge preservation.
+Postal marking catalogs -- references documenting town markings (including cancellations), rate marks, and auxiliary/instructional markings found in manuscript or via handstamp on mail covers -- are largely preserved in specialized print publications maintained by individual experts or small volunteer groups. These catalogs are often out of print, use inconsistent and unclear formats, and accessible only within narrow expert circles. This fragmentation creates barriers to research, collaboration, and knowledge preservation.
 
 The *American Postal Markings Catalog* (APMC) is the first dataset to be managed by this system. The APMC currently consists of the digitized *American Stampless Cover Catalog* (ASCC) and will soon incorporate the *Virginia Postal History Catalog* (VPHC). A prior implementation of the ASCC digitization effort exists as a legacy web application at worldcovers.org, developed under the sponsorship of the *US Philatelic Classics Society* (USPCS). It was built without formal design work and is deemed to have reached the limits of its architecture. Implemented in Adobe ColdFusion, the shrinking talent pool and hosting constraints of the software make ongoing maintenance impractical, and the system cannot reasonably be extended to meet the goals that society members have articulated in the below. This document describes a ground-up re-implementation (nicknamed *WoCo*) that replaces and extends the capabilities of that original application.
 
@@ -26,19 +26,19 @@ Custom development allows the system to be purpose-built for structured catalog 
 
 ## **Goals**
 
-1. Digitized access — Provide free, searchable access to postal marking and cover records currently locked in print catalogs, starting with the APMC under USPCS sponsorship.  
-2. Community contribution with expert curation — Enable collectors and researchers to submit new records while preserving data quality through expert review workflows.  
-3. Multi-catalog extensibility — Support multiple catalogs (by region, era, or specialty) within a single platform, with independent management of each.  
-4. Archival interoperability — Structure and expose data in forms useful to professional archival systems, without attempting to be an archival-grade preservation system itself.  
-5. Comprehensive audit trails — Maintain version history and change tracking sufficient for scholarly accountability and data recovery.  
-6. Feature parity with worldcovers.org — Re-implement the capabilities of the existing ColdFusion application as a baseline for the new system.
+1. Digitized access -- Provide free, searchable access to postal marking and cover records currently locked in print catalogs, starting with the APMC under USPCS sponsorship.
+2. Community contribution with expert curation -- Enable collectors and researchers to submit new records while preserving data quality through expert review workflows.
+3. Multi-catalog extensibility -- Support multiple catalogs (by region, era, or specialty) within a single platform, with independent management of each.
+4. Archival interoperability -- Structure and expose data in forms useful to professional archival systems, without attempting to be an archival-grade preservation system itself.
+5. Comprehensive audit trails -- Maintain version history and change tracking sufficient for scholarly accountability and data recovery.
+6. Feature parity with worldcovers.org -- Re-implement the capabilities of the existing ColdFusion application as a baseline for the new system.
 
 ## **Non-Goals**
 
-* Not a marketplace — WoCo will not handle payment transactions or facilitate buying and selling.  
-* Not a social network — WoCo is a collaborative reference platform, not a forum. Its contribution model is closer to a wiki than to social media.  
-* Not an archival-grade preservation system — WoCo supports interoperability with such systems but does not itself implement professional archival standards.  
-* Not a stamp catalog — The scope is covers and postal markings. Stamp-specific cataloging (designs, issues, values) is out of scope, though stamps appearing on covers may be incidentally recorded.
+* Not a marketplace -- WoCo will not handle payment transactions or facilitate buying and selling.
+* Not a social network -- WoCo is a collaborative reference platform, not a forum. Its contribution model is closer to a wiki than to social media.
+* Not an archival-grade preservation system -- WoCo supports interoperability with such systems but does not itself implement professional archival standards.
+* Not a stamp catalog -- The scope is covers and postal markings. Stamp-specific cataloging (designs, issues, values) is out of scope, though stamps appearing on covers may be incidentally recorded.
 
 ## **Success Criteria**
 

@@ -1,7 +1,8 @@
 """ascc_image_extract.py -- two-stage marking-illustration extractor.
 
-Reads chunk PNGs at wip/in/<basename>/page-NNNN-MMMM.png plus the reviewed
-CSV at wip/out/<basename>.csv. For each chunk where Images Above >= 1:
+Reads chunk PNGs at tools/wip/in/<basename>/page-NNNN-MMMM.png plus the
+reviewed CSV at tools/wip/out/<basename>.csv. For each chunk where Images
+Above >= 1:
 
   Stage 1 (deterministic, no API calls):
       Find row-blocks via find_blocks (BLANK_RUN=5 from the processor).
@@ -36,18 +37,18 @@ CSV at wip/out/<basename>.csv. For each chunk where Images Above >= 1:
       bbox X range.
 
 Outputs:
-  wip/out/<basename>_subchunks/<state>-<page>-<chunk>.png        (stage 1)
-  wip/out/<basename>_images/<state>-<page>-<chunk>-<counter>.png (stage 2)
-  wip/out/<basename>_subchunks_report.csv                        (both)
+  tools/wip/out/<basename>_subchunks/<state>-<page>-<chunk>.png
+  tools/wip/out/<basename>_images/<state>-<page>-<chunk>-<counter>.png
+  tools/wip/out/<basename>_subchunks_report.csv
 
 Pipeline position: downstream of tools/ascc_page_extract.py (which
 produces the authoritative CSV with Images Above counts).
 
-Usage (run from tools/ so relative paths under wip/ resolve):
+Usage:
 
-    uv run python ascc_image_extract.py VA_ASCC_CTLG
-    uv run python ascc_image_extract.py VA_ASCC_CTLG --pages 419-425
-    uv run python ascc_image_extract.py VA_ASCC_CTLG -v
+    uv run python tools/ascc_image_extract.py VA_ASCC_CTLG
+    uv run python tools/ascc_image_extract.py VA_ASCC_CTLG --pages 419-425
+    uv run python tools/ascc_image_extract.py VA_ASCC_CTLG -v
 
 No caches: both stages are deterministic and re-run quickly.
 
@@ -67,13 +68,18 @@ import numpy as np
 from dotenv import load_dotenv
 from PIL import Image
 
-# Repo-root .env (this script's parent.parent is the repo root). Importing
+# Script-root paths let this tool run from any cwd while preserving the
+# historical tools/wip layout.
+TOOLS_DIR = Path(__file__).resolve().parent
+WIP_DIR = TOOLS_DIR / "wip"
+
+# Repo-root .env. Importing
 # ascc_page_processor also calls load_dotenv at module init; calling it
 # here too is harmless and keeps this file self-evident.
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+load_dotenv(TOOLS_DIR.parent / ".env")
 
 # Make sibling tools importable when this script is run as a module.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(TOOLS_DIR))
 from ascc_page_processor import (   # noqa: E402
     find_blocks,
 )
@@ -126,17 +132,16 @@ MARKING_PADDING_PX      = 8
 # ---------------------------------------------------------------------------
 
 class Paths:
-    """Per-run filesystem layout, derived from the basename. All paths are
-    cwd-relative; run this script from tools/."""
+    """Per-run filesystem layout, derived from the basename."""
 
     def __init__(self, basename):
         self.basename       = basename
-        self.images_dir     = Path(f"./wip/in/{basename}")
-        self.input_csv      = Path(f"./wip/out/{basename}.csv")
-        self.subchunks_dir  = Path(f"./wip/out/{basename}_subchunks")
-        self.markings_dir   = Path(f"./wip/out/{basename}_images")
-        self.report_csv     = Path(f"./wip/out/{basename}_subchunks_report.csv")
-        self.run_log        = Path(f"./wip/cache/{basename}_subchunks.log")
+        self.images_dir     = WIP_DIR / "in" / basename
+        self.input_csv      = WIP_DIR / "out" / f"{basename}.csv"
+        self.subchunks_dir  = WIP_DIR / "out" / f"{basename}_subchunks"
+        self.markings_dir   = WIP_DIR / "out" / f"{basename}_images"
+        self.report_csv     = WIP_DIR / "out" / f"{basename}_subchunks_report.csv"
+        self.run_log        = WIP_DIR / "cache" / f"{basename}_subchunks.log"
 
 
 class _Tee:
@@ -158,7 +163,7 @@ class _Tee:
 # ---------------------------------------------------------------------------
 
 def load_csv_counts(csv_path):
-    """Read wip/out/<basename>.csv. Returns:
+    """Read tools/wip/out/<basename>.csv. Returns:
         counts:       {(page, chunk): images_above_sum}
         parse_errors: list of (page, chunk, raw_value) for rows whose
                       Images Above column was not parseable as int.
@@ -664,10 +669,11 @@ def main(argv=None):
         "basename",
         help=(
             "base name of the catalog (e.g. VA_ASCC_CTLG). Drives input "
-            "dir wip/in/<basename>/, input CSV wip/out/<basename>.csv, "
-            "subchunks dir wip/out/<basename>_subchunks/, markings dir "
-            "wip/out/<basename>_images/, report CSV "
-            "wip/out/<basename>_subchunks_report.csv."
+            "dir tools/wip/in/<basename>/, input CSV "
+            "tools/wip/out/<basename>.csv, subchunks dir "
+            "tools/wip/out/<basename>_subchunks/, markings dir "
+            "tools/wip/out/<basename>_images/, report CSV "
+            "tools/wip/out/<basename>_subchunks_report.csv."
         ),
     )
     parser.add_argument(
@@ -684,7 +690,7 @@ def main(argv=None):
         action="store_true",
         help=(
             "print per-chunk progress to stdout and tee to "
-            "wip/cache/<basename>_subchunks.log."
+            "tools/wip/cache/<basename>_subchunks.log."
         ),
     )
     args = parser.parse_args(argv)

@@ -1,22 +1,22 @@
 """ascc_page_extract.py -- single-pass ASCC chunk extraction.
 
-Reads chunk PNGs at wip/in/<basename>/page-NNNN-MMMM.png, sends each to
-Claude Sonnet via OpenRouter, and writes a 4-column CSV
-(Listing, Page, Images Above, Type) to wip/out/<basename>.csv for
+Reads chunk PNGs at tools/wip/in/<basename>/page-NNNN-MMMM.png, sends each to
+Claude Sonnet through the selected provider, and writes a 4-column CSV
+(Listing, Page, Images Above, Type) to tools/wip/out/<basename>.csv for
 apmc_data_munger.ipynb to consume downstream.
 
 Pipeline position: downstream of tools/ascc_page_processor.py (which
 produces the chunk PNGs); upstream of tools/apmc_data_munger.ipynb.
 
-Usage (run from the tools/ directory so relative paths resolve):
+Usage:
 
-    uv run python ascc_page_extract.py VA_ASCC_CTLG
-    uv run python ascc_page_extract.py VA_ASCC_CTLG --pages 419-420
-    uv run python ascc_page_extract.py VA_ASCC_CTLG --pages 419 --force
-    uv run python ascc_page_extract.py VA_ASCC_CTLG -v
+    uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
+    uv run python tools/ascc_page_extract.py VA_ASCC_CTLG --pages 419-420
+    uv run python tools/ascc_page_extract.py VA_ASCC_CTLG --pages 419 --force
+    uv run python tools/ascc_page_extract.py VA_ASCC_CTLG -v
 
 Cache:
-    wip/cache/<basename>_extract.json -- one entry per chunk; tagged with
+    tools/wip/cache/<basename>_extract.json -- one entry per chunk; tagged with
     model id and EXTRACT_PROMPT_VERSION; invalidated on either change.
 
 Post-filter (cosmetic; the downstream munger reclassifies from scratch):
@@ -38,7 +38,6 @@ import argparse
 import base64
 import csv
 import json
-import os
 import re
 import sys
 from collections import Counter
@@ -46,31 +45,43 @@ from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import OpenAI
+
+from pipeline_llm import (
+    DEFAULT_OPENROUTER_MODEL,
+    PROVIDERS,
+    make_pipeline_llm,
+    resolve_model,
+    resolve_provider,
+)
 
 
-# Repo-root .env (this script's parent.parent is the repo root).
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# Script-root paths let this tool run from any cwd while preserving the
+# historical tools/wip layout.
+TOOLS_DIR = Path(__file__).resolve().parent
+WIP_DIR = TOOLS_DIR / "wip"
+
+# Repo-root .env.
+load_dotenv(TOOLS_DIR.parent / ".env")
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-DEFAULT_MODEL          = "anthropic/claude-sonnet-4.6"
+DEFAULT_MODEL          = DEFAULT_OPENROUTER_MODEL
 EXTRACT_PROMPT_VERSION = "v9"
 # Claude Sonnet 4.6 advertises a 200K input window and 64K output cap on
 # OpenRouter. 16000 is plenty for a single-chunk extraction (the densest
 # observed chunk has under 30 entries at ~120 tokens each = ~3600
 # tokens). Cap kept well below the model max to avoid runaway costs on
-# a degenerate response. Cache is tagged with the model id and
-# auto-invalidates when DEFAULT_MODEL changes.
+# a degenerate response. Cache is tagged with provider, model id, and
+# prompt version.
 EXTRACT_MAX_TOKENS     = 16000
 
 # Reference table for state-header derivation (USPS abbrev -> region name).
 # Loaded rows have region_tier in {STATE, DISTRICT}; COUNTRY rows are
-# skipped. Path is cwd-relative; run from tools/.
-REGIONS_CSV = Path("./wip/in/regions.csv")
+# skipped.
+REGIONS_CSV = WIP_DIR / "in" / "regions.csv"
 
 
 EXTRACT_SYSTEM_PROMPT = """OUTPUT (MANDATORY): one line of minified JSON, no fences, no whitespace
@@ -222,31 +233,17 @@ If a chunk is pure illustration with no catalog text below, return
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter client
-# ---------------------------------------------------------------------------
-
-def _make_client():
-    assert os.environ.get("OPENROUTER_API_KEY"), \
-        "OPENROUTER_API_KEY not set in .env"
-    return OpenAI(
-        base_url="https://openrouter.ai/api/v1",
-        api_key=os.environ["OPENROUTER_API_KEY"],
-    )
-
-
-# ---------------------------------------------------------------------------
 # Paths and tee
 # ---------------------------------------------------------------------------
 
 class Paths:
-    """Per-run filesystem layout, derived from the basename. All paths
-    are cwd-relative; run this script from tools/."""
+    """Per-run filesystem layout, derived from the basename."""
     def __init__(self, basename):
         self.basename   = basename
-        self.images_dir = Path(f"./wip/in/{basename}")
-        self.output_csv = Path(f"./wip/out/{basename}.csv")
-        self.cache_file = Path(f"./wip/cache/{basename}_extract.json")
-        self.run_log    = Path(f"./wip/cache/{basename}_extract.log")
+        self.images_dir = WIP_DIR / "in" / basename
+        self.output_csv = WIP_DIR / "out" / f"{basename}.csv"
+        self.cache_file = WIP_DIR / "cache" / f"{basename}_extract.json"
+        self.run_log    = WIP_DIR / "cache" / f"{basename}_extract.log"
 
 
 class _Tee:
@@ -408,31 +405,20 @@ def _parse_partial(text):
     return {"images_above": images_above, "entries": entries}
 
 
-def _call_model(client, model, image_b64, user_prompt):
-    resp = client.chat.completions.create(
+def _call_model(llm, model, image_b64, user_prompt):
+    content = llm.vision_text(
         model=model,
         max_tokens=EXTRACT_MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": EXTRACT_SYSTEM_PROMPT},
-            {"role": "user", "content": [
-                {"type": "image_url", "image_url": {
-                    "url": f"data:image/png;base64,{image_b64}",
-                }},
-                {"type": "text", "text": user_prompt},
-            ]},
-        ],
+        system_prompt=EXTRACT_SYSTEM_PROMPT,
+        user_text=user_prompt,
+        image_b64=image_b64,
     )
-    choice = resp.choices[0]
-    content = choice.message.content or ""
     if not content:
-        raise ValueError(
-            f"model returned empty content; "
-            f"finish_reason={choice.finish_reason!r}"
-        )
+        raise ValueError("model returned empty content")
     return content
 
 
-def extract_chunk(client, model, image_path, page, chunk_seq):
+def extract_chunk(llm, model, image_path, page, chunk_seq):
     """Send one chunk PNG to the vision model and return the parsed
     {images_above, entries} dict. Retries once on JSON parse failure;
     falls back to _parse_partial on a second failure."""
@@ -447,7 +433,7 @@ def extract_chunk(client, model, image_path, page, chunk_seq):
 
     last_raw = ""
     for _attempt in range(2):
-        raw = _call_model(client, model, image_b64, user_prompt)
+        raw = _call_model(llm, model, image_b64, user_prompt)
         last_raw = raw
         cleaned = _strip_fences(raw)
         if not cleaned:
@@ -492,18 +478,35 @@ def extract_chunk(client, model, image_path, page, chunk_seq):
 # Cache (mirrors ascc_page_processor.py)
 # ---------------------------------------------------------------------------
 
-def load_cache(path, model, version):
-    """Load a cache file, invalidating it if model/prompt_version changed."""
+def load_cache(path, provider, model, version):
+    """Load a cache file, invalidating it if provider/model/prompt changed."""
     if not path.exists():
-        return {"model": model, "prompt_version": version, "responses": {}}
+        return {
+            "provider": provider,
+            "model": model,
+            "prompt_version": version,
+            "responses": {},
+        }
     cache = json.loads(path.read_text())
-    if cache.get("model") != model or cache.get("prompt_version") != version:
+    cache_provider = cache.get("provider", "openrouter")
+    if (
+        cache_provider != provider
+        or cache.get("model") != model
+        or cache.get("prompt_version") != version
+    ):
         print(
             f"cache invalidated at {path.name} "
-            f"(was model={cache.get('model')!r}, "
+            f"(was provider={cache_provider!r}, "
+            f"model={cache.get('model')!r}, "
             f"prompt={cache.get('prompt_version')!r})"
         )
-        return {"model": model, "prompt_version": version, "responses": {}}
+        return {
+            "provider": provider,
+            "model": model,
+            "prompt_version": version,
+            "responses": {},
+        }
+    cache["provider"] = cache_provider
     return cache
 
 
@@ -572,11 +575,16 @@ def discover_chunks(images_dir):
     return chunks
 
 
-def run_extract(paths, model, page_filter, force, client):
+def run_extract(paths, provider, model, page_filter, force, llm):
     """Loop through chunks, query the model where needed, save cache
     after each call (so a crash mid-loop only loses the in-flight
     response). Returns (cache, calls_made)."""
-    cache = load_cache(paths.cache_file, model, EXTRACT_PROMPT_VERSION)
+    cache = load_cache(
+        paths.cache_file,
+        provider,
+        model,
+        EXTRACT_PROMPT_VERSION,
+    )
     responses = cache["responses"]
     chunks = discover_chunks(paths.images_dir)
     if not chunks:
@@ -601,7 +609,7 @@ def run_extract(paths, model, page_filter, force, client):
             print(f"missing image, skipping: {img_path}")
             continue
         try:
-            result = extract_chunk(client, model, img_path, page, chunk_seq)
+            result = extract_chunk(llm, model, img_path, page, chunk_seq)
         except Exception as e:
             print(f"  {key}: FAILED ({type(e).__name__}: {e})")
             save_cache(paths.cache_file, cache)
@@ -714,23 +722,32 @@ def _print_summary(rows):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=("Single-pass ASCC chunk extraction. Reads chunk PNGs "
-                     "from wip/in/<basename>/page-NNNN-MMMM.png, sends each "
-                     "to Claude Sonnet via OpenRouter, and writes "
-                     "wip/out/<basename>.csv."),
+                     "from tools/wip/in/<basename>/page-NNNN-MMMM.png, sends each "
+                     "to Claude Sonnet through the selected provider, and writes "
+                     "tools/wip/out/<basename>.csv."),
     )
     parser.add_argument(
         "basename",
         help=("base name of the catalog (e.g. VA_ASCC_CTLG). Drives the "
-              "input dir wip/in/<basename>/, output CSV "
-              "wip/out/<basename>.csv, and cache "
-              "wip/cache/<basename>_extract.json."),
+              "input dir tools/wip/in/<basename>/, output CSV "
+              "tools/wip/out/<basename>.csv, and cache "
+              "tools/wip/cache/<basename>_extract.json."),
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=(f"OpenRouter model id used for every chunk vision call. "
-              f"Default: {DEFAULT_MODEL}. The cache is tagged with the "
-              f"model id and invalidates automatically on change."),
+        default=None,
+        help=("model id used for every chunk vision call. Default: "
+              "PIPELINE_LLM_MODEL if set, otherwise provider-specific "
+              f"default ({DEFAULT_MODEL} for OpenRouter). The cache is "
+              "tagged with the provider and model id and invalidates "
+              "automatically on change."),
+    )
+    parser.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default=None,
+        help=("LLM provider for chunk vision calls. Default: "
+              "PIPELINE_LLM_PROVIDER if set, otherwise openrouter."),
     )
     parser.add_argument(
         "--pages",
@@ -747,7 +764,7 @@ def main(argv=None):
         default=None,
         help=("override the running-head word used by the META post-filter "
               "(e.g. VIRGINIA). Default: derived from the basename's "
-              "USPS prefix via wip/in/regions.csv (VA -> VIRGINIA, "
+              "USPS prefix via tools/wip/in/regions.csv (VA -> VIRGINIA, "
               "MA -> MASSACHUSETTS, ...)."),
     )
     parser.add_argument(
@@ -759,13 +776,14 @@ def main(argv=None):
     parser.add_argument(
         "-v", "--verbose",
         action="store_true",
-        help=("tee stdout to wip/cache/<basename>_extract.log so re-running "
+        help=("tee stdout to tools/wip/cache/<basename>_extract.log so re-running "
               "just to re-read the log is unnecessary."),
     )
     args = parser.parse_args(argv)
 
     paths = Paths(args.basename)
-    model = args.model
+    provider = resolve_provider(args.provider)
+    model = resolve_model(provider, args.model)
 
     paths.cache_file.parent.mkdir(parents=True, exist_ok=True)
     paths.output_csv.parent.mkdir(parents=True, exist_ok=True)
@@ -806,6 +824,9 @@ def main(argv=None):
                 )
 
         print(f"basename: {paths.basename}")
+        print(f"provider: {provider}")
+        log_only(f"provider: {provider}")
+        print(f"model:    {model}")
         log_only(f"model:    {model}")
         if args.pages is not None:
             sample = ",".join(str(x) for x in sorted(args.pages)[:6])
@@ -820,13 +841,14 @@ def main(argv=None):
         print(f"cache:    {paths.cache_file}")
         print()
 
-        client = _make_client()
+        llm = make_pipeline_llm(provider)
         cache, _calls_made = run_extract(
             paths,
+            provider=provider,
             model=model,
             page_filter=args.pages,
             force=args.force,
-            client=client,
+            llm=llm,
         )
 
         # Assemble the full CSV from every cached response (not scoped to

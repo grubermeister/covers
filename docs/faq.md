@@ -22,4 +22,4 @@ Provide clear structured details, include supporting references when possible, a
 Most users cannot directly edit live records. Instead, submit a contribution or update request that goes through moderation.
 
 ## How do I report incorrect documentation?
-Use your team’s normal feedback channel and include the document title and the specific section that appears outdated or unclear.
+Use your team's normal feedback channel and include the document title and the specific section that appears outdated or unclear.

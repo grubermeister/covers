@@ -50,7 +50,7 @@ A reference for the terminology used in WorldCovers data, interface, and support
 
 **Ratemark** (`RATEMARK`). A Marking that states a postal rate. The Rate Value is recorded numerically in addition to the Inscription Text.
 
-**Rate Value.** The numeric amount of postage stated by a Ratemark, recorded as a decimal value in cents. For example, a 3-cent rate is stored as 3 and shown as 3¢.
+**Rate Value.** The numeric amount of postage stated by a Ratemark, recorded as a decimal value in cents. For example, a 3-cent rate is stored as 3 and shown as 3 cents.
 
 **Reference Work.** A citable publication, such as a printed catalog, monograph, or digital resource. The ASCC and the forthcoming VPHC are among the Reference Works incorporated into the APMC.
 
