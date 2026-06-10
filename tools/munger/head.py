@@ -105,6 +105,47 @@ def parse_head(row):
 
     # 5. Name body: head text with annotation parens removed, stripped
     name_body = PAREN_GROUP_RE.sub('', head).strip()
+
+    # 5b. Peel a bare trailing date field off town-table headings.
+    #     Town-listing rows print as "NAME .... YEAR(S) .... VALUE" with
+    #     dot-leader separators (ascc_page_extract compresses the leaders
+    #     to "..."). strip_dot_leaders flattens those to spaces before
+    #     segmentation, so once segment_entry removes the trailing value
+    #     the head arrives here as e.g. "Accomack C.H 1835",
+    #     "Aquia 1811,1849-55", or "Arbor Hill 1850's" -- the year is
+    #     glued to the town name. parse_manuscript_row already peels this
+    #     for Manuscript-flagged rows; reuse its exact loop (date, then
+    #     dash placeholder, then trailing separators) so the normal
+    #     (non-manuscript) path normalizes identically. The dash/sep peels
+    #     also clear a "--/" residue left on the head when a slash-tiered
+    #     value like "--/15.00" is only partly consumed by segment_entry,
+    #     which otherwise hides the date from MS_DATE_AT_END's end-anchor.
+    #     No-op for rows whose dates were parenthesized annotations (those
+    #     were removed in step 5), so manuscript-section parsing is
+    #     unchanged.
+    if name_body:
+        while True:
+            m_date = MS_DATE_AT_END.search(name_body)
+            if m_date:
+                name_body = name_body[:m_date.start()].rstrip()
+                continue
+            m_dash = MS_DASH_AT_END.search(name_body)
+            if m_dash:
+                name_body = name_body[:m_dash.start()].rstrip()
+                continue
+            m_sep = MS_SEP_AT_END.search(name_body)
+            if m_sep:
+                name_body = name_body[:m_sep.start()].rstrip()
+                continue
+            break
+
+    # 5c. Drop residues with no real town text (e.g. a row that was just a
+    #     bare year like "1849"): they would otherwise become a PostOffice
+    #     name made only of digits and fail downstream normalization. A
+    #     None town routes the row to the UNKNOWN post office instead.
+    if name_body and not re.search(r'[A-Za-z]{2,}', name_body):
+        name_body = None
+
     name_body = name_body if name_body else None
 
     return pd.Series({
