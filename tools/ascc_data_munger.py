@@ -28,7 +28,12 @@ from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_to
 from munger.fields.sizes import parse_size_field
 from munger.head import parse_head, parse_manuscript_row
 from munger.images import MEDIA_ROOT
-from munger.io import OPTIONAL_COLS, REQUIRED_COLS, process_meta_rows
+from munger.io import (
+    OPTIONAL_COLS,
+    REQUIRED_COLS,
+    assign_section_regions,
+    process_meta_rows,
+)
 from munger.rate_assembly import BRACKET_DIM_RE, BRACKET_SHAPE_MAP, _date_cls, _tm_codes_by_listing, parse_rate_amount
 from munger.relationships import OR_ALIAS_RE, TOWN_HEADING_RE, _is_abbrev_of, _norm_for_alias, resolve_relationships, roll_up_catalog_text
 from munger.segment import classify_entry_form, decompose_tail, segment_entry, split_paren_fields, split_valuation_tiers
@@ -78,6 +83,7 @@ def main(argv=None):
         raise ValueError(
             f'Required columns missing from {INPUT_CSV}: {missing_required}'
         )
+    df['section_region_id'] = assign_section_regions(df, _region_seed, REGION_ID)
     meta_df = df[df['Type'] == 'META'].reset_index(drop=True)
     listings_df = df[df['Type'] == 'LISTING'].reset_index(drop=True)
     process_meta_rows(meta_df)
@@ -1824,15 +1830,43 @@ def main(argv=None):
             lambda sc: unknown_by_state[_nkey(sc)]
         ).values
         print(f'  Assigned {unresolved.sum()} townmarks to UNKNOWN post office(s) across {len(unknown_by_state)} state(s)')
+    # One junction row per distinct (post office, section region) pair: a
+    # post office listed under several catalog sections (e.g. Detroit under
+    # Northwest Territory, Indiana Territory, Michigan Territory, and
+    # statehood) links to each of those regions. POs with no listing-derived
+    # pair (the UNKNOWN fallbacks) get the catalog default region.
+    _po_region_pairs = (
+        listings[['post_office_id', 'section_region_id']]
+        .dropna()
+        .astype(int)
+        .drop_duplicates()
+        .rename(columns={'section_region_id': 'region_id'})
+    )
+    _covered_pos = set(_po_region_pairs['post_office_id'])
+    _uncovered = [
+        {'post_office_id': int(pid), 'region_id': REGION_ID}
+        for pid in post_offices_df['post_office_id']
+        if int(pid) not in _covered_pos
+    ]
+    if _uncovered:
+        _po_region_pairs = pd.concat(
+            [_po_region_pairs, pd.DataFrame(_uncovered)], ignore_index=True
+        )
+    _po_region_pairs = (
+        _po_region_pairs
+        .sort_values(['post_office_id', 'region_id'])
+        .reset_index(drop=True)
+    )
     post_office_regions_df = pd.DataFrame({
-        'post_office_region_id': range(1, len(post_offices_df) + 1),
-        'post_office_id': post_offices_df['post_office_id'].astype(int).values,
-        'region_id': REGION_ID,
+        'post_office_region_id': range(1, len(_po_region_pairs) + 1),
+        'post_office_id': _po_region_pairs['post_office_id'].astype(int).values,
+        'region_id': _po_region_pairs['region_id'].astype(int).values,
     })
     print(f'PostOffice records: {len(post_offices_df)}')
     print(f'  From {listings["resolved_town"].nunique()} raw distinct towns')
     print(f'  To {len(post_offices_df)} normalized post offices')
-    print(f'PostOfficeRegion links: {len(post_office_regions_df)} (all -> region_id={REGION_ID})')
+    print(f'PostOfficeRegion links: {len(post_office_regions_df)} '
+          f'across {post_office_regions_df["region_id"].nunique()} region(s)')
     if post_offices_df['state_code'].notna().any():
         per_state = post_offices_df.groupby('state_code').size()
         print(f'  Per state:')

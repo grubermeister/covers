@@ -165,6 +165,22 @@ post_offices (1057), post_office_regions (1057), markings (2813), dates_seen
 > Without it the munger aborts with "PostOffice normalization produced N
 > name(s) with characters outside [A-Z, space, period, single dash]."
 
+**Verify the "Section-region assignment" report** printed at the top of the
+munge output. Listings are assigned the region of the catalog section they
+sit under (META banners matching a TERRITORY-tier name in `regions.csv`,
+optionally prefixed `AS `; a `STATEHOOD` banner resets to the catalog's
+default region). Check that:
+
+- the per-region listing counts match the catalog's section sizes
+  (single-region catalogs like VA show one line: all listings on the default);
+- nothing under "Unmatched banner-like META rows" is a real territory
+  section the vision step misread (e.g. `MICHIGAN TERRlTORY`) — if it is,
+  fix the row in the extract CSV and re-munge.
+
+A post office listed under several sections (e.g. Detroit) gets one
+`post_office_regions` row per section region, so junction-row count can
+exceed post-office count on territory-bearing catalogs.
+
 ## G. Import  (deterministic, no API)
 
 ```bash
