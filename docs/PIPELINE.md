@@ -199,10 +199,14 @@ rolls everything back (no partial state).
    ```bash
    uv run python backend/manage.py shell -c "from django.contrib.auth import get_user_model as G; U=G(); U.objects.filter(id=1).exists() or U(id=1,username='admin',is_superuser=True,is_staff=True).save()"
    ```
-2. **Schema fixes for `staging` migration drift** — see DECISIONS.md "staging
-   fresh-install schema is incomplete." On a fresh `staging` DB these four are
-   needed before the import succeeds (local DB only; the real fix is Michael's
-   migrations):
+2. **Schema fixes — check for symptoms first, usually NOT needed.** A truly
+   fresh DB + `migrate` on a staging-based branch produces a complete schema
+   (verified on the MI run, 2026-06-11: import succeeded with zero fixes).
+   The four drifts below were observed once (VA run, 2026-06-09) and were
+   almost certainly residue of an earlier broken-`main` migrate attempt
+   against the same DB. Apply a fix only if its specific import error
+   appears (1364 region_id / 1146 post_office_region / 1054 is_tracing /
+   1062 duplicate storage_filename):
    ```sql
    ALTER TABLE post_office MODIFY region_id BIGINT NULL;   -- orphaned NOT NULL col
    ALTER TABLE images DROP INDEX storage_filename;          -- model says NOT unique
