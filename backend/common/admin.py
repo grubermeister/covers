@@ -114,7 +114,12 @@ class NoCountPaginator(Paginator):
         return 10_000_000
 
 
-class TimestampedModelAdmin(ImportExportModelAdmin):
+class ReversionImportExportAdmin(CompareVersionAdmin, ImportExportModelAdmin):
+    """Base admin for models that already use ImportExportModelAdmin and want reversion."""
+    pass
+
+
+class TimestampedModelAdmin(ReversionImportExportAdmin):
     """Base admin for models using TimestampedModel"""
     readonly_fields = ['created_by', 'created_date', 'modified_by', 'modified_date']
     show_full_result_count = False
@@ -184,11 +189,6 @@ class TimestampedModelResource(resources.ModelResource):
         if isinstance(f, (DjangoCharField, DjangoTextField)) and getattr(f, 'null', False):
             return NullableCharWidget
         return super().widget_from_django_field(f, default=default)
-
-
-class ReversionImportExportAdmin(CompareVersionAdmin, ImportExportModelAdmin):
-    """Base admin for models that already use ImportExportModelAdmin and want reversion."""
-    pass
 
 
 # ========== RESOURCES ==========
@@ -538,8 +538,19 @@ class MarkingVersionAdmin(admin.ModelAdmin):
     list_filter = ['created_at']
     search_fields = ['marking__code']
     raw_id_fields = ['marking', 'transaction']
-    readonly_fields = ['snapshot', 'created_at']
     ordering = ['-created_at']
+
+    def get_readonly_fields(self, request, obj=None):
+        return [field.name for field in self.model._meta.fields]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_change_permission(self, request, obj=None):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
 
 
 # ========== POSTCOVER (DEPRECATED) ADMIN ==========
@@ -734,7 +745,7 @@ class CustomUserAdmin(DjangoUserAdmin):
 # ========== CONTRIBUTION ADMIN ==========
 
 @admin.register(Contribution)
-class ContributionAdmin(admin.ModelAdmin):
+class ContributionAdmin(CompareVersionAdmin):
     list_display = ["id", "contributor", "status", "get_state", "get_town", "reviewer", "created_date"]
     list_filter = ["status"]
     search_fields = ["contributor__username", "submitted_data"]
@@ -832,7 +843,7 @@ class ReferenceWorkAdmin(TimestampedModelAdmin):
 
 
 @admin.register(Collection)
-class CollectionAdmin(ImportExportModelAdmin):
+class CollectionAdmin(ReversionImportExportAdmin):
     resource_class = CollectionResource
     list_display = ['name', 'region', 'is_active', 'created_date']
     list_filter = ['is_active']
@@ -847,7 +858,7 @@ class CollectionAdmin(ImportExportModelAdmin):
 
 
 @admin.register(CollectionAssignment)
-class CollectionAssignmentAdmin(ImportExportModelAdmin):
+class CollectionAssignmentAdmin(ReversionImportExportAdmin):
     resource_class = CollectionAssignmentResource
     list_display = ['user', 'collection', 'created_date']
     search_fields = ['user__username', 'collection__name', 'collection__region__name']

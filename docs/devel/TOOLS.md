@@ -31,6 +31,7 @@ Use `./woco <command>` from repo root for Django management commands. The
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
 | `apply_ascc2_overlay` | Apply ASCC2 updates to an ASCC1 baseline | `backend/common/management/commands/apply_ascc2_overlay.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
+| `prune_revisions` | Prune django-reversion rows safely | `backend/common/management/commands/prune_revisions.py` |
 | `backup_auth` | Export users and auth/collection config | `backend/common/management/commands/backup_auth.py` |
 | `restore_auth` | Restore users and auth/collection config | `backend/common/management/commands/restore_auth.py` |
 | `set_user_password` | Set a user's password from the CLI | `backend/common/management/commands/set_user_password.py` |
@@ -244,6 +245,21 @@ catalog tables, auth users, groups, collections, and collection assignments.
 
 Use this only when you intentionally need to clear submission, version, and
 recycle-bin data before a separate destructive catalog refresh.
+
+### `prune_revisions`
+
+Prune django-reversion storage while preserving the newest configured number
+of Version rows per object. This command also purges legacy Version rows for
+the custom audit/snapshot tables that are excluded from reversion tracking.
+
+```sh
+./woco prune_revisions --dry-run
+./woco prune_revisions
+```
+
+The dry run reports what would be deleted and rolls back. Expected exit code:
+`0`. Retention defaults live in `backend/woco/settings.py` as
+`REVERSION_PRUNE_RETENTION_DAYS` and `REVERSION_PRUNE_KEEP_PER_OBJECT`.
 
 ### `backup_auth` And `restore_auth`
 
