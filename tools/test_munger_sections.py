@@ -44,6 +44,11 @@ class TestAssignSectionRegions(unittest.TestCase):
             ('AS INDIANA TERRITORY', 'META'),
             ('Detroit(E)(June 1, 1803;Ms;Black) 1750', 'LISTING'),
             ('MICHIGAN TERRITORY', 'META'),
+            # Narrative META mentioning statehood must NOT reset the
+            # section (the real MI intro paragraph does exactly this).
+            ('1830 Post Office Directory lists 61 Michigan Territory '
+             'Offices. The total number of Michigan offices established '
+             'prior to statehood is a surprising 340!', 'META'),
             ('Ann Arbor M.T.(E)(1825;Ms;Black)', 'LISTING'),
             ('MICHIGAN', 'META'),                       # running head mid-section
             ('Green Bay M.T.(1825;Ms;Black)', 'LISTING'),

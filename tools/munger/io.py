@@ -57,11 +57,15 @@ def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series
             if key in territory_by_name:
                 current = territory_by_name[key]
                 switches.append((banner, current))
-            elif 'STATEHOOD' in banner:
-                current = int(default_region_id)
-                switches.append((banner, current))
             elif _BANNER_CANDIDATE.fullmatch(banner):
-                unmatched[banner] = unmatched.get(banner, 0) + 1
+                # STATEHOOD only resets on banner-shaped rows: narrative
+                # META paragraphs mention statehood freely (the MI intro
+                # does, right inside the territory section).
+                if 'STATEHOOD' in banner:
+                    current = int(default_region_id)
+                    switches.append((banner, current))
+                else:
+                    unmatched[banner] = unmatched.get(banner, 0) + 1
         assigned.append(current)
 
     out = pd.Series(assigned, index=df.index, dtype='int64')
