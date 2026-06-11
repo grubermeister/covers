@@ -181,8 +181,7 @@ Move the reviewed CSV from `tools/wip/out/<BASE>.csv` to
 `tools/wip/in/<BASE>.csv`, so it sits beside
 `tools/wip/in/reference_works.csv` and `tools/wip/in/regions.csv`. The
 munger derives its input dir from the CSV path and reads both reference
-files from there. `reference_works.csv` must contain exactly one row
-(it supplies the reference-work id and code).
+files from there.
 
 ### 7. Build the import bundle -- ascc_data_munger.py
 

@@ -87,6 +87,32 @@ mysql -u wocod -p worldcovers < backups/worldcovers_YYYY-MM-DD.sql
 
 Expected exit code: `0`.
 
+## Revision Maintenance
+
+Run the one-time django-reversion baseline after the skip-list code is live.
+The order matters because excluded audit/snapshot models should not get
+baseline revisions.
+
+```sh
+cd /srv/woco
+./woco createinitialrevisions --comment "Initial baseline revision."
+```
+
+Expected exit code: `0`. The command prints per-model counts.
+
+Run revision pruning manually as needed, for example monthly. No systemd timer
+or cron job is installed for this yet.
+
+```sh
+cd /srv/woco
+./woco prune_revisions --dry-run
+./woco prune_revisions
+```
+
+Expected exit code: `0`. The dry run reports counts and rolls back. The
+retention policy lives in `backend/woco/settings.py` as
+`REVERSION_PRUNE_RETENTION_DAYS` and `REVERSION_PRUNE_KEEP_PER_OBJECT`.
+
 ## Admin Checks
 
 Spot-check these paths after deploys and data refreshes:

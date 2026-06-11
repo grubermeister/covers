@@ -193,6 +193,12 @@ DJANGO_ADMIN_LOGS_DELETETABLE = True
 # Don't clutter production logs with unchanged object saves
 DJANGO_ADMIN_LOGS_IGNORE_UNCHANGED = False if DEBUG else True 
 
+# Reversion pruning policy (used by the prune_revisions management command).
+# Delete version rows older than RETENTION_DAYS, but always keep the most
+# recent KEEP_PER_OBJECT versions for every object.
+REVERSION_PRUNE_RETENTION_DAYS = 180
+REVERSION_PRUNE_KEEP_PER_OBJECT = 3
+
 # REST Framework settings (if using API)
 REST_FRAMEWORK = {
     "DEFAULT_PAGINATION_CLASS": "woco.pagination.PageSizePagination",
