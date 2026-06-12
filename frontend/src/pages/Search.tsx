@@ -248,11 +248,11 @@ const Search = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Fetch filter options from API (colors, postmark shapes, states)
+  // Fetch filter options from API (colors, marking shapes, states)
   const { colorOptions, shapeOptions, stateOptions, isLoading: isLoadingFilters, error: filterError } =
     useFilterOptions();
 
-  // Catalog's earliest/latest observed year — used for input placeholders and validation bounds.
+  // Catalog's earliest/latest observed year -- used for input placeholders and validation bounds.
   const { earliestYear: minYear, latestYear: maxYear } = useMarkingYearRange();
 
   // Filter states - initialize from URL so filters persist when navigating back from detail
@@ -302,7 +302,7 @@ const Search = () => {
   const debouncedBeginYear = useDebounce(beginYear, DEBOUNCE_MS);
   const debouncedEndYear = useDebounce(endYear, DEBOUNCE_MS);
 
-  // Pagination - 10 records per page from api/postmarks/
+  // Pagination - 10 records per page from api/markings/
   const [currentPage, setCurrentPage] = useState(() => {
     const p = searchParams.get("page");
     const n = p ? parseInt(p, 10) : 1;
@@ -339,8 +339,8 @@ const Search = () => {
   );
 
   // Manuscripts have null shape, so the two filters are mutually exclusive:
-  // - manuscripts=Only → Shape field is cleared and hidden (no shape to filter on).
-  // - shape selected  → "Only" option in the manuscripts dropdown is disabled
+  // - manuscripts=Only -> Shape field is cleared and hidden (no shape to filter on).
+  // - shape selected  -> "Only" option in the manuscripts dropdown is disabled
   //   (and snapped back to "both" if somehow already on "only" via URL state).
   useEffect(() => {
     if (manuscriptFilter === "only" && shapeFilter !== "all") {

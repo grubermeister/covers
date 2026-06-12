@@ -1,262 +1,271 @@
-# ASCC Catalog Pipeline
+# ASCC Catalog Pipeline -- Runbook
 
-How to turn a scanned ASCC catalog PDF into the Django-shape CSV bundle
-that `import_ascc_bundle` loads into the catalog tables.
+Turn a state sub-catalog PDF into rows in the WorldCovers database. This is the
+canonical, reproducible path; it supersedes the notebook chain described in
+`docs/devel/TOOLS.md` (those notebooks no longer exist -- the pipeline is now the
+`tools/ascc_*.py` scripts below).
 
-The four `tools/ascc_*` utilities run in a fixed order, with a human
-review gate between each. Output of one stage is reviewed and then fed to
-the next.
+**Validated end-to-end against Virginia (`VA_ASCC_CTLG`), 2026-06-09.**
 
-```
-  tools/wip/in/<BASE>.pdf
-        |  (1) ascc_page_processor.py        -> tools/wip/out/<BASE>/  (chunk PNGs)
-        |  [review chunks, move out -> in]
-        v
-  tools/wip/in/<BASE>/page-*.png
-        |  (3) ascc_page_extract.py          -> tools/wip/out/<BASE>.csv
-        |  [review/correct CSV]
-        v
-  tools/wip/out/<BASE>.csv
-        |  (5) ascc_image_extract.py  OPT    -> tools/wip/out/<BASE>_images/
-        |  [move reviewed CSV out -> in]
-        v
-  tools/wip/in/<BASE>.csv (+ reference_works.csv, regions.csv)
-        |  (7) ascc_data_munger.py           -> tools/wip/out/*.csv  (11-file bundle)
-        v
-  tools/wip/out/
-        |  (8) ./woco import_ascc_bundle     -> catalog DB tables
-        v
-  ASCC1 database baseline
-```
+---
 
-## Conventions
+## 0. Prerequisites
 
-- `<BASE>` is the PDF stem, e.g. `VA_ASCC_CTLG`. Its first two letters are
-  the region abbrev the munger keys on (`VA` is matched against
-  `regions.csv`).
-- Run the four `ascc_*` tools from repo root. Their default paths resolve
-  under `tools/wip/` based on each script's location, not on the shell cwd.
-  Invoke with `uv run python tools/<script> <BASE>`.
-- The `tools/wip/` working dir splits into `in/` (curated inputs) and `out/`
-  (generated artifacts). The namespace deliberately flips between stages:
-  a tool writes to `tools/wip/out/...`, you review it, then you move it back to
-  `tools/wip/in/...` to feed the next tool. Those moves are the review gates.
-- `tools/wip/cache/` holds regenerable intermediates (rendered pages, vision
-  responses). Safe to delete; pass `--force` to invalidate selectively.
-- API-dependent steps default to OpenRouter. To use Anthropic directly, set
-  `ANTHROPIC_API_KEY` and pass `--provider anthropic`, or set
-  `PIPELINE_LLM_PROVIDER=anthropic`. `PIPELINE_LLM_MODEL` can override the
-  provider-specific default model. OpenRouter uses `OPENROUTER_API_KEY`.
+| Need | How |
+|------|-----|
+| Python env | `uv sync` in repo root (set `CC=gcc CXX=g++` if `mysqlclient` fails to build) |
+| MySQL DB | `worldcovers` DB migrated; see `tools/rebuild_staging_db.sh`. |
+| `pdftoppm` | poppler-utils. `sudo apt-get install -y poppler-utils`, or no-sudo `brew install poppler` |
+| `OPENROUTER_API_KEY` | in **`worldcovers/.env`** (the scripts load `TOOLS_DIR.parent/.env`, i.e. the repo-root `.env`, NOT the workspace-root one). Account must have credit -- the vision stages call the paid model `anthropic/claude-sonnet-4.6` |
 
-## Layering strategy
+### The `BASE` convention
 
-Load the Fifth Edition ASCC catalog first. It is the printed baseline that
-state editors can verify against scanned catalog pages. The later v1
-worldcovers.org export remains reference evidence only: it mixes Fifth Edition
-text, unpublished Sixth Edition draft text, old parser output, later manual
-edits, and independent `tblTownmarkImages` associations.
+Every script keys off one basename, e.g. `VA_ASCC_CTLG`. It must:
+- be the input PDF's filename stem: `tools/wip/in/<BASE>.pdf`
+- start with the 2-letter region abbrev (`VA`) -- the munger derives `REGION_ABBREV`
+  from `os.path.basename(input)[:2]`, and the processor/extract derive the state
+  header (`VA` -> `VIRGINIA`) from the first `_`-delimited token via `regions.csv`.
 
-No automated v1 overlay is performed. Use v1-derived artifacts for manual
-comparison and review only. The detailed provenance rules live in
-[ascc-data-layering-strategy.md](ascc-data-layering-strategy.md).
+> All of `tools/wip/{in,out,cache}/` is gitignored (incl. all pdf/png/jpg) -- safe scratch.
 
-## Steps
+### Seed files (place in `tools/wip/in/` before starting)
 
-### 1. Render and chunk the PDF -- ascc_page_processor.py
+- `<BASE>.pdf` -- the state sub-catalog
+- `reference_works.csv` -- **exactly 1 data row** (the catalog being cited); munger raises otherwise
+- `regions.csv` -- must contain exactly 1 row matching `REGION_ABBREV`
 
-Renders pages, splits two-column pages into halves, and slices each
-column into per-listing chunk PNGs. Three stages: render, halves, chunks.
+---
 
-- in:  `tools/wip/in/<BASE>.pdf`
-- out: `tools/wip/out/<BASE>/page-NNNN-MMMM.png` (chunk PNGs)
-- cache: `tools/wip/cache/<BASE>_full/`, `_halves/`, `_blocks.json`, `_review.json`
+## Stage map
 
-```
-uv run python tools/ascc_page_processor.py <BASE>
-uv run python tools/ascc_page_processor.py <BASE> --stages render,halves,chunks
-uv run python tools/ascc_page_processor.py <BASE> --pages 419-425
-uv run python tools/ascc_page_processor.py <BASE> --force halves,chunks
-uv run python tools/ascc_page_processor.py <BASE> --provider anthropic
+| # | Script | API? | Reads | Writes |
+|---|--------|------|-------|--------|
+| A | `ascc_page_processor.py ... --stages render` | no | `wip/in/<BASE>.pdf` | `wip/cache/<BASE>_full/page-*.png` |
+| B | `ascc_page_processor.py ... --stages halves` | yes | full pages | `wip/cache/<BASE>_halves/` |
+| C | `ascc_page_processor.py ... --stages chunks` | yes | halves | `wip/out/<BASE>/page-NNNN-MMMM.png` |
+| -- | **hop 1** | -- | move chunks `wip/out/<BASE>/` -> `wip/in/<BASE>/` | extract/image_extract read from `in/` |
+| D | `ascc_page_extract.py <BASE>` | yes | `wip/in/<BASE>/` chunks | `wip/out/<BASE>.csv` |
+| E | `ascc_image_extract.py <BASE>` | no | `wip/in/<BASE>/` chunks + `wip/out/<BASE>.csv` | `wip/out/<BASE>_images/` |
+| F | `ascc_data_munger.py --input ... --input-dir ...` | no | extract CSV + seeds + images | Django-shape CSVs in `wip/out/` |
+| G | `manage.py import_ascc_bundle <out-dir>` | no | the bundle | rows in MySQL |
+
+All commands run from the repo root (`worldcovers/`).
+
+---
+
+## A. Render  (deterministic)
+
+```bash
+uv run python tools/ascc_page_processor.py VA_ASCC_CTLG --stages render
 ```
 
-Provider selection examples:
+Result (VA): **17 pages** rendered at 300 DPI -> `wip/cache/VA_ASCC_CTLG_full/`.
 
-```sh
-# Default: OpenRouter with OPENROUTER_API_KEY.
-uv run python tools/ascc_page_processor.py <BASE>
+## B. Halves  (vision)
 
-# Direct Anthropic Claude API with ANTHROPIC_API_KEY.
-uv run python tools/ascc_page_processor.py <BASE> --provider anthropic
-
-# Env-driven provider and optional model override.
-PIPELINE_LLM_PROVIDER=anthropic PIPELINE_LLM_MODEL=claude-sonnet-4-6 \
-  uv run python tools/ascc_page_processor.py <BASE>
+```bash
+uv run python tools/ascc_page_processor.py VA_ASCC_CTLG --stages halves
 ```
 
-### 2. Review gate: chunks
+Per page: deterministic vertical-rule detection, with a vision page-number read
+and a single-column-confirm fallback. Crops to L/R halves named by **catalog**
+page number.
 
-Eyeball the chunk PNGs and fix any mis-slices, then move the directory
-from `tools/wip/out/<BASE>/` to `tools/wip/in/<BASE>/`. The next two tools
-read chunks from `tools/wip/in/<BASE>/`.
+Result (VA): catalog pages **419-435**, **34 half-images**, 20 vision calls
+(4 `vision_confirmed_weak_rule`). **Inspect a sampling of halves for seam-clipped
+text/markings before proceeding** (the script reminds you).
 
-### 3. Extract listing text -- ascc_page_extract.py
+## C. Chunks  (vision)
 
-Sends each chunk to a Claude vision model and writes one CSV row per
-detected entry.
-
-- in:  `tools/wip/in/<BASE>/page-*.png` + `tools/wip/in/regions.csv`
-- out: `tools/wip/out/<BASE>.csv` (columns: Listing, Page, Images Above, Type)
-- cache: `tools/wip/cache/<BASE>_extract.json`
-
-```
-uv run python tools/ascc_page_extract.py <BASE>
-uv run python tools/ascc_page_extract.py <BASE> --pages 419-420
-uv run python tools/ascc_page_extract.py <BASE> --force
-uv run python tools/ascc_page_extract.py <BASE> -v
-uv run python tools/ascc_page_extract.py <BASE> --provider anthropic
+```bash
+uv run python tools/ascc_page_processor.py VA_ASCC_CTLG --stages chunks
 ```
 
-Provider selection works the same as the page processor:
+Per half: deterministic dark/blank row-block detection + vision per-block
+classify (illustration vs text); cut at the top of every illustration block.
 
-```sh
-# Default: OpenRouter with OPENROUTER_API_KEY.
-uv run python tools/ascc_page_extract.py <BASE>
+Result (VA): 795 blocks detected, 173 illustrations, **201 chunk PNGs** ->
+`wip/out/VA_ASCC_CTLG/page-NNNN-MMMM.png` (~34 min; 795 classify + 197 review
+vision calls).
 
-# Direct Anthropic Claude API with ANTHROPIC_API_KEY.
-uv run python tools/ascc_page_extract.py <BASE> --provider anthropic
+## hop 1 -- move chunks where the downstream scripts read them
 
-# Env-driven provider and optional model override.
-PIPELINE_LLM_PROVIDER=anthropic PIPELINE_LLM_MODEL=claude-sonnet-4-6 \
-  uv run python tools/ascc_page_extract.py <BASE>
+The processor writes chunks to `wip/out/<BASE>/`, but `ascc_page_extract.py` and
+`ascc_image_extract.py` both read from `wip/in/<BASE>/`. Move them:
+
+```bash
+mkdir -p tools/wip/in/VA_ASCC_CTLG
+mv tools/wip/out/VA_ASCC_CTLG/* tools/wip/in/VA_ASCC_CTLG/
 ```
 
-### 4. Review gate: CSV
+## D. Extract  (vision)
 
-Proofread `tools/wip/out/<BASE>.csv` against the catalog. The "Images Above"
-counts drive step 5; the listing text drives step 7. Leave the corrected
-file in `tools/wip/out/<BASE>.csv` for now (step 5 reads it there).
-
-### 5. Extract marking images -- ascc_image_extract.py (OPTIONAL)
-
-Only when you want the marking illustrations pulled out as PNGs.
-Deterministic and offline (no API calls). Uses the "Images Above" counts
-from the reviewed CSV.
-
-- in:  `tools/wip/in/<BASE>/page-*.png` + `tools/wip/out/<BASE>.csv`
-- out: `tools/wip/out/<BASE>_images/<state>-<page>-<chunk>-<n>.png`,
-       `tools/wip/out/<BASE>_subchunks/`,
-       `tools/wip/out/<BASE>_subchunks_report.csv` (per-chunk status)
-
-```
-uv run python tools/ascc_image_extract.py <BASE>
-uv run python tools/ascc_image_extract.py <BASE> --pages 419-425
-uv run python tools/ascc_image_extract.py <BASE> -v
+```bash
+uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
 ```
 
-Check `<BASE>_subchunks_report.csv` for mismatches (a chunk whose
-detected image count does not match the CSV).
+Sends each chunk to the vision model; writes catalog rows (Listing, Page,
+Chunk, Images Above, Type) to `wip/out/VA_ASCC_CTLG.csv`.
 
-### 6. Review gate: move CSV to in/
+Result (VA): **1,596 rows** (1,539 LISTING + 57 META), 167 chunks with
+`Images Above >= 1` (~22 min).
 
-Move the reviewed CSV from `tools/wip/out/<BASE>.csv` to
-`tools/wip/in/<BASE>.csv`, so it sits beside
-`tools/wip/in/reference_works.csv` and `tools/wip/in/regions.csv`. The
-munger derives its input dir from the CSV path and reads both reference
-files from there.
+> **Per-chunk review (the "reviewed CSV"):** the vision pass can over-count
+> markings on a noisy chunk. VA page 419 chunk 14 was tagged `Images Above=2`
+> but contains only one marking (a cursive "Nfk" manuscript mark; the ornate
+> "NORFOLK" below is a section banner, not a marking). image-extract (next
+> step) refuses to fabricate the 2nd image and flags `marking_count_mismatch`,
+> and the munger then aborts on the missing file. Fix: correct that row's
+> `Images Above` to the true count in the CSV and re-run image-extract for the
+> page. This is the human review the pipeline assumes between extract and munge.
 
-### 7. Build the import bundle -- ascc_data_munger.py
+## E. Image extract  (deterministic, no API)
 
-Parses the reviewed listings and emits the Django-shape CSV bundle.
-
-- in:  `tools/wip/in/<BASE>.csv` + `tools/wip/in/reference_works.csv`
-       + `tools/wip/in/regions.csv` + marking images from step 5
-- out: 11 CSVs to `tools/wip/out/` (see "Bundle contents" below)
-
-```
-uv run python tools/ascc_data_munger.py --input tools/wip/in/<BASE>.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
+```bash
+uv run python tools/ascc_image_extract.py VA_ASCC_CTLG
 ```
 
-`--input` defaults to `tools/wip/in/VA_ASCC_CTLG.csv`. `--input-dir`
-overrides where the reference CSVs are read from (defaults to the input
-CSV's dir). `--reference-work-code` selects the source row from
-`reference_works.csv`; the default is `ASCC1`.
-On success the munger prints the exact load command to run next.
+For each chunk with `Images Above >= 1`, cuts the marking illustration(s) out by
+gap/dark-region geometry (no vision). Writes
+`wip/out/VA_ASCC_CTLG_images/va-<page>-<chunk>-<counter>.png`. Use `--pages 419`
+to re-run a single page after a review correction.
 
-### 8. Load the bundle -- import_ascc_bundle
+Result (VA): 167 subchunks, **205 marking images** (after the chunk-14 review
+fix; 204 before), all `ok`.
 
-Django management command at
-`backend/common/management/commands/import_ascc_bundle.py`. Loads every
-CSV in the directory in dependency order via the import-export Resource
-classes. Side effect: auto-creates a Collection for any Region that lacks
-one.
+### hop 2 -- copy marking images into Django's media root
 
-Run from repo root with `./woco`:
+The munger (next step) reads marking bytes from `MEDIA_ROOT/<region>/`, not from
+`wip/out/`. Copy them:
 
-```
-./woco import_ascc_bundle tools/wip/out/ --dry-run
-./woco import_ascc_bundle tools/wip/out/
+```bash
+mkdir -p backend/media/va
+cp tools/wip/out/VA_ASCC_CTLG_images/*.png backend/media/va/
 ```
 
-Always do a `--dry-run` first (parses and validates every CSV, then rolls
-back). Useful flags:
+## F. Munge  (deterministic, no API)
 
-- `--dry-run`     validate only; commit nothing
-- `--truncate`    wipe all 14 catalog tables first (incompatible with --only)
-- `--only a,b`    load just these stems (order still forced)
-- `--allow-missing`  skip stems whose CSV is absent
+Point `--input` at the extract CSV in `out/`, `--input-dir` at the seeds in `in/`
+(avoids copying the CSV back into `in/`):
 
-### 9. Convert v1 raw data to v2 CSV shape (reference utility)
-
-Convert the v1 `tblRawStateData` export into the same seven-column CSV shape
-that step 3 produces. These outputs currently have no downstream consumer in
-the automated pipeline. They are kept for manual comparison of v1 evidence
-against the ASCC1 baseline.
-
-- in: `tools/wip/in/v1_<REGION>_data.csv`
-- in: optional `tools/wip/in/tblTownmarkImages.csv`
-- out: `tools/wip/in/v1_<REGION>_ocr.csv`
-- out: `tools/wip/in/v1_<REGION>_image_refs.csv`
-
-Run from repo root. Expected exit code: `0`.
-
-```sh
-uv run python tools/v1_to_v2_catalog_format.py \
-  tools/wip/in/v1_VA_data.csv \
-  --images tools/wip/in/tblTownmarkImages.csv \
-  --out tools/wip/in/v1_VA_ocr.csv \
-  --image-refs-out tools/wip/in/v1_VA_image_refs.csv \
-  --region-abbrev VA
+```bash
+uv run python tools/ascc_data_munger.py \
+  --input tools/wip/out/VA_ASCC_CTLG.csv \
+  --input-dir tools/wip/in
 ```
 
-The v2-shaped output has this exact header:
+Writes the full Django-shape CSV set to `wip/out/`: colors (16), letterings (9),
+shapes (16), regions (58, passthrough), reference_works (1, passthrough),
+post_offices (1057), post_office_regions (1057), markings (2813), dates_seen
+(3443), citations (2813), images (276), plus `marking_lineage.csv` sidecar.
 
-```csv
-Listing,Page,Chunk,Images Above,Type,Manuscript,Default Shape
+> **Town-heading date parsing:** the current munger path must
+> `tools/munger/head.py` (`parse_head`) is required to strip bare trailing
+> years off town-table headings (`Accomack C.H 1835` -> `Accomack C.H`).
+> Without it the munger aborts with "PostOffice normalization produced N
+> name(s) with characters outside [A-Z, space, period, single dash]."
+
+**Verify the "Section-region assignment" report** printed at the top of the
+munge output. Listings are assigned the region of the catalog section they
+sit under (META banners matching a TERRITORY-tier name in `regions.csv`,
+optionally prefixed `AS `; a `STATEHOOD` banner resets to the catalog's
+default region). Check that:
+
+- the per-region listing counts match the catalog's section sizes
+  (single-region catalogs like VA show one line: all listings on the default);
+- nothing under "Unmatched banner-like META rows" is a real territory
+  section the vision step misread (e.g. `MICHIGAN TERRlTORY`) -- if it is,
+  fix the row in the extract CSV and re-munge.
+
+A post office listed under several sections (e.g. Detroit) gets one
+`post_office_regions` row per section region, so junction-row count can
+exceed post-office count on territory-bearing catalogs.
+
+## G. Import  (deterministic, no API)
+
+```bash
+uv run python backend/manage.py import_ascc_bundle ./tools/wip/out/
 ```
 
-`Chunk` is the v1 `nRawStateDataID`. `Images Above` counts non-deleted
-`tblTownmarkImages` rows for that raw row. `Default Shape` is blank because v1
-does not provide a clean equivalent.
+Loads in FK-safe order (colors -> letterings -> shapes -> regions ->
+reference_works -> post_offices -> post_office_regions -> markings -> ... ->
+citations -> images). `covers / cover_valuations / cover_markings` are absent for
+this catalog and are skipped. The whole bundle is one transaction -- any error
+rolls everything back (no partial state).
 
-## Bundle contents
+**Pre-reqs the bundle needs in the DB (one-time):**
 
-The munger writes 11 import CSVs. Import load order (parents first):
+1. **A user with `id=1`.** Every row's `created_by/modified_by` references user 1.
+   ```bash
+   uv run python backend/manage.py shell -c "from django.contrib.auth import get_user_model as G; U=G(); U.objects.filter(id=1).exists() or U(id=1,username='admin',is_superuser=True,is_staff=True).save()"
+   ```
+2. **Schema fixes -- check for symptoms first, usually NOT needed.** A truly
+   fresh DB + `migrate` on a staging-based branch produces a complete schema
+   (verified on the MI run, 2026-06-11: import succeeded with zero fixes).
+   The four drifts below were observed once (VA run, 2026-06-09) and were
+   almost certainly residue of an earlier broken-`main` migrate attempt
+   against the same DB. Apply a fix only if its specific import error
+   appears (1364 region_id / 1146 post_office_region / 1054 is_tracing /
+   1062 duplicate storage_filename):
+   ```sql
+   ALTER TABLE post_office MODIFY region_id BIGINT NULL;   -- orphaned NOT NULL col
+   ALTER TABLE images DROP INDEX storage_filename;          -- model says NOT unique
+   ```
+   ```python
+   # create 4 model-declared tables 0001_initial never built, + images.is_tracing:
+   from django.db import connection; from django.apps import apps
+   from common.models import Image
+   with connection.schema_editor() as se:
+       for n in ['PostOfficeRegion','CoverVersion','MarkingRecycleBin','CoverRecycleBin']:
+           se.create_model(apps.get_model('common', n))
+       se.add_field(Image, Image._meta.get_field('is_tracing'))
+   ```
 
+Result (VA): **`Done. new=11559  update=0  skip=0  invalid=0  error=0`**
+(post_offices 1057, post_office_regions 1057, markings 2813, dates_seen 3443,
+citations 2813, images 276, + 58 auto-created Collections).
+
+---
+
+## Verify
+
+1. `./woco dev`, open `http://localhost:8080`.
+2. Search for a Virginia marking; confirm the listing AND its marking image render.
+
+Verified for VA at the API/media layer (what the search page consumes):
+
+```bash
+curl -s http://localhost:8000/api/v2/markings/1/ | python3 -m json.tool   # state VA, region Virginia, 1 image w/ image_url
+curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
+  http://localhost:8000/media/va/va-419-2-1.png                            # 200 image/png
 ```
-colors            generated   leaf lookup
-letterings        generated   leaf lookup
-shapes            generated   leaf lookup
-regions           passthrough  copied from tools/wip/in/regions.csv
-reference_works   passthrough  copied from tools/wip/in/reference_works.csv
-post_offices      generated
-post_office_regions generated junction (post_office + region)
-markings          generated   main table (shape, lettering, color, post_office)
-dates_seen        generated   polymorphic (anchored to markings)
-citations         generated   reference_work + marking
-images            generated   marking tracings (from step 5)
-```
 
-The three legacy cover stems (`covers`, `cover_markings`,
-`cover_valuations`) are optional and no longer emitted by the munger;
-`import_ascc_bundle` loads cleanly without them. Covers are authored by
-hand after the bundle is imported.
+`/api/v2/markings/?page=1` returns `count: 2813`; post-office names are clean
+(0 digit-bearing names; `ACCOMACK`, `ACCOMACK C.H` present).
+
+---
+
+## Gotchas found while validating VA
+
+- **`.env` location:** scripts read `worldcovers/.env`, not the workspace-root `.env`.
+- **Free-tier OpenRouter** keys (no credit) 402 on the paid vision model. Use a funded key.
+- **`pdftoppm`** must be on PATH (poppler). No-sudo option: `brew install poppler`.
+- **Three file-hops:** chunks `out/<BASE>/` -> `in/<BASE>/` (hop 1); marking images
+  `out/<BASE>_images/` -> `backend/media/<region>/` (hop 2); the munger can read the
+  extract CSV from `out/` directly via `--input` + `--input-dir`.
+- **`reference_works.csv` ships with 2 rows** (ASCC1 + ASCC2); the munger requires
+  exactly 1. For the VA baseline we keep ASCC1 (the published 5th edition the scan
+  is from).
+- **`main` branch** can't migrate a fresh DB (`InvalidBasesError`); use `staging`.
+- **`staging` migrates but the schema is incomplete** (4 drifts) -- see the Stage G
+  pre-reqs. This is the single biggest blocker to a clean repro and
+  is Michael's to fix at the migration level.
+
+## Summary of changes this runbook depends on
+
+| Change | Where | Status |
+|--------|-------|--------|
+| `parse_head` town-heading date peel | `tools/munger/head.py` (code) | local patch, branch `reese/issue-1-va-e2e`, **proposed to Michael** |
+| 4 schema fixes + user id=1 | local MySQL only | local workaround; **Michael fixes migrations** |
+| chunk-14 `Images Above` correction | scratch CSV | per-chunk review (expected workflow) |
+| keep ASCC1 in `reference_works.csv` | scratch seed | baseline choice |

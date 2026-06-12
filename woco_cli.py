@@ -5,7 +5,7 @@ equivalent to 'python backend/manage.py runserver' with backend/ on
 sys.path. All built-in and custom Django management commands work
 identically (same args, same exit codes), including the project's
 custom imports (import_ascc_bundle, import_catalog_images,
-import_all_legacy_csv, ...).
+import_apmc_bundle, ...).
 """
 import os
 import sys

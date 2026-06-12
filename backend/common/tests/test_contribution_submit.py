@@ -82,7 +82,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
         response = self.client.post(
             "/api/v2/contributions/",
             {
-                "edit_postmark_id": self.marking.pk,
+                "edit_marking_id": self.marking.pk,
                 "state": "VA",
                 "town": "Richmond",
                 "type": "TOWNMARK",
@@ -101,7 +101,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
         self.assertEqual(response.status_code, 201, response.data)
         contribution = Contribution.objects.get(pk=response.data["id"])
         self.assertEqual(contribution.status, Contribution.STATUS_PENDING)
-        self.assertEqual(contribution.submitted_data["edit_postmark_id"], self.marking.pk)
+        self.assertEqual(contribution.submitted_data["edit_marking_id"], self.marking.pk)
         metas = contribution.submitted_data["marking_image_metas"]
         self.assertEqual(len(metas), 1)
         self.assertEqual(metas[0]["storage_filename"], self.image.storage_filename)
@@ -128,7 +128,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
             created_by=self.user,
             modified_by=self.user,
             submitted_data={
-                "edit_postmark_id": self.marking.pk,
+                "edit_marking_id": self.marking.pk,
                 "submission_kind": "marking",
                 "state": "VA",
                 "town": "Richmond",

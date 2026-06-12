@@ -23,10 +23,6 @@ import NotFound from "./pages/NotFound";
 const CoverEdit = lazy(() => import("./pages/CoverEdit"));
 const EntryDetail = lazy(() => import("./pages/EntryDetail"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
-// MySuggestions is a thin wrapper around Dashboard; lazy-loading it
-// alongside Dashboard keeps both in the same chunk (preventing rollup
-// from pulling Dashboard back into the eager bundle via the wrapper).
-const MySuggestions = lazy(() => import("./pages/MySuggestions"));
 
 const queryClient = new QueryClient();
 // Scroll to top on every route change so pages open at the top.
@@ -118,14 +114,6 @@ const App = () => (
               element={(
                 <RequireAuth>
                   <Dashboard />
-                </RequireAuth>
-              )}
-            />
-            <Route
-              path="/suggestions"
-              element={(
-                <RequireAuth>
-                  <MySuggestions />
                 </RequireAuth>
               )}
             />

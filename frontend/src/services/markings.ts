@@ -11,10 +11,9 @@ import {
 } from "@/lib/contributionImages";
 
 /**
- * Unified Marking service. Replaces the legacy postmarks/ratemarks/auxmarks
- * facade that lived in services/postmarks.ts. The v2 API now returns one
- * row per marking (TOWNMARK | RATEMARK | AUXMARK), so the frontend no
- * longer fans out per-row to ratemark/auxmark side endpoints.
+ * Unified Marking service. The v2 API returns one row per marking
+ * (TOWNMARK | RATEMARK | AUXMARK), so the frontend does not fan out
+ * per-row to type-specific side endpoints.
  *
  * Endpoints (under /api/v2):
  *   GET    /markings/                       list, paginated
@@ -677,7 +676,7 @@ export async function getMarkingByIdRaw(markingId: number): Promise<Record<strin
 }
 
 /**
- * PATCH /api/v2/images/{image_id}/ — update display_order on a single image.
+ * PATCH /api/v2/images/{image_id}/ -- update display_order on a single image.
  * Returns the updated MarkingImage on success, or null on failure.
  *
  * Used by the editor reorder controls on the Record Detail page. The
@@ -794,7 +793,7 @@ export type CoverMarkingReviewStatus = "pending" | "approved" | "rejected" | "ne
 
 export interface AssociatedCover {
   id: number;
-  /** Editor moderation for this cover↔marking link (defaults to approved for legacy rows). */
+  /** Editor moderation for this cover<->marking link (defaults to approved for legacy rows). */
   reviewStatus: CoverMarkingReviewStatus;
   reviewNotes: string | null;
   reviewedAt: string | null;
@@ -809,7 +808,7 @@ export interface AssociatedCover {
    * Thumbnail opens the cover editor with `?edit={id}`.
    */
   contributionDraftId?: number;
-  /** Contribution.status for draft rows (`draft`, `needs_revision`, …). */
+  /** Contribution.status for draft rows (`draft`, `needs_revision`, ...). */
   contributionStatus?: string;
   /** Human-readable title for draft rows (from submitted_data). */
   displayLabel?: string;
@@ -957,7 +956,7 @@ export async function getMarkingCovers(markingId: number): Promise<MarkingCovers
   }
 }
 
-/** Cover↔marking link row from GET /cover-markings/?cover={id}. */
+/** Cover<->marking link row from GET /cover-markings/?cover={id}. */
 export interface CoverMarkingLink {
   id: number;
   coverId: number;
@@ -989,7 +988,7 @@ export type CoverMarkingsByCoverResult = {
   error: string | null;
 };
 
-/** GET /cover-markings/?cover={id} — markings linked to a cover. */
+/** GET /cover-markings/?cover={id} -- markings linked to a cover. */
 export async function getCoverMarkingsByCover(
   coverId: number,
 ): Promise<CoverMarkingsByCoverResult> {

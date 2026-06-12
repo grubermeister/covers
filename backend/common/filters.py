@@ -10,7 +10,7 @@ from .models import CoverMarking, Marking, MarkingType
 
 class MarkingListFilter(django_filters.FilterSet):
     """
-    List-view filters for Marking. Phase 1 ports the prior PostmarkListFilter
+    List-view filters for Marking.
     onto the unified Marking model. The Phase 2 API rewrite will wire this
     into MarkingViewSet and add the `type` discriminator filter that the
     frontend already passes.

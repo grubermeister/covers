@@ -44,7 +44,7 @@ interface SearchableSelectProps {
 
 /**
  * A searchable dropdown (combobox) for long option lists.
- * Use for State, Postmark Type, Color filters, etc.
+ * Use for State, Marking Type, Color filters, etc.
  */
 export function SearchableSelect({
   options,

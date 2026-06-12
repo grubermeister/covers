@@ -129,7 +129,7 @@ MARKING_IMPRESSION_CHOICES = [('Normal', 'Normal'), ('Stencil', 'Stencil'), ('Ne
 class Marking(TimestampedModel):
     """
     A unified postal marking row -- TOWNMARK, RATEMARK, or AUXMARK -- as
-    observed on one or more Covers. Replaces the prior split Postmark /
+    observed on one or more Covers. Replaces the prior split Townmark /
     Ratemark / Auxmark tables.
 
     model.md domain type: markings
@@ -249,7 +249,7 @@ class Contribution(TimestampedModel):
     contributor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='contributions')
     marking = models.OneToOneField(Marking, on_delete=models.CASCADE, related_name='contribution', null=True, blank=True, help_text='Set when approved; Marking created from submitted_data for new entries')
     # Routing target: which institutional Collection this contribution belongs to.
-    # Resolved at submit time from the contributor-supplied state. NOT NULL — every
+    # Resolved at submit time from the contributor-supplied state. NOT NULL -- every
     # contribution must land in a Collection so the right Editors see it.
     collection = models.ForeignKey('Collection', on_delete=models.PROTECT, related_name='contributions')
     submitted_data = models.JSONField(default=dict, blank=True, help_text='Proposed changes (state, town, type, color, description, etc.)')
@@ -614,7 +614,7 @@ class Postcover(TimestampedModel):
 
 class Collection(TimestampedModel):
     """
-    An institutional collection — a curatorial unit that wraps exactly one Region
+    An institutional collection -- a curatorial unit that wraps exactly one Region
     and has many Editor assignments. Contributions are routed to a Collection
     based on the state submitted; only Editors assigned to that Collection
     (or a superuser/Administrator) may review them.
@@ -660,13 +660,13 @@ class CollectionAssignment(TimestampedModel):
         ordering = ['collection', 'user']
 
     def __str__(self):
-        return f'{self.user} → {self.collection}'
+        return f'{self.user} -> {self.collection}'
 
     def save(self, *args, **kwargs):
         """
         On assignment, ensure the user is in the Editors group so that group-level
-        permissions (review_contribution, change_postmark, etc.) are granted
-        immediately. Removal is intentionally NOT auto-demoted — admins explicitly
+        permissions (review_contribution, catalog write access, etc.) are granted
+        immediately. Removal is intentionally NOT auto-demoted -- admins explicitly
         remove from Editors group via the user admin if they want to revoke perms.
         """
         creating = self._state.adding
@@ -1018,7 +1018,7 @@ class CoverMarking(TimestampedModel):
         max_length=20,
         choices=REVIEW_STATUS_CHOICES,
         default=REVIEW_APPROVED,
-        help_text='Editor moderation state for this cover–marking association.',
+        help_text='Editor moderation state for this cover-marking association.',
     )
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL,

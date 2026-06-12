@@ -60,11 +60,12 @@ const Help = ({ singleDocSlug }: { singleDocSlug?: string }) => {
         if (!response.ok) {
           throw new Error(`Failed to load help docs (${response.status})`);
         }
-        const data = await response.json();
-        const rawItems = Array.isArray(data) ? data : data?.results || [];
+        const data = (await response.json()) as { results?: unknown[] } | unknown[];
+        const rawItems = Array.isArray(data) ? data : data.results || [];
         const items: HelpDoc[] = rawItems
-          .map((item: any) => {
-            if (!item) return null;
+          .map((raw) => {
+            if (!raw || typeof raw !== "object") return null;
+            const item = raw as Record<string, unknown>;
             const slug = String(item.slug ?? "").trim();
             const title = String(item.title ?? "").trim();
             const sourceFile = String(item.source_file ?? "").trim();

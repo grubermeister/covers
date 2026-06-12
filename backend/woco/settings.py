@@ -172,7 +172,7 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
-# React SPA (frontend) – built output served as site home
+# React SPA (frontend) - built output served as site home
 # Put your React app in frontend/ and run `npm run build`; index.html + /assets/ served from here
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
 
@@ -230,7 +230,7 @@ REST_FRAMEWORK = {
 # API Documentation
 SPECTACULAR_SETTINGS = {
     "TITLE": "WorldCovers API",
-    "DESCRIPTION": "WorldCovers REST interface for postmark and stampless cover data",
+    "DESCRIPTION": "WorldCovers REST interface for postal marking and stampless cover data",
     "VERSION": "2.0.0",
     "SWAGGER_UI_SETTINGS": {
         "supportedSubmitMethods": [],
@@ -247,9 +247,9 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
 
 # Image Processing Settings
-POSTMARK_IMAGE_MAX_WIDTH = 4000
-POSTMARK_IMAGE_MAX_HEIGHT = 4000
-POSTMARK_IMAGE_QUALITY = 95
+MARKING_IMAGE_MAX_WIDTH = 4000
+MARKING_IMAGE_MAX_HEIGHT = 4000
+MARKING_IMAGE_QUALITY = 95
 
 # Logging Configuration
 DJANGO_LOG_LEVEL = "DEBUG" if DEBUG else config("DJANGO_LOG_LEVEL", default="WARNING")

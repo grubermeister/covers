@@ -11,8 +11,7 @@ Expected exit code 0.
 These cover the change that lets a cover Contribution flow through the same
 approve workflow as a marking: a draft cover lives only as a Contribution, and
 on editor approval a Cover + CoverMarking (and child rows) are materialized --
-mirroring how a marking Contribution materializes a Marking. Before this change
-common.contribution_apply raised ContributionApplyNotImplemented for covers.
+mirroring how a marking Contribution materializes a Marking.
 """
 from django.contrib.auth import get_user_model
 from django.test import TestCase

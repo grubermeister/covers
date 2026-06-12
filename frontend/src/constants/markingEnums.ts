@@ -1,11 +1,11 @@
 /**
- * Inline enums from the v2 Postmark contract (see docs/model.md).
+ * Inline enums from the v2 Marking contract (see docs/model.md).
  *
  * In v2, `date_fmt`, `date_type`, and `impression` are inline enums on
- * the Postmark record — they are not separate DRF resources.
+ * the Marking record. They are not separate DRF resources.
  */
 
-/** v2 Postmark.date_fmt values */
+/** v2 Marking.date_fmt values */
 export const DATE_FMT_VALUES = ["MD", "MDD", "YD", "YMD", "YMDD"] as const;
 export type DateFmt = (typeof DATE_FMT_VALUES)[number];
 
@@ -17,11 +17,11 @@ export const DATE_FMT_LABELS: Record<DateFmt, string> = {
   YMDD: "Year / Month / Day (two-digit)",
 };
 
-/** v2 Postmark.date_type values */
+/** v2 Marking.date_type values */
 export const DATE_TYPE_VALUES = ["BISHOP MARK", "FRANKLIN MARK", "QUAKER DATE"] as const;
 export type DateType = (typeof DATE_TYPE_VALUES)[number];
 
-/** v2 Postmark.impression values */
+/** v2 Marking.impression values */
 export const IMPRESSION_VALUES = ["Normal", "Stencil", "Negative"] as const;
 export type Impression = (typeof IMPRESSION_VALUES)[number];
 
@@ -47,7 +47,7 @@ export const DATE_FMT_OPTIONS: DateFormatOption[] = DATE_FMT_VALUES.map(
 
 /**
  * Drop-in replacement for the old `getDateFormats()` service.
- * Returns the static list — no network call.
+ * Returns the static list; no network call.
  */
 export async function getDateFormats(): Promise<DateFormatOption[]> {
   return DATE_FMT_OPTIONS;

@@ -5,9 +5,7 @@ The approve view in backend/common/api/v2/views.py wraps a call to
 apply_contribution_to_catalog(contrib) in transaction.atomic(); this
 module must therefore NOT open its own transaction. On any error it
 raises -- ContributionApplyError for malformed submission data (becomes
-a 500 with a field-specific message), or ContributionApplyNotImplemented
-for code paths that are not yet supported (becomes a 501 per the
-view's existing NotImplementedError branch).
+a 500 with a field-specific message).
 
 Scope:
   * Marking submissions (type in TOWNMARK/RATEMARK/AUXMARK): create one
@@ -22,7 +20,7 @@ Scope:
     view (common/api/v2/views.py ContributionViewSet.approve) branches on
     the return type.
   * Edit flow (update-in-place, no duplicate row):
-      - Marking edit: payload carries edit_postmark_id. The existing Marking
+      - Marking edit: payload carries edit_marking_id. The existing Marking
         is re-resolved and overwritten; its Images and Citations are
         reconciled against the FULL desired set in submitted_data.
         apply_contribution_to_catalog returns that existing Marking.
@@ -85,14 +83,6 @@ class ContributionApplyError(ValueError):
     """
 
 
-class ContributionApplyNotImplemented(NotImplementedError):
-    """Raised for submission paths that are intentionally not yet built.
-
-    The approve view maps this to HTTP 501 so editors can see that the
-    feature is pending rather than that their data was rejected.
-    """
-
-
 def apply_contribution_to_catalog(contrib):
     """
     Apply an approved Contribution to the catalog by creating a Marking
@@ -112,9 +102,7 @@ def apply_contribution_to_catalog(contrib):
             "TOWNMARK/RATEMARK/AUXMARK; got {!r}.".format(sub_type)
         )
 
-    edit_marking_id = _parse_int(
-        payload.get("edit_postmark_id") or payload.get("editPostmarkId")
-    )
+    edit_marking_id = _parse_int(payload.get("edit_marking_id"))
     if edit_marking_id is not None:
         return _apply_marking_edit(contrib, payload, actor, edit_marking_id)
 
@@ -1096,5 +1084,4 @@ __all__ = [
     "apply_contribution_to_catalog",
     "apply_cover_contribution_to_catalog",
     "ContributionApplyError",
-    "ContributionApplyNotImplemented",
 ]

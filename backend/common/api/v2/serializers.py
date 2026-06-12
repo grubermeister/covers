@@ -1,7 +1,7 @@
 ###################################################################################################
 ## WoCo Commons - API v2 Serializers (Phase 2 rewrite)
 ##
-## Unified Marking model: Postmark / Ratemark / Auxmark are now rows in a single
+## Unified Marking model: Townmark / Ratemark / Auxmark are rows in a single
 ## Marking table discriminated by `type`. CoverMarking carries placement.
 ## CoverValuation belongs to Cover. DateSeen is polymorphic over
 ## (subject_type, subject_id) and can be attached to a Cover or a Marking.
@@ -73,13 +73,14 @@ class ColorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Color
         fields = "__all__"
-        read_only_fields = ["id", "created_date", "modified_date"]
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class RegionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Region
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class PostOfficeSerializer(serializers.ModelSerializer):
@@ -92,25 +93,28 @@ class PostOfficeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PostOffice
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class LetteringSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lettering
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class ShapeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shape
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class ReferenceWorkSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReferenceWork
         fields = "__all__"
-        read_only_fields = ["id", "created_date", "modified_date"]
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class FAQEntrySerializer(serializers.ModelSerializer):
@@ -301,8 +305,8 @@ class ImageSerializer(serializers.ModelSerializer):
         like 'va/<uuid>.png'. The public URL is MEDIA_URL + storage_filename,
         e.g. /media/va/<uuid>.png.
 
-        Back-compat: storage_filename starting with 'postmarks/' is from the
-        original v1 layout; those files still live at MEDIA_ROOT/postmarks/...
+        Some imported storage_filename values include their media subdirectory;
+        those files still live under MEDIA_ROOT at that exact path.
         """
         storage = (obj.storage_filename or "").lstrip("/")
         if not storage:
@@ -780,7 +784,7 @@ def _contribution_submitted_data_is_cover(sd) -> bool:
     kind = str(sd.get("submission_kind") or sd.get("submissionKind") or "").strip().lower()
     if kind == "cover":
         return True
-    if kind in {"marking", "postmark", "townmark", "ratemark", "auxmark"}:
+    if kind in {"marking", "townmark", "ratemark", "auxmark"}:
         return False
     type_value = str(sd.get("type") or "").strip().upper()
     has_cover_type = type_value in {"FC", "FL"}
@@ -800,7 +804,7 @@ def _contribution_target_marking_id(obj):
     if _contribution_submitted_data_is_cover(sd):
         raw = sd.get("parent_marking_id") or sd.get("marking_id")
     else:
-        raw = sd.get("edit_postmark_id") or sd.get("original_marking_id")
+        raw = sd.get("edit_marking_id") or sd.get("original_marking_id")
     if raw in (None, ""):
         return None
     try:
@@ -893,7 +897,7 @@ class ContributionListSerializer(serializers.ModelSerializer):
                 parts.append(date)
             if parent not in (None, ""):
                 parts.append(f"Marking #{parent}")
-            label = " · ".join([p for p in parts if p])
+            label = " - ".join([p for p in parts if p])
             return label or f"Cover draft #{obj.id}"
 
         town = (sd.get("town") or "").strip()
