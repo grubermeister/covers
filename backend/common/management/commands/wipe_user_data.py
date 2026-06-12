@@ -6,7 +6,7 @@ editor curation config (Collections + assignments) untouched.
 Intended workflow -- run this FIRST, then refresh the catalog:
 
     python manage.py wipe_user_data
-    python manage.py import_ascc_bundle tools/wip/cache/ascc1 --truncate
+    python manage.py import_ascc_bundle tools/wip/out --truncate
 
 After both steps the system holds only freshly imported catalog entries, your
 existing user accounts, and the editor assignments that route future
@@ -147,5 +147,5 @@ class Command(BaseCommand):
         self.stdout.write(self.style.SUCCESS(summary))
         if not dry_run:
             self.stdout.write(
-                "Next: python manage.py import_ascc_bundle tools/wip/cache/ascc1 --truncate"
+                "Next: python manage.py import_ascc_bundle tools/wip/out --truncate"
             )

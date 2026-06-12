@@ -56,12 +56,13 @@ From a local checkout with prepared `tools/wip/` and `backend/media/` data:
 Current server-side reload sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/cache/ascc1
-uv run python backend/manage.py apply_ascc2_overlay ...
+uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
 ```
 
-This refresh does not call `wipe_user_data` and does not pass `--truncate`.
-Existing rows are updated in place by the import and overlay commands.
+This refresh does not call `wipe_user_data`. It does pass `--truncate`, which
+deletes all 14 catalog import tables before reloading the bundle. Run
+`wipe_user_data` first when submission, version, and recycle-bin history must
+also be cleared.
 
 ## Auth Backups
 
