@@ -1,0 +1,74 @@
+"""Tests for the trailing-date peel on town-table headings (munger.head).
+
+Covers the decade-suffix range forms found in the MD manuscript table
+("Harford 1780's-1832", "Fred(erick)Town 1780's-1820's"), which the
+original MS_DATE_AT_END only allowed on the LAST element of a range.
+
+Run from repo root:
+    .venv/bin/python -m unittest discover -s tools -p 'test_munger_head_dates.py'
+
+Expected exit code: 0.
+"""
+
+import sys
+import unittest
+from pathlib import Path
+
+import pandas as pd
+
+TOOLS_DIR = Path(__file__).resolve().parent
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from munger.head import MS_DATE_AT_END, parse_head
+
+
+def _head_row(seg_head):
+    return pd.Series({'seg_head': seg_head, 's1_relationship': False})
+
+
+def _parsed_name(seg_head):
+    return parse_head(_head_row(seg_head))['head_name_body']
+
+
+class TestMsDateAtEnd(unittest.TestCase):
+
+    def test_decade_suffix_on_first_range_element(self):
+        # MD manuscript-table forms that previously failed to peel.
+        for text, date in [
+            ("Harford 1780's-1832", "1780's-1832"),
+            ("Queenstown 1780's-1850's", "1780's-1850's"),
+            ("Fredtown 1780s-1820s", "1780s-1820s"),
+        ]:
+            m = MS_DATE_AT_END.search(text)
+            self.assertIsNotNone(m, text)
+            self.assertEqual(m.group(1), date)
+
+    def test_existing_forms_still_match(self):
+        # VA baseline forms (regression guard for the generalization).
+        for text, date in [
+            ("Accomack C.H 1835", "1835"),
+            ("Aquia 1811,1849-55", "1811,1849-55"),
+            ("Arbor Hill 1850's", "1850's"),
+            ("Yorktown 1824,1830,1850", "1824,1830,1850"),
+        ]:
+            m = MS_DATE_AT_END.search(text)
+            self.assertIsNotNone(m, text)
+            self.assertEqual(m.group(1), date)
+
+    def test_embedded_year_not_peeled_without_separator(self):
+        self.assertIsNone(MS_DATE_AT_END.search("Mills1835"))
+
+
+class TestParseHeadPeel(unittest.TestCase):
+
+    def test_peels_decade_range_from_town_heading(self):
+        self.assertEqual(_parsed_name("Harford 1780's-1832"), "Harford")
+        self.assertEqual(_parsed_name("Queenstown 1780's-1850's"), "Queenstown")
+
+    def test_plain_heading_unchanged(self):
+        self.assertEqual(_parsed_name("Accomack C.H 1835"), "Accomack C.H")
+
+
+if __name__ == '__main__':
+    unittest.main()

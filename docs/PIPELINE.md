@@ -118,6 +118,15 @@ Result (VA): **1,596 rows** (1,539 LISTING + 57 META), 167 chunks with
 > and the munger then aborts on the missing file. Fix: correct that row's
 > `Images Above` to the true count in the CSV and re-run image-extract for the
 > page. This is the human review the pipeline assumes between extract and munge.
+>
+> **Known limitation (MD run, 2026-06-12):** image-extract separates
+> illustrations from text at the chunk's single largest vertical gap. On dense
+> pages (MD's Baltimore section) real tracings can sit below that cut and are
+> unreachable — the review can only reduce the count and forfeit those images
+> (listings still import; ~14 forfeits on MD vs 3 on FL). Candidate fix: reuse
+> the chunk stage's illustration-block classification instead of re-deriving
+> the boundary. Forfeits are cataloged per state in the workspace
+> `docs/<st>-edge-cases.md`.
 
 ## E. Image extract  (deterministic, no API)
 
@@ -259,6 +268,10 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 - **`reference_works.csv` ships with 2 rows** (ASCC1 + ASCC2); the munger requires
   exactly 1. For the VA baseline we keep ASCC1 (the published 5th edition the scan
   is from). See DECISIONS.md.
+- **Non-numeric valuations abort the munger.** MD's Baltimore Postmaster's
+  Provisional row is priced "Rare"; there is no valuation representation for it
+  yet, so such rows are provisionally re-typed `LISTING→META` in the scratch
+  CSV until one exists (expect "Rare" in other states too).
 - **`main` branch** can't migrate a fresh DB (`InvalidBasesError`); use `staging`.
 - **`staging` migrates but the schema is incomplete** (4 drifts) — see the Stage G
   pre-reqs and DECISIONS.md. This is the single biggest blocker to a clean repro and

@@ -1771,7 +1771,7 @@ def main(argv=None):
     # ======================================================================
     _apostrophe_re = re.compile(r"[\u2019']")  # straight + curly apostrophe
     _amp_re        = re.compile(r"\s*&\s*")
-    _strip_punct   = re.compile(r"[,/=()\[\]:`*]")
+    _strip_punct   = re.compile(r"[,/=()\[\]:;_`*?]")
     _double_dash   = re.compile(r"-{2,}")
     _multi_space   = re.compile(r"\s+")
     _edge_trim     = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
