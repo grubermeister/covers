@@ -6,6 +6,8 @@
 
 # Vite cache
 frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 
 # Local / legacy data (optional: remove if you want to track)
 frontend/public/Old Data/
@@ -268,3 +270,4 @@ tools/wip/**/*.jpeg
 /backend/imports
 docs/data/
 docs/.project
+overview.md

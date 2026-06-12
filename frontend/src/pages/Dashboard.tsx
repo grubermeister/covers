@@ -101,8 +101,6 @@ function contributionTitleFromSubmittedData(
   const inscription = String(
     submittedData.inscription_txt ??
       submittedData.inscriptionTxt ??
-      submittedData.postmark_text ??
-      submittedData.postmarkText ??
       "",
   ).trim();
   const location = [town, state].filter(Boolean).join(", ");
@@ -112,7 +110,7 @@ function contributionTitleFromSubmittedData(
   return `Submission #${fallbackId}`;
 }
 
-type DashboardTab = "submissions" | "suggestions" | "editor";
+type DashboardTab = "submissions" | "editor";
 
 interface DashboardItem {
   id: number;
@@ -129,8 +127,8 @@ interface DashboardItem {
   image_url: string | null;
   marking_id?: number | null;
   cover_id?: number | null;
-  /** True when this is a suggested edit to an existing catalog entry (not a new submission). */
-  isSuggestion?: boolean;
+  /** True when this is an edit to an existing catalog entry. */
+  isCatalogEdit?: boolean;
   /** True when this contribution is a cover (vs a marking); routes editing to CoverEdit. */
   isCover?: boolean;
   /** Parent marking id for a cover contribution; needed to build the CoverEdit route. */
@@ -323,7 +321,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   // When returning from contribution detail, switch to editor tab if requested
   useEffect(() => {
     const tab = (location.state as { tab?: DashboardTab } | null)?.tab;
-    if (tab === "editor" || tab === "submissions" || tab === "suggestions") {
+    if (tab === "editor" || tab === "submissions") {
       setActiveTab(tab);
     }
   }, [location.state]);
@@ -336,14 +334,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [goToPageInput, setGoToPageInput] = useState("");
   const itemsPerPage = 10;
 
-  // Suggestions state
-  const [suggestions, setSuggestions] = useState<DashboardItem[]>([]);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(true);
-  const [suggestionsPage, setSuggestionsPage] = useState(1);
-  const [suggestionsGoToInput, setSuggestionsGoToInput] = useState("");
-  const suggestionsPageSize = 10;
-
-  // Editor tab: history of user suggestions (all contributions in assigned states), not full catalog
+  // Editor tab: history of user contributions in assigned states, not full catalog.
   const [editorHistoryItems, setEditorHistoryItems] = useState<EditorHistoryItem[]>([]);
   // Recycle-bin markings shown when editorHistoryStatusFilter === "removed".
   // Kept separate from editorHistoryItems (contributions) because the rows are
@@ -426,9 +417,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
 
   // Prevent duplicate fetches during rapid re-renders / user rehydration.
   const submissionsInFlightKey = useRef<string | null>(null);
-  const suggestionsInFlightKey = useRef<string | null>(null);
-
-  // Fetch current user's contributions for "My Submissions" (new catalog entries)
+  // Fetch current user's contributions for "My Submissions".
   useEffect(() => {
     if (!user) {
       setSubmissions([]);
@@ -443,7 +432,8 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     const fetchSubmissions = async () => {
       setLoading(true);
       try {
-        // Fetch all contributions (new submissions + suggestions) so both appear in My Submissions.
+        // Fetch all contributor-owned contributions so submissions and edit
+        // drafts appear in one canonical My Submissions list.
         // rawItems carry dynamic camelCase-or-snake_case display fields the mapper reads positionally.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const list = (await listContributions()).rawItems as any[];
@@ -499,9 +489,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                 : typeof c.marking?.id === "number"
                   ? c.marking.id
                   : null;
-          const isSuggestion =
-            c.is_suggestion === true ||
-            !!(markingId || submittedData.original_marking_id || submittedData.originalMarkingId || c.original_marking_id);
+          const isCatalogEdit = !!(markingId || submittedData.original_marking_id || submittedData.originalMarkingId);
 
           return {
             id: c.id,
@@ -523,7 +511,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
             image_url: imageUrl,
             marking_id: markingId ?? null,
             cover_id: coverId,
-            isSuggestion,
+            isCatalogEdit,
             isCover,
             cover_parent_marking_id: coverParentMarkingId,
           } as DashboardItem;
@@ -557,107 +545,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [user, location.pathname]);
 
-  // Fetch suggestions (corrections) for the current user
-  useEffect(() => {
-    if (!user) {
-      setSuggestions([]);
-      setSuggestionsLoading(false);
-      return;
-    }
-
-    const load = async () => {
-      const fetchKey = `${user.id}:suggestions`;
-      if (suggestionsInFlightKey.current === fetchKey) return;
-      suggestionsInFlightKey.current = fetchKey;
-
-      setSuggestionsLoading(true);
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const list = (await listContributions({ kind: "suggestion" })).rawItems as any[];
-        if (!list.length) {
-          setSuggestions([]);
-          return;
-        }
-        const mapped: DashboardItem[] = list.map((c) => {
-          const submittedData =
-            c.submittedData && typeof c.submittedData === "object"
-              ? c.submittedData
-              : c.submitted_data && typeof c.submitted_data === "object"
-                ? c.submitted_data
-                : {};
-          const state = (c.stateDisplay || c.state_display || submittedData.state || "").trim();
-          const town = (c.townDisplay || c.town_display || submittedData.town || "").trim();
-
-          const imageUrl = resolveSubmissionImageUrl(c, submittedData);
-
-          const displayName =
-            [
-              [town, state].filter(Boolean).join(", "),
-              c.shapeName || c.shapeDisplay || c.typeDisplay || c.shape || c.type || submittedData.shape || submittedData.type,
-            ]
-              .filter((x) => x && String(x).trim().toLowerCase() !== "unknown")
-              .join(" — ") || `Suggestion #${c.id}`;
-
-          const dateRange =
-            c.dateRange ||
-            c.date_range ||
-            submittedData.date_range ||
-            submittedData.dateRange ||
-            submittedData.first_seen ||
-            (submittedData.firstSeen
-              ? submittedData.lastSeen
-                ? `${submittedData.firstSeen}-${submittedData.lastSeen}`
-                : String(submittedData.firstSeen)
-              : "");
-
-          return {
-            id: c.id,
-            name: displayName,
-            town,
-            state,
-            dateRange,
-            size:
-              c.sizeDisplay ||
-              c.size ||
-              formatSizeFromSubmittedData(submittedData as Record<string, unknown> | undefined) ||
-              (submittedData as { dimensions?: string } | undefined)?.dimensions ||
-              "",
-            shape: c.shapeName || c.shapeDisplay || c.typeDisplay || c.shape || c.type || submittedData.shape || submittedData.type || "",
-            color: c.colorDisplay || c.color || submittedData.color || "",
-            status: String(c.status || "pending"),
-            created_at: String(c.createdAt || c.created_at || ""),
-            description: c.description || submittedData.description || "",
-            image_url: imageUrl,
-            marking_id:
-              typeof c.marking_id === "number"
-                ? c.marking_id
-                : typeof c.markingId === "number"
-                  ? c.markingId
-                  : typeof c.marking?.id === "number"
-                    ? c.marking.id
-                    : null,
-          } as DashboardItem;
-        });
-        setSuggestions(mapped);
-      } catch (err) {
-        toast({
-          title: "Error loading suggestions",
-          description: err instanceof Error ? err.message : "Could not load your suggestions.",
-          variant: "destructive",
-        });
-        setSuggestions([]);
-      } finally {
-        setSuggestionsLoading(false);
-        if (suggestionsInFlightKey.current === fetchKey) {
-          suggestionsInFlightKey.current = null;
-        }
-      }
-    };
-
-    load();
-  }, [user, toast]);
-
-  // Load editor history (all user suggestions in assigned states) for the Editor tab
+  // Load editor history for assigned states.
   useEffect(() => {
     if (!isEditor || activeTab !== "editor") return;
     setEditorHistoryError(null);
@@ -947,75 +835,6 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     setCurrentPage(1);
   }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, mySubmissionsSort, dateFrom, dateTo]);
 
-  // Suggestions derived state – reuse same filter semantics as submissions
-  const filteredSuggestions = useMemo(() => {
-    return suggestions.filter((suggestion) => {
-      // Text search (name + description, mirroring Catalog Search)
-      if (searchQuery.trim()) {
-        const q = searchQuery.trim().toLowerCase();
-        const nameMatch =
-          suggestion.name != null && String(suggestion.name).toLowerCase().includes(q);
-        const descriptionMatch =
-          suggestion.description != null &&
-          String(suggestion.description).toLowerCase().includes(q);
-        if (!nameMatch && !descriptionMatch) return false;
-      }
-
-      // Status filter (API uses "needs_revision"; filter value matches)
-      if (statusFilter !== "all") {
-        const statusNorm = String(suggestion.status || "").toLowerCase();
-        const filterNorm = statusFilter.toLowerCase();
-        if (statusNorm !== filterNorm) return false;
-      }
-
-      // State filter
-      if (stateFilter !== "all" && suggestion.state !== stateFilter) return false;
-
-      // Town filter
-      if (townFilter.trim()) {
-        const tq = townFilter.trim().toLowerCase();
-        if (!suggestion.town || !suggestion.town.toLowerCase().includes(tq)) return false;
-      }
-
-      // Type filter
-      if (shapeFilter !== "all" && suggestion.shape !== shapeFilter) return false;
-
-      // Color filter
-      if (colorFilter !== "all" && suggestion.color !== colorFilter) return false;
-
-      // Created date range filter
-      if (dateFrom && new Date(suggestion.created_at) < new Date(dateFrom)) return false;
-      if (dateTo && new Date(suggestion.created_at) > new Date(dateTo)) return false;
-
-      return true;
-    });
-  }, [
-    suggestions,
-    searchQuery,
-    statusFilter,
-    stateFilter,
-    townFilter,
-    shapeFilter,
-    colorFilter,
-    dateFrom,
-    dateTo,
-  ]);
-
-  const suggestionsTotal = filteredSuggestions.length;
-  const suggestionsTotalPages = Math.max(1, Math.ceil(suggestionsTotal / suggestionsPageSize));
-  const suggestionsStartIndex = (suggestionsPage - 1) * suggestionsPageSize;
-  const suggestionsPageItems = filteredSuggestions.slice(
-    suggestionsStartIndex,
-    suggestionsStartIndex + suggestionsPageSize,
-  );
-  const suggestionsPageStart = suggestionsTotal === 0 ? 0 : suggestionsStartIndex + 1;
-  const suggestionsPageEnd = Math.min(suggestionsStartIndex + suggestionsPageSize, suggestionsTotal);
-
-  // Reset suggestions pagination when shared filters change
-  useEffect(() => {
-    setSuggestionsPage(1);
-  }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, dateFrom, dateTo]);
-
   // In "removed" mode the rows on the page come from removedMarkings, not the
   // contribution list, so the page-end count must read that length instead.
   const editorHistoryRowsOnPage =
@@ -1119,12 +938,12 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
               </h1>
               <p className="text-muted-foreground">
                 {isEditor && activeTab === "editor"
-                  ? "Review pending submissions and see history of user suggestions in your assigned states."
-                  : "View and track your submissions and suggestions."}
+                  ? "Review pending submissions and see contribution history in your assigned states."
+                  : "View and track your submissions."}
               </p>
               {isEditor && user?.assigned_collections && user.assigned_collections.length > 0 && (
                 <p className="text-muted-foreground text-sm mt-1">
-                  Role: {user.is_superuser ? "Administrator" : "Editor"} — Assigned Collections: {user.assigned_collections.map((c) => c.name).join(", ")}
+                  Role: {user.is_superuser ? "Administrator" : "Editor"} - Assigned Collections: {user.assigned_collections.map((c) => c.name).join(", ")}
                 </p>
               )}
             </div>
@@ -1140,17 +959,6 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                 >
                   My Submissions
                 </Button>
-                {/* My Suggestions – commented out for now
-                <Button
-                  type="button"
-                  variant={activeTab === "editor" ? "secondary" : "ghost"}
-                  size="sm"
-                  className="rounded-l-none"
-                  onClick={() => setActiveTab("editor")}
-                >
-                  User Submissions
-                </Button>
-                */}
                 <Button
                   type="button"
                   variant={activeTab === "editor" ? "secondary" : "ghost"}
@@ -1282,7 +1090,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       errorMessage="Failed to load types"
                       searchPlaceholder="Search types..."
                       emptyMessage="No type found."
-                      aria-label="Filter by postmark type"
+                      aria-label="Filter by marking type"
                       disabled={filtersDisabled}
                     />
                   </div>
@@ -1704,17 +1512,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
             </div>
           )}
 
-          {/* My Suggestions – commented out for now
-          {activeTab === "suggestions" && (
-            <div className="flex flex-col lg:flex-row gap-6">
-              ...suggestions filters and list...
-            </div>
-          )}
-          */}
-
           {activeTab === "editor" && isEditor && (
             <div className="flex flex-col lg:flex-row gap-6">
-              {/* Filters sidebar — Status filter for history of user suggestions */}
+              {/* Filters sidebar for contribution history. */}
               <aside className={`lg:w-80 space-y-6 ${filtersOpen ? "block" : "hidden lg:block"}`}>
                 <Card className="shadow-archival-md">
                   <CardContent className="pt-6 space-y-4">
@@ -1978,7 +1778,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
 
               <div className="flex-1 flex flex-col gap-6">
               <main className="flex-1 space-y-4">
-                {/* History of user suggestions (contributions in assigned states) */}
+                {/* Contribution history in assigned states. */}
                 <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-card p-4 rounded-lg border border-border shadow-archival-sm">
                   <div>
                     <p className="text-sm text-muted-foreground">
@@ -2137,7 +1937,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                         No submissions in history for the selected status.
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        User suggestions (pending, approved, rejected, or needs revision) in your assigned states will appear here.
+                        User contributions in your assigned states will appear here.
                       </p>
                     </CardContent>
                   </Card>
@@ -2147,7 +1947,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       const title = [item.town_display, item.state_display].filter(Boolean).join(", ");
                       const shapeStr = (item.shape_display || "").trim();
                       const fallbackName =
-                        [title, shapeStr].filter((x) => x && String(x).trim().toLowerCase() !== "unknown").join(" — ") ||
+                        [title, shapeStr].filter((x) => x && String(x).trim().toLowerCase() !== "unknown").join(" -- ") ||
                         title ||
                         `Submission #${item.id}`;
                       const displayLabel = item.display_name || fallbackName;

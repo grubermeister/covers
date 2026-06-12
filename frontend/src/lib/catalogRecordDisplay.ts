@@ -20,7 +20,7 @@ export function markingTypeLabel(type: string | null | undefined): string {
   return MARKING_TYPE_LABELS[key] ?? "";
 }
 
-function postmarkTextFromRecord(record: MarkingRecord): string {
+function markingTextFromRecord(record: MarkingRecord): string {
   const cat = record.catalogTxt?.trim();
   const ins = record.inscriptionTxt?.trim();
   if (cat && ins) return `${cat} (${ins})`;
@@ -59,8 +59,8 @@ export type CatalogFieldValues = {
   regionAbbrev: string;
   manuscript: string;
   desc: string;
-  postmarkTextLines: string[];
-  postmarkTextSingle: string;
+  markingTextLines: string[];
+  markingTextSingle: string;
   shape: string;
   lettering: string;
   dimensions: string;
@@ -100,13 +100,13 @@ function dimensionsField(record: MarkingRecord): string {
 }
 
 export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValues {
-  const combined = postmarkTextFromRecord(record);
-  const postmarkTextLines = combined
+  const combined = markingTextFromRecord(record);
+  const markingTextLines = combined
     ? combined.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
     : [];
-  const postmarkTextSingle =
-    postmarkTextLines.length <= 1
-      ? displayCatalogField(postmarkTextLines.length === 1 ? postmarkTextLines[0] : combined)
+  const markingTextSingle =
+    markingTextLines.length <= 1
+      ? displayCatalogField(markingTextLines.length === 1 ? markingTextLines[0] : combined)
       : "";
 
   return {
@@ -116,8 +116,8 @@ export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValu
     regionAbbrev: displayCatalogField(record.stateAbbrev),
     manuscript: displayCatalogField(record.isManuscript ? "Yes" : "No"),
     desc: displayCatalogField(record.desc),
-    postmarkTextLines: postmarkTextLines.length > 1 ? postmarkTextLines : [],
-    postmarkTextSingle,
+    markingTextLines: markingTextLines.length > 1 ? markingTextLines : [],
+    markingTextSingle,
     shape: displayCatalogField(record.shapeName),
     lettering: displayCatalogField(record.letteringName),
     dimensions: displayCatalogField(dimensionsField(record)),

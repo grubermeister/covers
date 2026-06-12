@@ -61,13 +61,17 @@ const Collections = () => {
     apiClient
       .get("/regions/", { params: { page_size: 500 } })
       .then((res) => {
-        const rows = Array.isArray(res.data) ? res.data : res.data?.results || [];
+        const data = res.data as { results?: unknown[] } | unknown[];
+        const rows = Array.isArray(data) ? data : data.results || [];
         const opts: RegionOption[] = rows
-          .map((r: any) => ({
-            id: Number(r.id ?? r.region_id),
-            name: String(r.name ?? "").trim(),
-            abbrev: String(r.abbrev ?? "").trim(),
-          }))
+          .map((raw) => {
+            const r = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+            return {
+              id: Number(r.id ?? r.region_id),
+              name: String(r.name ?? "").trim(),
+              abbrev: String(r.abbrev ?? "").trim(),
+            };
+          })
           .filter((r: RegionOption) => r.id && r.name);
         setRegions(opts.sort((a, b) => a.name.localeCompare(b.name)));
       })

@@ -10,7 +10,7 @@ export interface CoverApiResultItem {
   cover_id: number;
   cover_key: string;
   owner_username: string;
-  postmark_count: number;
+  marking_count: number;
   created_date: string;
 }
 
@@ -27,7 +27,7 @@ export interface CoverRecord {
   id: number;
   coverKey: string;
   ownerUsername: string;
-  postmarkCount: number;
+  markingCount: number;
   createdDate: string;
 }
 
@@ -36,7 +36,7 @@ function mapApiResultToRecord(item: CoverApiResultItem): CoverRecord {
     id: item.cover_id,
     coverKey: item.cover_key,
     ownerUsername: item.owner_username,
-    postmarkCount: item.postmark_count,
+    markingCount: item.marking_count,
     createdDate: item.created_date,
   };
 }
@@ -58,10 +58,10 @@ export async function getCovers(): Promise<CoverRecord[]> {
  *
  * The backend exposes three sibling resources that together describe a
  * marking's covers:
- *   * /covers/         — the Cover row itself (code, color, type, dims, …)
- *   * /cover-markings/ — the link row tying a Cover to a Marking, with
+ *   * /covers/         -- the Cover row itself (code, color, type, dims, ...)
+ *   * /cover-markings/ -- the link row tying a Cover to a Marking, with
  *                        is_backstamp/placement
- *   * /dates-seen/     — polymorphic date rows (subject_type=COVER, subject_id=cover pk)
+ *   * /dates-seen/     -- polymorphic date rows (subject_type=COVER, subject_id=cover pk)
  *
  * The dialog drives all three from a single form, so the helpers below are
  * intentionally thin: they each map to one HTTP verb on one resource. The
@@ -100,7 +100,7 @@ export interface CoverWriteResult {
   height: string | null;
 }
 
-/** POST /covers/ — create a new Cover row. */
+/** POST /covers/ -- create a new Cover row. */
 export async function createCover(
   payload: CoverWritePayload,
 ): Promise<CoverWriteResult> {
@@ -109,7 +109,7 @@ export async function createCover(
   return res.data;
 }
 
-/** PATCH /covers/{id}/ — partial update of an existing Cover row. */
+/** PATCH /covers/{id}/ -- partial update of an existing Cover row. */
 export async function updateCover(
   id: number,
   payload: CoverWritePayload,
@@ -143,7 +143,7 @@ export interface CoverMarkingWriteResult {
   placement: string | null;
 }
 
-/** POST /cover-markings/ — link a Cover to a Marking. */
+/** POST /cover-markings/ -- link a Cover to a Marking. */
 export async function createCoverMarking(
   payload: CoverMarkingWritePayload,
 ): Promise<CoverMarkingWriteResult> {
@@ -155,7 +155,7 @@ export async function createCoverMarking(
   return res.data;
 }
 
-/** PATCH /cover-markings/{id}/ — update is_backstamp/placement. */
+/** PATCH /cover-markings/{id}/ -- update is_backstamp/placement. */
 export async function updateCoverMarking(
   id: number,
   payload: CoverMarkingWritePayload,
@@ -205,7 +205,7 @@ function mapDateSeenToCoverDate(row: DateSeenApiRow): CoverDateWriteResult {
   };
 }
 
-/** POST /dates-seen/ — attach a date observation to a Cover. */
+/** POST /dates-seen/ -- attach a date observation to a Cover. */
 export async function createCoverDate(
   payload: CoverDateWritePayload,
 ): Promise<CoverDateWriteResult> {
@@ -223,7 +223,7 @@ export async function createCoverDate(
   return mapDateSeenToCoverDate(res.data);
 }
 
-/** PATCH /dates-seen/{id}/ — adjust date or granularity in place. */
+/** PATCH /dates-seen/{id}/ -- adjust date or granularity in place. */
 export async function updateCoverDate(
   id: number,
   payload: CoverDateWritePayload,
@@ -236,7 +236,7 @@ export async function updateCoverDate(
   return mapDateSeenToCoverDate(res.data);
 }
 
-/** DELETE /dates-seen/{id}/ — remove a single date row. */
+/** DELETE /dates-seen/{id}/ -- remove a single date row. */
 export async function deleteCoverDate(id: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/dates-seen/${id}/`);
@@ -343,7 +343,7 @@ function mapCoverDetail(data: unknown): CoverDetail | null {
   };
 }
 
-/** GET /covers/{id}/ — read a single cover row. */
+/** GET /covers/{id}/ -- read a single cover row. */
 export async function getCoverById(coverId: number): Promise<CoverDetail | null> {
   try {
     const res = await apiClient.get(`/covers/${coverId}/`);

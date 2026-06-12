@@ -9,7 +9,7 @@
  * and re-implemented camelCase/snake_case normalization. All of that lives here
  * now and goes through the configured apiClient.
  *
- * The backend renders responses with CamelCaseJSONRenderer, so reads tolerate
+ * The backend renders responses with CamelCaseJSONRenderer, so reads use
  * camelCase first and fall back to snake_case. ensureCsrfToken() runs before
  * every unsafe verb so a freshly-landed user does not 403 on the first write.
  */
@@ -17,9 +17,7 @@ import apiClient, { ensureCsrfToken } from "@/lib/api";
 
 /**
  * One contribution row off the wire. Tolerates camelCase (renderer) and
- * snake_case, plus the long tail of optional display fields the editor lists
- * read. Kept loose on purpose -- this is the union of every shape the API has
- * historically returned for a contribution.
+ * snake_case, plus the optional display fields the editor lists read.
  */
 export interface ContributionApiItem {
   id: number;
@@ -36,9 +34,6 @@ export interface ContributionApiItem {
   submittedData?: Record<string, unknown>;
   display_name?: string;
   displayName?: string;
-  postmark?: number | null;
-  postmark_id?: number | null;
-  postmarkId?: number | null;
   marking_id?: number | null;
   markingId?: number | null;
   cover_id?: number | null;
@@ -73,8 +68,6 @@ export interface Contribution {
   createdAt: string;
   submittedData: Record<string, unknown>;
   displayName?: string;
-  /** Unified postmark / postmark_id / postmarkId (set once approved). */
-  postmarkId: number | null;
   markingId: number | null;
   coverId: number | null;
 }
@@ -114,10 +107,7 @@ export function mapApiItemToContribution(item: ContributionApiItem): Contributio
     submittedData,
     displayName: (item.display_name ?? item.displayName) as string | undefined,
     // "marking" is what the detail serializer returns; without it the detail
-    // page sees a null marking id and the approved->record redirect never fires.
-    postmarkId: toNumberOrNull(
-      firstDefined(item.postmark_id, item.postmarkId, item.postmark, item.marking_id, item.markingId, item.marking),
-    ),
+    // page sees a null marking id and the approved-to-record redirect never fires.
     markingId: toNumberOrNull(firstDefined(item.marking_id, item.markingId, item.marking)),
     coverId: toNumberOrNull(firstDefined(item.cover_id, item.coverId)),
   };
@@ -128,7 +118,6 @@ export interface ContributionListParams {
   mode?: "editor";
   status?: string;
   state?: string;
-  kind?: "suggestion";
   page?: number;
   pageSize?: number;
   ordering?: string;
@@ -150,7 +139,6 @@ export async function listContributions(
   if (params?.mode) query.mode = params.mode;
   if (params?.status) query.status = params.status;
   if (params?.state) query.state = params.state;
-  if (params?.kind) query.kind = params.kind;
   if (params?.page != null) query.page = params.page;
   if (params?.pageSize != null) query.page_size = params.pageSize;
   if (params?.ordering) query.ordering = params.ordering;
@@ -179,7 +167,7 @@ export async function getContribution(id: number): Promise<Contribution> {
 /** Minimal write result; `raw` is the untouched response for any field not unified here. */
 export interface ContributionWriteResult {
   contributionId: number | null;
-  postmarkId: number | null;
+  markingId: number | null;
   coverId: number | null;
   raw: Record<string, unknown>;
 }
@@ -190,7 +178,7 @@ function mapWriteResult(raw: unknown): ContributionWriteResult {
     contributionId: toNumberOrNull(
       firstDefined(o.contributionId, o.contribution_id, o.id),
     ),
-    postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark, o.marking_id, o.markingId)),
+    markingId: toNumberOrNull(firstDefined(o.marking_id, o.markingId)),
     coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
@@ -235,7 +223,7 @@ export interface DecideOptions {
 }
 
 export interface DecideResult {
-  postmarkId: number | null;
+  markingId: number | null;
   coverId: number | null;
   raw: Record<string, unknown>;
 }
@@ -260,7 +248,7 @@ export async function decideContribution(
   const res = await apiClient.post(`/contributions/${id}/${actionPath}/`, body);
   const o = res.data && typeof res.data === "object" ? (res.data as Record<string, unknown>) : {};
   return {
-    postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark, o.marking_id, o.markingId)),
+    markingId: toNumberOrNull(firstDefined(o.marking_id, o.markingId)),
     coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
