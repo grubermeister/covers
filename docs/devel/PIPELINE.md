@@ -27,9 +27,6 @@ the next.
         |  (8) ./woco import_ascc_bundle     -> catalog DB tables
         v
   ASCC1 database baseline
-        |  (9-13) ASCC2 overlay path         -> ASCC2 database overlay
-        v
-  database with ASCC2 text layered over ASCC1
 ```
 
 ## Conventions
@@ -55,29 +52,13 @@ the next.
 
 Load the Fifth Edition ASCC catalog first. It is the printed baseline that
 state editors can verify against scanned catalog pages. The later v1
-worldcovers.org export is useful, but it mixes several kinds of evidence:
+worldcovers.org export remains reference evidence only: it mixes Fifth Edition
+text, unpublished Sixth Edition draft text, old parser output, later manual
+edits, and independent `tblTownmarkImages` associations.
 
-- Fifth Edition text
-- unpublished Sixth Edition draft text
-- output from an older parser
-- later manual edits to split-out v1 columns
-- independent `tblTownmarkImages` associations
-
-The pipeline therefore treats v1 as an overlay source, not as a wholesale
-replacement for ASCC1. The operating rules are:
-
-- Do not import v1 wholesale over the Fifth Edition baseline.
-- Treat `tblRawStateData.txtRawStateData` as the v1 witness for ASCC2 draft
-  edition text.
-- Treat split-out v1 columns as later editorial evidence, not as part of the
-  edition-text diff.
-- Keep ASCC parent/child families together during comparison and export.
-- Preserve image-bearing duplicate v1 source rows in the diff and overlay map.
-
-Rows such as `Same`, `(L)`, and `(E)` depend on the nearest prior independent
-parent row. Edition comparison and ASCC2 export therefore operate at the
-family level. A relationship row should not be reviewed, exported, or overlaid
-without the parent row that gives it meaning.
+No automated v1 overlay is performed. Use v1-derived artifacts for manual
+comparison and review only. The detailed provenance rules live in
+[ascc-data-layering-strategy.md](ascc-data-layering-strategy.md).
 
 ## Steps
 
@@ -192,12 +173,13 @@ Parses the reviewed listings and emits the Django-shape CSV bundle.
 - out: 11 CSVs to `tools/wip/out/` (see "Bundle contents" below)
 
 ```
-uv run python tools/ascc_data_munger.py --input tools/wip/in/<BASE>.csv --out-dir tools/wip/out/
+uv run python tools/ascc_data_munger.py --input tools/wip/in/<BASE>.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
 ```
 
 `--input` defaults to `tools/wip/in/VA_ASCC_CTLG.csv`. `--input-dir`
 overrides where the reference CSVs are read from (defaults to the input
-CSV's dir).
+CSV's dir). `--reference-work-code` selects the source row from
+`reference_works.csv`; the default is `ASCC1`.
 On success the munger prints the exact load command to run next.
 
 ### 8. Load the bundle -- import_ascc_bundle
@@ -215,10 +197,6 @@ Run from repo root with `./woco`:
 ./woco import_ascc_bundle tools/wip/out/
 ```
 
-For ASCC2 overlay work, keep the exact ASCC1 bundle that was imported. The
-examples below assume it is available at `tools/wip/cache/ascc1/` and includes
-the munger sidecar `marking_lineage.csv`.
-
 Always do a `--dry-run` first (parses and validates every CSV, then rolls
 back). Useful flags:
 
@@ -227,11 +205,12 @@ back). Useful flags:
 - `--only a,b`    load just these stems (order still forced)
 - `--allow-missing`  skip stems whose CSV is absent
 
-### 9. Convert v1 raw data to v2 CSV shape
+### 9. Convert v1 raw data to v2 CSV shape (reference utility)
 
 Convert the v1 `tblRawStateData` export into the same seven-column CSV shape
-that step 3 produces. This creates the compare-side input for the ASCC2 overlay
-builder and a v1 image-ref sidecar used by the apply step.
+that step 3 produces. These outputs currently have no downstream consumer in
+the automated pipeline. They are kept for manual comparison of v1 evidence
+against the ASCC1 baseline.
 
 - in: `tools/wip/in/v1_<REGION>_data.csv`
 - in: optional `tools/wip/in/tblTownmarkImages.csv`
@@ -259,137 +238,9 @@ Listing,Page,Chunk,Images Above,Type,Manuscript,Default Shape
 `tblTownmarkImages` rows for that raw row. `Default Shape` is blank because v1
 does not provide a clean equivalent.
 
-The image-ref sidecar stores `storage_filename` values like
-`va/Marking-71-3891.jpg`. Before step 13 can attach those images, the matching
-files must exist under `backend/media/va/` or the apply command must be run
-with `--skip-missing-images`.
-
-### 10. Build the ASCC2 overlay CSV and map
-
-Use `tools/build_ascc2_overlay.py` to compare the reviewed ASCC1 OCR CSV to
-the v1-derived v2-format CSV. The output overlay CSV includes only compare-side
-families that are textually added or materially changed. It zeroes
-`Images Above` so the remunge is text-only; v1 image attachments are handled
-later by `apply_ascc2_overlay`.
-
-- in: `tools/wip/in/<BASE>.csv` from step 6
-- in: `tools/wip/in/v1_<REGION>_ocr.csv` from step 9
-- out: `tools/wip/out/<REGION>_ASCC2_overlay.csv`
-- out: `tools/wip/out/<REGION>_ASCC2_overlay_map.csv`
-
-Run from repo root. Expected exit code: `0`.
-
-```sh
-uv run python tools/build_ascc2_overlay.py \
-  --base tools/wip/in/VA_ASCC_CTLG.csv \
-  --compare tools/wip/in/v1_VA_ocr.csv \
-  --out tools/wip/out/VA_ASCC2_overlay.csv \
-  --map-out tools/wip/out/VA_ASCC2_overlay_map.csv
-```
-
-The map is required later. It records base and compare family/source-row
-correspondence, compare duplicates, overlay inclusion, and base-only removals.
-
-### 11. Remunge the ASCC2 overlay bundle
-
-Move or copy the reviewed overlay CSV into `tools/wip/in/`, then run the munger
-again with ASCC2 reference-work metadata. Keep the ASCC1 bundle directory,
-including `marking_lineage.csv`, because the overlay apply command needs it.
-
-- ASCC1 base bundle: `tools/wip/cache/ascc1/`
-- ASCC2 overlay input: `tools/wip/in/VA_ASCC2_overlay.csv`
-- ASCC2 overlay bundle: `tools/wip/cache/ascc2_overlay_bundle/`
-
-Before this step, `tools/wip/in/reference_works.csv` must contain exactly one
-row for ASCC2. Its `code` must match the `--ascc2-code` used in step 13.
-
-Run from repo root. Expected exit code: `0`.
-
-```sh
-uv run python tools/ascc_data_munger.py \
-  --input tools/wip/in/VA_ASCC2_overlay.csv \
-  --out-dir tools/wip/cache/ascc2_overlay_bundle/
-```
-
-Do not load this overlay bundle with `import_ascc_bundle`. It is an input to
-`apply_ascc2_overlay`, which updates the existing ASCC1 baseline in place.
-
-### 12. Review the overlay artifacts
-
-Review these files before applying the overlay:
-
-- `tools/wip/out/VA_ASCC2_overlay.csv`
-- `tools/wip/out/VA_ASCC2_overlay_map.csv`
-- `tools/wip/cache/ascc2_overlay_bundle/markings.csv`
-- `tools/wip/cache/ascc2_overlay_bundle/marking_lineage.csv`
-- `tools/wip/in/v1_VA_image_refs.csv`
-
-Check that added and materially changed families are present as full families.
-Check that `family_action=removed` rows in the map are expected obsolete ASCC1
-families. Check duplicate compare rows with images before relying on automatic
-image attachment.
-
-### 13. Apply the ASCC2 overlay -- apply_ascc2_overlay
-
-Django management command at
-`backend/common/management/commands/apply_ascc2_overlay.py`. It applies the
-remunged ASCC2 bundle onto an imported ASCC1 baseline.
-
-Behavior:
-
-- backfills visible ASCC1 record-create history unless skipped
-- updates matched markings in place
-- preserves existing ASCC1/v2 images
-- adds brand-new ASCC2 markings
-- soft-removes obsolete ASCC1 markings
-- replaces direct MARKING citations and dates_seen from the ASCC2 bundle
-- appends v1 image refs without deleting current images
-- avoids duplicate image rows with the same storage filename on a target mark
-
-Run from repo root with `./woco`. Always run the dry run first. Expected exit
-code: `0`.
-
-```sh
-./woco apply_ascc2_overlay \
-  --base-dir tools/wip/cache/ascc1 \
-  --overlay-dir tools/wip/cache/ascc2_overlay_bundle \
-  --overlay-map tools/wip/out/VA_ASCC2_overlay_map.csv \
-  --v1-image-refs tools/wip/in/v1_VA_image_refs.csv \
-  --region-abbrev VA \
-  --ascc1-code ASCC1 \
-  --ascc2-code ASCC2 \
-  --audit-user-id 1 \
-  --skip-missing-images \
-  --dry-run
-```
-
-If the dry run succeeds and the summary counts look correct, rerun the same
-command without `--dry-run`.
-
-Useful flags:
-
-- `--dry-run`  validate and simulate only; roll back the transaction
-- `--skip-backfill-history`  skip ASCC1 record-create history backfill
-- `--skip-missing-images`  skip v1 image refs whose files are absent on disk
-- `--audit-user-id`  actor user id for system history rows
-
-The command prints summary counters:
-
-```text
-history_backfilled=0
-updated=0
-created=0
-removed=0
-images_added=0
-images_missing=0
-post_offices_created=0
-DRY RUN: transaction rolled back.
-```
-
 ## Bundle contents
 
-The munger writes 11 import CSVs plus one sidecar CSV. Import load order
-(parents first):
+The munger writes 11 import CSVs. Import load order (parents first):
 
 ```
 colors            generated   leaf lookup
@@ -404,9 +255,6 @@ dates_seen        generated   polymorphic (anchored to markings)
 citations         generated   reference_work + marking
 images            generated   marking tracings (from step 5)
 ```
-
-The munger also writes `marking_lineage.csv`. It is a sidecar used by the
-ASCC2 overlay apply step. It is not loaded by `import_ascc_bundle`.
 
 The three legacy cover stems (`covers`, `cover_markings`,
 `cover_valuations`) are optional and no longer emitted by the munger;

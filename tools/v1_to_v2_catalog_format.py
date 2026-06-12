@@ -10,16 +10,16 @@ Mapping applied per v1 row:
 
     Listing        <- txtRawStateData (raw listing text, with excess
                       whitespace collapsed: see normalize_listing)
-    Page           <- txtPDFPage when present, else ""
+    Page           <- "" (no v1 equivalent; left blank)
     Chunk          <- nRawStateDataID
     Images Above   <- count of tblTownmarkImages rows whose nRawStateDataID
                       matches this row AND whose ynDeleted == 'False'
     Type           <- "LISTING" (constant for every row)
-    Manuscript     <- true when ynManuscript or ynManuscriptTownmarks is true
+    Manuscript     <- "" (no v1 equivalent; left blank)
     Default Shape  <- "" (no v1 equivalent; left blank)
 
-This is best-effort: Page / Default Shape are intentionally empty because
-the v1 export carries no clean source for them.
+This is best-effort: Page / Manuscript / Default Shape are intentionally
+empty because the v1 export carries no clean source for them.
 
 Usage (run from the tools/ directory; exit code 0 on success):
 
@@ -70,9 +70,6 @@ V2_COLUMNS = [
 # v1 source column names.
 LISTING_COL = "txtRawStateData"
 RAW_ID_COL = "nRawStateDataID"
-PAGE_COL = "txtPDFPage"
-MANUSCRIPT_COL = "ynManuscript"
-MANUSCRIPT_TOWNMARKS_COL = "ynManuscriptTownmarks"
 
 # tblTownmarkImages column names.
 IMG_RAW_ID_COL = "nRawStateDataID"
@@ -98,12 +95,6 @@ IMAGE_REF_COLUMNS = [
 TYPE_VALUE = "LISTING"
 IMAGE_VIEW_VALUE = "FULL"
 IS_TRACING_VALUE = "False"
-TRUE_VALUES = {"1", "true", "t", "yes", "y"}
-
-
-def truthy_cell(value: str) -> bool:
-    """Return True for v1 truthy flag cells."""
-    return str(value or "").strip().lower() in TRUE_VALUES
 
 
 def normalize_listing(text: str) -> str:
@@ -118,13 +109,7 @@ def normalize_listing(text: str) -> str:
     """
     if not text:
         return ""
-    normalized = _WS_RUN.sub(" ", text).strip()
-    # v1 VA row 23 has a catalog prose note glued to the next listing.
-    # Keep the actual listing so downstream town parsing sees Petersburg.
-    bad_prefix = "The British evacuated Norfolk in December 1775."
-    if normalized.startswith(bad_prefix):
-        normalized = normalized[len(bad_prefix):].lstrip()
-    return normalized
+    return _WS_RUN.sub(" ", text).strip()
 
 
 def infer_region_abbrev(src_path: Path) -> str:
@@ -142,25 +127,6 @@ def int_or_zero(value: str) -> int:
         return int(str(value or "").strip())
     except ValueError:
         return 0
-
-
-def normalize_page(value: str) -> str:
-    """Return a stable page string for v2 Page.
-
-    v1 exports commonly store PDF page numbers as floats such as "419.0".
-    When the value is numerically integral, emit the integer form. Preserve
-    non-integral or non-numeric text after stripping whitespace.
-    """
-    raw = str(value or "").strip()
-    if not raw:
-        return ""
-    try:
-        num = float(raw)
-    except ValueError:
-        return raw
-    if num.is_integer():
-        return str(int(num))
-    return raw
 
 
 def build_image_counts(images_path: Path) -> Counter:
@@ -229,16 +195,11 @@ def convert(src_path: Path, out_path: Path, image_counts: Counter) -> tuple[int,
                 writer.writerow(
                     {
                         "Listing": listing,
-                        "Page": normalize_page(row.get(PAGE_COL, "")),
+                        "Page": "",
                         "Chunk": raw_id,
                         "Images Above": image_counts.get(raw_id, 0),
                         "Type": TYPE_VALUE,
-                        "Manuscript": "TRUE"
-                        if (
-                            truthy_cell(row.get(MANUSCRIPT_COL))
-                            or truthy_cell(row.get(MANUSCRIPT_TOWNMARKS_COL))
-                        )
-                        else "",
+                        "Manuscript": "",
                         "Default Shape": "",
                     }
                 )
