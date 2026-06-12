@@ -169,7 +169,10 @@ post_offices (1057), post_office_regions (1057), markings (2813), dates_seen
 munge output. Listings are assigned the region of the catalog section they
 sit under (META banners matching a TERRITORY-tier name in `regions.csv`,
 optionally prefixed `AS `; a `STATEHOOD` banner resets to the catalog's
-default region). Check that:
+default region; a `TERRITORIAL PERIOD` banner — FL style, the heading names
+no territory — maps to the seed's `<catalog state> Territory` row when
+exactly one exists, and falls into the unmatched report otherwise). Check
+that:
 
 - the per-region listing counts match the catalog's section sizes
   (single-region catalogs like VA show one line: all listings on the default);

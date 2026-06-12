@@ -20,11 +20,13 @@ from munger.io import assign_section_regions
 
 REGION_SEED = pd.DataFrame([
     {'id': 1,  'name': 'United States of America', 'region_tier': 'COUNTRY'},
+    {'id': 11, 'name': 'Florida',                  'region_tier': 'STATE'},
     {'id': 25, 'name': 'Michigan',                 'region_tier': 'STATE'},
     {'id': 36, 'name': 'Northwest Territory',      'region_tier': 'TERRITORY'},
     {'id': 51, 'name': 'Virginia',                 'region_tier': 'STATE'},
     {'id': 59, 'name': 'Michigan Territory',       'region_tier': 'TERRITORY'},
     {'id': 60, 'name': 'Indiana Territory',        'region_tier': 'TERRITORY'},
+    {'id': 61, 'name': 'Florida Territory',        'region_tier': 'TERRITORY'},
 ])
 
 
@@ -72,6 +74,41 @@ class TestAssignSectionRegions(unittest.TestCase):
         ])
         out = assign_section_regions(df, REGION_SEED, default_region_id=25)
         self.assertEqual(out[df['Type'] == 'LISTING'].tolist(), [59, 59])
+
+    def test_florida_territorial_period_banner(self):
+        # FL heads its territory section "TERRITORIAL PERIOD" instead of
+        # naming the territory; it must map to the catalog state's own
+        # "<state> Territory" seed row. Pre-territorial sections (British
+        # / Spanish periods) stay on the catalog default.
+        df = _df([
+            ('FLORIDA', 'META'),                        # running head
+            ('THE BRITISH PERIOD', 'META'),             # no region -> default
+            ('PENSACOLA(E)(July 1, 1772;SL-56x6;Brown)', 'LISTING'),
+            ('THE SECOND SPANISH PERIOD', 'META'),
+            ('St.Augustine(Sept. 12, 1774;Ms;Black)', 'LISTING'),
+            ('TERRITORIAL PERIOD', 'META'),
+            # Narrative META mentioning the territorial period in prose
+            # must not switch sections (mixed case fails the banner gate).
+            ('During the territorial period 37 post offices operated '
+             'in 15 counties.', 'META'),
+            ('Alaqua Fla.(E)(Oct. 6, 1826;Ms;Black)', 'LISTING'),
+            ('STATEHOOD PERIOD', 'META'),
+            ('ADAMSVILLE/Fla(1855;30;PAID/3[C];Black)', 'LISTING'),
+        ])
+        out = assign_section_regions(df, REGION_SEED, default_region_id=11)
+        self.assertEqual(out[df['Type'] == 'LISTING'].tolist(),
+                         [11, 11, 61, 11])
+
+    def test_territorial_period_without_seed_row_stays_default(self):
+        # A catalog state with a TERRITORIAL PERIOD banner but no
+        # "<state> Territory" row seeded must not guess -- listings stay
+        # on the default and the banner lands in the unmatched report.
+        df = _df([
+            ('TERRITORIAL PERIOD', 'META'),
+            ('Aquia(1811;Ms;Black)', 'LISTING'),
+        ])
+        out = assign_section_regions(df, REGION_SEED, default_region_id=51)
+        self.assertEqual(out[df['Type'] == 'LISTING'].tolist(), [51])
 
     def test_catalog_without_territory_banners_is_all_default(self):
         # VA-shaped input: nothing matches, every listing keeps the

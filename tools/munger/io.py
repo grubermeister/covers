@@ -14,6 +14,12 @@ _WS = re.compile(r'\s+')
 # silently leaving its listings on the catalog default region).
 _BANNER_CANDIDATE = re.compile(r"[A-Z][A-Z .,'&-]{3,40}")
 
+# Some catalogs (FL) head their territory section "TERRITORIAL PERIOD"
+# rather than naming the territory the way MI does ("MICHIGAN
+# TERRITORY", "AS NORTHWEST TERRITORY"). Tolerate a stray period after
+# TERRITORIAL -- the scan font sheds artifacts there.
+_TERRITORIAL_PERIOD = re.compile(r'\bTERRITORIAL\.? PERIOD\b')
+
 
 def _norm_banner(text) -> str:
     return _WS.sub(' ', str(text)).strip().upper()
@@ -30,9 +36,12 @@ def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series
     strings only carry abbreviations like "M.T." that the ASCC header
     explicitly calls ambiguous (Michigan / Minnesota / Mississippi
     Territory). A banner containing STATEHOOD resets to
-    default_region_id. Bare state names never match: the page running
-    head (e.g. "MICHIGAN") survives extraction as a META row on every
-    page and must not reset the section.
+    default_region_id, and a "TERRITORIAL PERIOD" banner (FL style --
+    the section heading names no territory) switches to the seed's
+    "<catalog state> Territory" row when one exists. Bare state names
+    never match: the page running head (e.g. "MICHIGAN") survives
+    extraction as a META row on every page and must not reset the
+    section.
 
     Returns an int64 Series aligned to df.index. Catalogs without
     territory banners (e.g. VA) come back all default_region_id.
@@ -45,6 +54,14 @@ def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series
     region_name_by_id = {
         int(row['id']): str(row['name']) for _, row in region_seed.iterrows()
     }
+    # "TERRITORIAL PERIOD" names no territory; it can only mean the
+    # catalog state's own territory, which exists in the seed iff the
+    # state had one ("<state> Territory"). Left unseeded, the banner
+    # falls through to the unmatched report instead of guessing.
+    default_name = region_name_by_id.get(int(default_region_id), '')
+    state_territory_id = territory_by_name.get(
+        _norm_banner(f'{default_name} Territory')
+    )
 
     current = int(default_region_id)
     assigned = []
@@ -63,6 +80,10 @@ def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series
                 # does, right inside the territory section).
                 if 'STATEHOOD' in banner:
                     current = int(default_region_id)
+                    switches.append((banner, current))
+                elif (state_territory_id is not None
+                        and _TERRITORIAL_PERIOD.search(banner)):
+                    current = state_territory_id
                     switches.append((banner, current))
                 else:
                     unmatched[banner] = unmatched.get(banner, 0) + 1
