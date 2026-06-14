@@ -269,6 +269,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const { toast } = useToast();
   const user = useAuth();
 
+  const dashboardReturnState = () => ({
+    fromDashboard: true,
+    dashboardTab: activeTab,
+  });
+
   // Resume a draft submission. Cover drafts edit through CoverEdit; marking drafts
   // through the Contribute form. A cover draft with no resolvable parent marking
   // falls back to the marking form rather than building a broken /record route.
@@ -297,24 +302,24 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       return;
     }
     if (statusNorm !== "approved") {
-      navigate(`/contribution/${item.id}`, { state: { fromDashboard: true } });
+      navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });
       return;
     }
     if (item.cover_id != null) {
       if (item.marking_id != null) {
         navigate(`/record/${item.marking_id}/cover/${item.cover_id}`, {
-          state: { fromDashboard: true },
+          state: dashboardReturnState(),
         });
         return;
       }
-      navigate(`/covers/${item.cover_id}`, { state: { fromDashboard: true } });
+      navigate(`/covers/${item.cover_id}`, { state: dashboardReturnState() });
       return;
     }
     if (item.marking_id != null) {
-      navigate(`/record/${item.marking_id}`, { state: { fromDashboard: true } });
+      navigate(`/record/${item.marking_id}`, { state: dashboardReturnState() });
       return;
     }
-    navigate(`/contribution/${item.id}`, { state: { fromDashboard: true } });
+    navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });
   };
   const [activeTab, setActiveTab] = useState<DashboardTab>(initialTab);
 

@@ -68,6 +68,8 @@ const EMPTY = "-";
 
 type CoverDetailLocationState = {
   from?: string;
+  fromDashboard?: boolean;
+  dashboardTab?: "submissions" | "editor";
   markingId?: number;
   coverMarkingId?: number;
 };
@@ -276,6 +278,10 @@ const CoverDetailPage = () => {
   };
 
   const handleBack = () => {
+    if (state?.fromDashboard) {
+      navigate("/dashboard", { state: { tab: state.dashboardTab ?? "submissions" } });
+      return;
+    }
     if (state?.from) {
       navigate(state.from);
       return;

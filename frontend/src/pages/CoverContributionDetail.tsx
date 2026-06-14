@@ -177,7 +177,12 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   const [parentMarkingError, setParentMarkingError] = useState<string | null>(null);
   const [referenceWorks, setReferenceWorks] = useState<ReferenceWorkRecord[]>([]);
 
-  const fromDashboard = (location.state as { fromDashboard?: boolean } | null)?.fromDashboard === true;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser === true;
 
@@ -339,7 +344,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
 
   const handleBack = () => {
     if (fromDashboard) {
-      navigate("/dashboard", { state: { tab: isStateEditor ? "editor" : "submissions" } });
+      navigate("/dashboard", { state: { tab: dashboardTab ?? (isStateEditor ? "editor" : "submissions") } });
       return;
     }
     navigate("/dashboard");
@@ -363,11 +368,13 @@ export default function CoverContributionDetail({ initialContribution = null }: 
       if (kind === "approve" && result.coverId != null) {
         if (parentMarkingId != null) {
           navigate(`/record/${parentMarkingId}/cover/${result.coverId}`, {
-            state: { fromDashboard: true },
+            state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
           });
           return;
         }
-        navigate(`/covers/${result.coverId}`, { state: { fromDashboard: true } });
+        navigate(`/covers/${result.coverId}`, {
+          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
+        });
         return;
       }
       navigate("/dashboard", { state: { tab: "editor" } });

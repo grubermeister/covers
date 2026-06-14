@@ -504,10 +504,15 @@ const RecordDetail = () => {
     void applyImageOrder(next);
   };
 
-  const fromDashboard = location.state?.fromDashboard;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const handleBack = () => {
     if (fromDashboard) {
-      navigate("/dashboard");
+      navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
     } else {
       navigate(-1);
     }
@@ -551,6 +556,7 @@ const RecordDetail = () => {
       state: {
         fromSearch: location.state?.fromSearch,
         fromDashboard,
+        dashboardTab,
         fromDashboardViaDetail: !!fromDashboard,
         mode: "suggestion",
       },

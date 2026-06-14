@@ -90,7 +90,12 @@ const ContributionDetail = () => {
   const [carouselApi, setCarouselApi] = useState<CarouselApi>();
   const [carouselCurrent, setCarouselCurrent] = useState(0);
   const [carouselCount, setCarouselCount] = useState(0);
-  const fromDashboard = location.state?.fromDashboard === true;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser;
   /** True if the logged-in user is the person who submitted this contribution (edit/review UI is for other editors only). */
@@ -169,10 +174,10 @@ const ContributionDetail = () => {
     if (!isCover && contribution?.status === "approved" && contribution.markingId != null) {
       navigate(`/record/${contribution.markingId}`, {
         replace: true,
-        state: { fromDashboard: true },
+        state: { fromDashboard: true, dashboardTab },
       });
     }
-  }, [contribution, navigate]);
+  }, [contribution, dashboardTab, navigate]);
 
 
   const submitDecision = async (kind: "approve" | "reject" | "revision") => {
@@ -191,7 +196,9 @@ const ContributionDetail = () => {
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
       if (kind === "approve" && result.markingId != null) {
-        navigate(`/record/${result.markingId}`, { state: { fromDashboard: true } });
+        navigate(`/record/${result.markingId}`, {
+          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
+        });
         return;
       }
       navigate("/dashboard", { state: { tab: "editor" } });
@@ -208,7 +215,7 @@ const ContributionDetail = () => {
 
 
   const handleBack = () => {
-    if (fromDashboard) navigate("/dashboard", { state: { tab: "editor" } });
+    if (fromDashboard) navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
     else navigate("/dashboard");
   };
 
@@ -420,7 +427,7 @@ const ContributionDetail = () => {
               <Badge className={statusBadgeClassName}>{statusLabel}</Badge>
               {markingId != null && (
                 <Button variant="outline" size="sm" asChild>
-                  <Link to={`/record/${markingId}`} state={{ fromDashboard: true }}>
+                  <Link to={`/record/${markingId}`} state={{ fromDashboard: true, dashboardTab }}>
                     <ExternalLink className="mr-2 h-4 w-4" />
                     View record
                   </Link>
