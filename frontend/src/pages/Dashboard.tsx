@@ -378,6 +378,13 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [editorHistoryGoToInput, setEditorHistoryGoToInput] = useState("");
   const [editorHistoryPageSize, setEditorHistoryPageSize] = useState(10);
 
+  // Assigned-collections header: clip to one line by default, expandable on
+  // click. Overflow is measured against the truncated span so the "Show more"
+  // toggle only appears when the text actually doesn't fit.
+  const [assignedCollectionsExpanded, setAssignedCollectionsExpanded] = useState(false);
+  const assignedCollectionsRef = useRef<HTMLSpanElement>(null);
+  const [assignedCollectionsOverflowing, setAssignedCollectionsOverflowing] = useState(false);
+
   // Filter states (mirror Catalog Search)
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -642,7 +649,32 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         if (editorHistoryStatusFilter === "needs_revision") {
           mapped = mapped.filter((i) => i.status === "needs_revision");
         }
-        setEditorHistoryItems(mapped);
+        // Collapse multiple contributions that target the same record (same
+        // marking_id + cover_id pair) into a single row, keeping the most
+        // recent by created_at. Contributions without a resolved target
+        // (either id null) stay individual so unrouted submissions are not
+        // hidden. Per-page dedupe only: contributions for the same record
+        // that fall on a later pagination page are not merged here -- that
+        // would require backend grouping. At current row counts that is not
+        // a real issue.
+        const latestByTarget = new Map<string, typeof mapped[number]>();
+        const collapsed: typeof mapped = [];
+        for (const item of mapped) {
+          if (item.marking_id == null || item.cover_id == null) {
+            collapsed.push(item);
+            continue;
+          }
+          const key = `${item.marking_id}:${item.cover_id}`;
+          const existing = latestByTarget.get(key);
+          if (!existing || String(item.created_at) > String(existing.created_at)) {
+            latestByTarget.set(key, item);
+          }
+        }
+        for (const item of latestByTarget.values()) {
+          collapsed.push(item);
+        }
+        collapsed.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
+        setEditorHistoryItems(collapsed);
       })
       .catch((err) => {
         setEditorHistoryError(err instanceof Error ? err.message : "Could not load history.");
@@ -841,6 +873,29 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     setCurrentPage(1);
   }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, mySubmissionsSort, dateFrom, dateTo, itemsPerPage]);
 
+  // Measure whether the assigned-collections line is truncated. When expanded
+  // we always treat it as "overflowing" so the user can still collapse it.
+  useEffect(() => {
+    const el = assignedCollectionsRef.current;
+    if (!el) {
+      setAssignedCollectionsOverflowing(false);
+      return;
+    }
+    if (assignedCollectionsExpanded) {
+      setAssignedCollectionsOverflowing(true);
+      return;
+    }
+    const check = () => {
+      if (!assignedCollectionsRef.current) return;
+      const e = assignedCollectionsRef.current;
+      setAssignedCollectionsOverflowing(e.scrollWidth > e.clientWidth + 1);
+    };
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [assignedCollectionsExpanded, user?.assigned_collections]);
+
   // In "removed" mode the rows on the page come from removedMarkings, not the
   // contribution list, so the page-end count must read that length instead.
   const editorHistoryRowsOnPage =
@@ -938,9 +993,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="mb-6 flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-            <div>
+            <div className="min-w-0 md:flex-1">
               <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground mb-2">
-                {isEditor && activeTab === "editor" ? "Editor Dashboard" : "Contributor Dashboard"}
+                {isEditor ? "Editor Dashboard" : "Contributor Dashboard"}
               </h1>
               <p className="text-muted-foreground">
                 {isEditor && activeTab === "editor"
@@ -948,9 +1003,27 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                   : "View and track your submissions."}
               </p>
               {isEditor && user?.assigned_collections && user.assigned_collections.length > 0 && (
-                <p className="text-muted-foreground text-sm mt-1">
-                  Role: {user.is_superuser ? "Administrator" : "Editor"} - Assigned Collections: {user.assigned_collections.map((c) => c.name).join(", ")}
-                </p>
+                <div className="text-muted-foreground text-sm mt-1 flex items-baseline gap-2 min-w-0 max-w-full">
+                  <span
+                    ref={assignedCollectionsRef}
+                    className={cn(
+                      "min-w-0 flex-1",
+                      !assignedCollectionsExpanded && "overflow-hidden text-ellipsis whitespace-nowrap",
+                    )}
+                  >
+                    Role: {user.is_superuser ? "Administrator" : "Editor"} - Assigned Collections: {user.assigned_collections.map((c) => c.name).join(", ")}
+                  </span>
+                  {assignedCollectionsOverflowing && (
+                    <button
+                      type="button"
+                      onClick={() => setAssignedCollectionsExpanded((v) => !v)}
+                      className="shrink-0 text-primary underline hover:no-underline"
+                      aria-expanded={assignedCollectionsExpanded}
+                    >
+                      {assignedCollectionsExpanded ? "Show less" : "Show more"}
+                    </button>
+                  )}
+                </div>
               )}
             </div>
 
