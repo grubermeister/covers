@@ -49,7 +49,7 @@ import {
   type MarkingImage,
   type MarkingRecord,
 } from "@/services/markings";
-import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
+import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 
 type Mode = "create" | "edit";
 
@@ -1175,7 +1175,7 @@ export default function CoverEdit() {
                                       setFieldErrors((prev) => ({ ...prev, referenceWorks: undefined }));
                                     }}
                                   >
-                                    {work.title || `Reference #${work.id}`}
+                                    {formatReferenceWorkLabel(work, `Reference #${work.id}`)}
                                   </DropdownMenuCheckboxItem>
                                 );
                               })
@@ -1188,7 +1188,7 @@ export default function CoverEdit() {
                         <div className="space-y-2">
                           {selectedReferenceWorks.map((work) => (
                             <div key={work.id} className="rounded-md border border-border px-3 py-2 space-y-3">
-                              <p className="text-sm font-medium truncate">{work.title || "Untitled"}</p>
+                              <p className="text-sm font-medium truncate">{formatReferenceWorkLabel(work, "Untitled")}</p>
                               <div className="grid gap-3 sm:grid-cols-2">
                                 <div className="space-y-1">
                                   <Label className="text-xs text-muted-foreground">Page number</Label>

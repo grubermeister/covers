@@ -72,6 +72,51 @@ function mapApiResultToRecord(item: ReferenceWorkApiResultItem): ReferenceWorkRe
 }
 
 /**
+ * Add an English ordinal suffix to a positive integer: 1 -> "1st", 2 -> "2nd",
+ * 3 -> "3rd", 4-20 -> "Nth", 21 -> "21st", etc. Returns the string unchanged
+ * when it is not a plain non-negative integer (so editions already typed as
+ * "5th" or "Revised" pass through verbatim).
+ */
+function withOrdinalSuffix(raw: string): string {
+  const t = raw.trim();
+  if (!/^\d+$/.test(t)) return t;
+  const n = parseInt(t, 10);
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 13) return `${n}th`;
+  const mod10 = n % 10;
+  if (mod10 === 1) return `${n}st`;
+  if (mod10 === 2) return `${n}nd`;
+  if (mod10 === 3) return `${n}rd`;
+  return `${n}th`;
+}
+
+/**
+ * Display label for a reference work in dropdowns and chips. Includes the code
+ * and edition so different editions of the same title (e.g. two editions of
+ * "American Stampless Cover Catalog") are visually distinct. Falls back to
+ * title or a "#id" sentinel when code/title are missing.
+ *
+ * Examples:
+ *   { code: "ASCC1", edition: "5", title: "American Stampless Cover Catalog" }
+ *     -> "ASCC1 - American Stampless Cover Catalog (5th Ed.)"
+ *   { code: "ASCC",  edition: "",  title: "American Stampless Cover Catalog" }
+ *     -> "ASCC - American Stampless Cover Catalog"
+ *   { code: null,    edition: "",  title: "Something" } -> "Something"
+ */
+export function formatReferenceWorkLabel(
+  work: Pick<ReferenceWorkRecord, "id" | "code" | "title" | "edition">,
+  fallback: string = `Reference work #${work.id}`,
+): string {
+  const code = (work.code ?? "").trim();
+  const edition = (work.edition ?? "").trim();
+  const title = (work.title ?? "").trim();
+  const head = code ? (title ? `${code} - ${title}` : code) : title;
+  const base = head || fallback;
+  if (!edition) return base;
+  return `${base} (${withOrdinalSuffix(edition)} Ed.)`;
+}
+
+/**
  * Fetches reference works from GET /reference-works/.
  */
 export async function getReferenceWorks(): Promise<ReferenceWorkRecord[]> {

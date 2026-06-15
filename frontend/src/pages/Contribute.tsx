@@ -24,7 +24,7 @@ import { getRegions } from "@/services/regions";
 import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
 import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
-import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
+import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import {
   getContribution,
   listContributions,
@@ -2361,7 +2361,7 @@ const Contribute = () => {
                                       });
                                     }}
                                   >
-                                    {work.title || `Reference work #${work.id}`}
+                                    {formatReferenceWorkLabel(work)}
                                   </DropdownMenuCheckboxItem>
                                 );
                               })
@@ -2379,7 +2379,7 @@ const Contribute = () => {
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <p className="text-sm font-medium text-foreground truncate">
-                                    {work.title || "Untitled"}
+                                    {formatReferenceWorkLabel(work, "Untitled")}
                                   </p>
                                   <p className="text-xs text-muted-foreground truncate">
                                     {[work.authorship, work.publisher]
