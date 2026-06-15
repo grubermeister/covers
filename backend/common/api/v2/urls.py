@@ -68,6 +68,11 @@ urlpatterns = [
         views.MarkingDateRangeView.as_view(),
         name="markings-range",
     ),
+    path(
+        "catalog-code-suggestions/",
+        views.CatalogCodeSuggestionView.as_view(),
+        name="catalog-code-suggestions",
+    ),
 
     path("", include(router.urls)),
 ]

@@ -37,6 +37,14 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 
+from common.catalog_codes import (
+    CATALOG_CODE_KEYS,
+    CatalogCodeError,
+    final_code_for_contribution,
+    strip_catalog_code_keys,
+    suggest_direct_catalog_code,
+    suggest_for_contribution,
+)
 from common.contribution_apply import ContributionApplyError, _parse_int
 from common.audit import (
     build_cover_snapshot,
@@ -123,6 +131,16 @@ User = get_user_model()
 # circular import back into views.py.
 
 
+def _user_may_review_contribution(user, contribution) -> bool:
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        return False
+    return contribution.collection_id in user_assigned_collection_ids(user)
+
+
 class IsResponsibleForRegion(BasePermission):
     """
     Object-level write check for Marking-bound resources.
@@ -159,6 +177,33 @@ def _marking_list_queryset():
     ).prefetch_related(
         "post_office__post_office_regions__region"
     ).with_date_range()
+
+
+class CatalogCodeSuggestionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+            return Response(
+                {"detail": "You do not have permission to generate catalog codes."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        payload = request.data if isinstance(request.data, dict) else dict(request.data)
+        try:
+            suggestion = suggest_direct_catalog_code(payload)
+        except CatalogCodeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "catalog_code": suggestion.catalog_code,
+                "prefix": suggestion.prefix,
+                "reference_code": suggestion.reference_code,
+                "region_abbrev": suggestion.region_abbrev,
+                "subject_type": suggestion.subject_type,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 ###################################################################################################
@@ -1698,6 +1743,11 @@ class ContributionViewSet(
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
         contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to review this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if contrib.status != Contribution.STATUS_PENDING:
             return Response(
                 {"detail": f"Contribution is not pending (status: {contrib.status})."},
@@ -1706,6 +1756,7 @@ class ContributionViewSet(
         serializer = ContributionApproveRejectSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         review_notes = serializer.validated_data.get("review_notes", "")
+        requested_catalog_code = serializer.validated_data.get("catalog_code", None)
         try:
             with transaction.atomic():
                 # Capture the BEFORE snapshot for edits (the entity already
@@ -1732,6 +1783,10 @@ class ContributionViewSet(
                     except Marking.DoesNotExist:
                         pass
 
+                final_code_for_contribution(
+                    contrib,
+                    requested_code=requested_catalog_code,
+                )
                 result = contrib.apply_to_catalog()
 
                 # apply_to_catalog returns a Marking for marking submissions and
@@ -1828,12 +1883,46 @@ class ContributionViewSet(
                         "detail": "Contribution approved.",
                         "markingId": marking.pk,
                     }
-        except ContributionApplyError as exc:
+        except (CatalogCodeError, ContributionApplyError) as exc:
             return Response(
                 {"detail": str(exc)},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(approved_response, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="catalog-code-suggestion")
+    def catalog_code_suggestion(self, request, pk=None):
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to review this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if contrib.status != Contribution.STATUS_PENDING:
+            return Response(
+                {"detail": f"Contribution is not pending (status: {contrib.status})."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        force = str(request.data.get("force") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            suggestion = suggest_for_contribution(contrib, force=force)
+        except CatalogCodeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "catalog_code": suggestion.catalog_code,
+                "prefix": suggestion.prefix,
+                "reference_code": suggestion.reference_code,
+                "region_abbrev": suggestion.region_abbrev,
+                "subject_type": suggestion.subject_type,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
@@ -2189,6 +2278,11 @@ class ContributionSubmitView(APIView):
             "saveAsDraft",
             "status",
         }
+        user_can_submit_catalog_code = (
+            request.user.is_superuser or request.user.has_perm(REVIEW_CONTRIBUTION_PERM)
+        )
+        if not user_can_submit_catalog_code:
+            skip_keys.update(CATALOG_CODE_KEYS)
         for key in data:
             if key in skip_keys:
                 continue
@@ -2288,6 +2382,8 @@ class ContributionSubmitView(APIView):
                 existing_sd, data, image_metas, is_cover_submission, image_order
             )
             submitted_data.update(image_updates)
+            if not user_can_submit_catalog_code:
+                existing_sd = strip_catalog_code_keys(existing_sd)
             existing_sd.update(submitted_data)
             contrib.submitted_data = existing_sd
             contrib.collection = collection

@@ -49,6 +49,7 @@ from typing import Any
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
+from common.catalog_codes import code_value_from_payload
 from common.models import (
     Citation,
     Color,
@@ -147,6 +148,7 @@ def apply_contribution_to_catalog(contrib):
         impression = impression.strip() or None
 
     marking_kwargs = dict(
+        code=code_value_from_payload(payload) or None,
         type=sub_type,
         inscription_txt=inscription,
         desc=desc_raw or None,
@@ -245,6 +247,9 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
         impression = impression.strip() or None
 
     # type was validated against _MARKING_TYPES by the dispatch before this ran.
+    catalog_code = code_value_from_payload(payload)
+    if catalog_code:
+        marking.code = catalog_code
     marking.type = payload.get("type")
     marking.inscription_txt = inscription
     marking.desc = desc_raw or None
@@ -354,6 +359,7 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
 
     cover = Cover(
+        code=code_value_from_payload(payload) or None,
         type=cover_type,
         color=color,
         has_adhesive=bool(has_adhesive),
@@ -363,8 +369,8 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
         created_by=actor,
         modified_by=actor,
     )
-    # code is assigned inside Cover.save() (it is blank until the row has a pk),
-    # so exclude it from validation here.
+    # Code is either supplied by the editor review path or assigned inside
+    # Cover.save() as a legacy direct-create fallback.
     cover.full_clean(exclude=["code"])
     cover.save()
 
@@ -474,6 +480,9 @@ def _apply_cover_edit(
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
     if height is not None:
         cover.height = height
+    catalog_code = code_value_from_payload(payload)
+    if catalog_code:
+        cover.code = catalog_code
 
     cover.modified_by = actor
     # code is kept (already assigned on the existing row); exclude from validation.

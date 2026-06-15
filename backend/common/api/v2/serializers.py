@@ -11,6 +11,11 @@ from django.contrib.auth import get_user_model
 
 from rest_framework import serializers
 
+from common.catalog_codes import (
+    CatalogCodeError,
+    strip_catalog_code_keys,
+    validate_unique_catalog_code,
+)
 from common.models import (
     Citation,
     Collection,
@@ -42,6 +47,20 @@ from .permissions import (
 
 
 User = get_user_model()
+
+
+def _viewer_may_see_catalog_code(user) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    return bool(user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM))
+
+
+def _redact_catalog_code(serializer, data):
+    request = serializer.context.get("request") if serializer.context else None
+    user = getattr(request, "user", None)
+    if not _viewer_may_see_catalog_code(user):
+        data["code"] = None
+    return data
 
 
 ###################################################################################################
@@ -404,7 +423,29 @@ class CoverSerializer(serializers.ModelSerializer):
             "created_date",
             "modified_date",
         ]
-        read_only_fields = ["id", "code", "created_date", "modified_date"]
+        # `code` is editor-writable so editors can override the auto-generated
+        # C-{pk} value when importing catalogs that carry their own coding
+        # systems. Cover.save() only auto-assigns when code is falsy, so an
+        # editor-set value sticks across later saves. Contributor write access
+        # is already blocked by the viewset's IsEditorOrAdminWrite permission.
+        read_only_fields = ["id", "created_date", "modified_date"]
+
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
+
+    def validate_code(self, value):
+        code = str(value or "").strip()
+        if not code:
+            return None
+        exclude_id = self.instance.pk if self.instance is not None else None
+        try:
+            return validate_unique_catalog_code(
+                subject_type="COVER",
+                code=code,
+                exclude_id=exclude_id,
+            )
+        except CatalogCodeError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(
@@ -605,6 +646,9 @@ class MarkingListSerializer(serializers.ModelSerializer):
     def get_state(self, obj):
         return _marking_state_name(obj)
 
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
+
     def get_state_abbrev(self, obj):
         return _marking_state_abbrev(obj)
 
@@ -719,6 +763,23 @@ class MarkingSerializer(serializers.ModelSerializer):
             "editor_feedback",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
+
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
+
+    def validate_code(self, value):
+        code = str(value or "").strip()
+        if not code:
+            return None
+        exclude_id = self.instance.pk if self.instance is not None else None
+        try:
+            return validate_unique_catalog_code(
+                subject_type="MARKING",
+                code=code,
+                exclude_id=exclude_id,
+            )
+        except CatalogCodeError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def get_is_removed(self, obj):
         return MarkingRecycleBin.objects.filter(marking_id=obj.pk).exists()
@@ -879,6 +940,16 @@ class ContributionListSerializer(serializers.ModelSerializer):
     def get_marking_id(self, obj):
         return _contribution_target_marking_id(obj)
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request") if self.context else None
+        user = getattr(request, "user", None)
+        if not _viewer_may_see_catalog_code(user):
+            submitted = data.get("submitted_data")
+            if isinstance(submitted, dict):
+                data["submitted_data"] = strip_catalog_code_keys(submitted)
+        return data
+
     def get_cover_id(self, obj):
         return _contribution_target_cover_id(obj)
 
@@ -944,6 +1015,16 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "contributor", "marking", "created_at"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request") if self.context else None
+        user = getattr(request, "user", None)
+        if not _viewer_may_see_catalog_code(user):
+            submitted = data.get("submitted_data")
+            if isinstance(submitted, dict):
+                data["submitted_data"] = strip_catalog_code_keys(submitted)
+        return data
+
     def get_marking_id(self, obj):
         return _contribution_target_marking_id(obj)
 
@@ -954,6 +1035,7 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
 class ContributionApproveRejectSerializer(serializers.Serializer):
     """Payload for approve / reject actions."""
     review_notes = serializers.CharField(required=False, allow_blank=True)
+    catalog_code = serializers.CharField(required=False, allow_blank=True)
 
 
 ###################################################################################################

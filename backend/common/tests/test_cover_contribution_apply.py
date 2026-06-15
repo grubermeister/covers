@@ -35,6 +35,7 @@ from common.models import (
     Image,
     Marking,
     PostOffice,
+    PostOfficeRegion,
     ReferenceWork,
     Region,
     SubmissionTransaction,
@@ -63,14 +64,24 @@ def _make_collection(user, name="Virginia", abbrev="VA"):
     )
 
 
-def _make_parent_marking(user):
-    color = Color.objects.create(name="Black", created_by=user, modified_by=user)
-    po = PostOffice.objects.create(name="Richmond", created_by=user, modified_by=user)
+def _make_parent_marking(user, region=None, town="Richmond"):
+    color, _created = Color.objects.get_or_create(
+        name="Black",
+        defaults={"created_by": user, "modified_by": user},
+    )
+    po = PostOffice.objects.create(name=town, created_by=user, modified_by=user)
+    if region is not None:
+        PostOfficeRegion.objects.create(
+            post_office=po,
+            region=region,
+            created_by=user,
+            modified_by=user,
+        )
     # is_manuscript=True keeps shape/lettering/is_irreg null (satisfies the
     # marking_manuscript_consistency check constraint without extra fixtures).
     return Marking.objects.create(
         type="TOWNMARK",
-        inscription_txt="RICHMOND VA",
+        inscription_txt="{} {}".format(town.upper(), region.abbrev if region else ""),
         is_manuscript=True,
         color=color,
         post_office=po,
@@ -122,25 +133,40 @@ def _make_cover_contribution(user, submitted_data, collection, status=Contributi
     )
 
 
+def _make_reference_work(user, code="ASCC1", title="A Catalog"):
+    return ReferenceWork.objects.create(
+        code=code,
+        title=title,
+        authorship="Author",
+        publisher="Pub",
+        publication_year=1900,
+        created_by=user,
+        modified_by=user,
+    )
+
+
 class CoverContributionApplyFunctionTests(TestCase):
     """Direct tests of the materialization helper (no HTTP / permissions)."""
 
     def setUp(self):
         self.user = _make_user("contributor")
         self.collection = _make_collection(self.user)
-        self.parent = _make_parent_marking(self.user)
-
-    def test_materializes_cover_and_children(self):
-        rw = ReferenceWork.objects.create(
-            title="A Catalog",
-            authorship="Author",
-            publisher="Pub",
-            publication_year=1900,
+        self.parent = _make_parent_marking(self.user, self.collection.region)
+        self.parent_reference = _make_reference_work(self.user, "ASCC1")
+        Citation.objects.create(
+            reference_work=self.parent_reference,
+            subject_type="MARKING",
+            subject_id=self.parent.pk,
+            citation_detail="p. 1",
             created_by=self.user,
             modified_by=self.user,
         )
+
+    def test_materializes_cover_and_children(self):
+        rw = self.parent_reference
         sd = _cover_submitted_data(
             self.parent,
+            catalog_code="ASCC1-VA-C0001",
             reference_work_ids=[rw.pk],
             reference_work_details=[{"reference_work_id": rw.pk, "page_number": "42"}],
         )
@@ -156,7 +182,7 @@ class CoverContributionApplyFunctionTests(TestCase):
         # Cover row
         self.assertEqual(Cover.objects.count(), 1)
         self.assertEqual(cover.type, "FC")
-        self.assertTrue(cover.code.startswith("C-"))
+        self.assertEqual(cover.code, "ASCC1-VA-C0001")
 
         # CoverMarking row: approved, linked to parent, reviewer NOT set here
         # (the approve view backfills the approving editor's identity).
@@ -179,6 +205,105 @@ class CoverContributionApplyFunctionTests(TestCase):
             Citation.objects.filter(subject_type="COVER", subject_id=cover.pk).count(),
             1,
         )
+
+    def test_cover_code_increments_for_same_reference_region_prefix(self):
+        first = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                self.parent,
+                catalog_code="ASCC1-VA-C0001",
+                reference_work_ids=[self.parent_reference.pk],
+            ),
+            self.collection,
+        )
+        second = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                self.parent,
+                catalog_code="ASCC1-VA-C0002",
+                reference_work_ids=[self.parent_reference.pk],
+            ),
+            self.collection,
+        )
+
+        first_cover = apply_cover_contribution_to_catalog(first)["cover"]
+        second_cover = apply_cover_contribution_to_catalog(second)["cover"]
+
+        self.assertEqual(first_cover.code, "ASCC1-VA-C0001")
+        self.assertEqual(second_cover.code, "ASCC1-VA-C0002")
+
+    def test_cover_code_sequence_resets_for_different_region_prefix(self):
+        other_collection = _make_collection(self.user, name="New York", abbrev="NY")
+        other_parent = _make_parent_marking(
+            self.user,
+            other_collection.region,
+            town="Albany",
+        )
+        Citation.objects.create(
+            reference_work=self.parent_reference,
+            subject_type="MARKING",
+            subject_id=other_parent.pk,
+            citation_detail="p. 2",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        va_contrib = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                self.parent,
+                catalog_code="ASCC1-VA-C0001",
+                reference_work_ids=[self.parent_reference.pk],
+            ),
+            self.collection,
+        )
+        ny_contrib = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                other_parent,
+                catalog_code="ASCC1-NY-C0001",
+                reference_work_ids=[self.parent_reference.pk],
+                state="NY",
+            ),
+            other_collection,
+        )
+
+        va_cover = apply_cover_contribution_to_catalog(va_contrib)["cover"]
+        ny_cover = apply_cover_contribution_to_catalog(ny_contrib)["cover"]
+
+        self.assertEqual(va_cover.code, "ASCC1-VA-C0001")
+        self.assertEqual(ny_cover.code, "ASCC1-NY-C0001")
+
+    def test_cover_code_sequence_resets_for_different_reference_prefix(self):
+        other_reference = _make_reference_work(
+            self.user,
+            code="VPHC1",
+            title="Virginia Postal History Catalog",
+        )
+        ascc_contrib = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                self.parent,
+                catalog_code="ASCC1-VA-C0001",
+                reference_work_ids=[self.parent_reference.pk],
+            ),
+            self.collection,
+        )
+        vphc_contrib = _make_cover_contribution(
+            self.user,
+            _cover_submitted_data(
+                self.parent,
+                catalog_code="VPHC1-VA-C0001",
+                reference_work_ids=[other_reference.pk],
+            ),
+            self.collection,
+        )
+
+        ascc_cover = apply_cover_contribution_to_catalog(ascc_contrib)["cover"]
+        vphc_cover = apply_cover_contribution_to_catalog(vphc_contrib)["cover"]
+
+        self.assertEqual(ascc_cover.code, "ASCC1-VA-C0001")
+        self.assertEqual(vphc_cover.code, "VPHC1-VA-C0001")
 
     def test_image_view_is_cover_valid_never_full(self):
         sd = _cover_submitted_data(self.parent)
@@ -268,10 +393,22 @@ class CoverContributionApproveEndpointTests(APITestCase):
         self.contributor = _make_user("submitter")
         self.editor = User.objects.create_superuser(username="editor", password="pw")
         self.collection = _make_collection(self.contributor)
-        self.parent = _make_parent_marking(self.contributor)
+        self.parent = _make_parent_marking(self.contributor, self.collection.region)
+        self.parent_reference = _make_reference_work(self.contributor, "ASCC1")
+        Citation.objects.create(
+            reference_work=self.parent_reference,
+            subject_type="MARKING",
+            subject_id=self.parent.pk,
+            citation_detail="p. 1",
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
 
     def _approve_url(self, pk):
         return "/api/v2/contributions/{}/approve/".format(pk)
+
+    def _suggestion_url(self, pk):
+        return "/api/v2/contributions/{}/catalog-code-suggestion/".format(pk)
 
     def test_approve_endpoint_materializes_and_records(self):
         sd = _cover_submitted_data(self.parent)
@@ -285,6 +422,8 @@ class CoverContributionApproveEndpointTests(APITestCase):
         self.assertEqual(resp.status_code, 200, getattr(resp, "data", resp))
         self.assertIn("coverId", resp.data)
         cover_id = resp.data["coverId"]
+        cover = Cover.objects.get(pk=cover_id)
+        self.assertEqual(cover.code, "ASCC1-VA-C0001")
 
         contrib.refresh_from_db()
         self.assertEqual(contrib.status, Contribution.STATUS_APPROVED)
@@ -318,3 +457,92 @@ class CoverContributionApproveEndpointTests(APITestCase):
 
         contrib.refresh_from_db()
         self.assertNotEqual(contrib.status, Contribution.STATUS_PENDING)
+
+    def test_catalog_code_suggestion_persists_on_pending_cover(self):
+        sd = _cover_submitted_data(self.parent)
+        contrib = _make_cover_contribution(self.contributor, sd, self.collection)
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(self._suggestion_url(contrib.pk), {}, format="json")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["catalog_code"], "ASCC1-VA-C0001")
+        contrib.refresh_from_db()
+        self.assertEqual(contrib.submitted_data["catalog_code"], "ASCC1-VA-C0001")
+
+    def test_cover_suggestion_uses_newest_parent_marking_citation(self):
+        newer = _make_reference_work(
+            self.contributor,
+            code="VPHC1",
+            title="Virginia Postal History Catalog",
+        )
+        Citation.objects.create(
+            reference_work=newer,
+            subject_type="MARKING",
+            subject_id=self.parent.pk,
+            citation_detail="p. 99",
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        contrib = _make_cover_contribution(
+            self.contributor,
+            _cover_submitted_data(self.parent),
+            self.collection,
+        )
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(self._suggestion_url(contrib.pk), {}, format="json")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["catalog_code"], "VPHC1-VA-C0001")
+
+    def test_cover_suggestion_falls_back_to_apmc_without_reference(self):
+        parent = _make_parent_marking(self.contributor, self.collection.region)
+        contrib = _make_cover_contribution(
+            self.contributor,
+            _cover_submitted_data(parent),
+            self.collection,
+        )
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(self._suggestion_url(contrib.pk), {}, format="json")
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["catalog_code"], "APMC-VA-C0001")
+
+    def test_approve_blocks_conflicting_catalog_code_override(self):
+        Cover.objects.create(
+            code="ASCC1-VA-C0001",
+            type="FC",
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        contrib = _make_cover_contribution(
+            self.contributor,
+            _cover_submitted_data(self.parent),
+            self.collection,
+        )
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(
+            self._approve_url(contrib.pk),
+            {"catalog_code": "ASCC1-VA-C0001"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 400, resp.data)
+        self.assertIn("already exists", resp.data["detail"])
+        contrib.refresh_from_db()
+        self.assertEqual(contrib.status, Contribution.STATUS_PENDING)
+
+    def test_direct_cover_suggestion_does_not_persist(self):
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(
+            "/api/v2/catalog-code-suggestions/",
+            {"subject_type": "COVER", "marking_id": self.parent.pk},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["catalog_code"], "ASCC1-VA-C0001")
