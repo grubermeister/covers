@@ -547,6 +547,8 @@ export async function getMarkingsPage(
     town?: string;
     beginYear?: string;
     endYear?: string;
+    height?: string;
+    width?: string;
     hasImages?: boolean;
     deferCount?: boolean;
     ordering?: string;
@@ -566,6 +568,8 @@ export async function getMarkingsPage(
   if (opt.town?.trim()) params.town = opt.town.trim();
   if (opt.beginYear?.trim()) params.earliest_use_year_min = opt.beginYear.trim();
   if (opt.endYear?.trim()) params.latest_use_year_max = opt.endYear.trim();
+  if (opt.height?.trim()) params.height = opt.height.trim();
+  if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();

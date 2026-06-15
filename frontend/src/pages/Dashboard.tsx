@@ -337,7 +337,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [goToPageInput, setGoToPageInput] = useState("");
-  const itemsPerPage = 10;
+  const [itemsPerPage, setItemsPerPage] = useState(10);
 
   // Editor tab: history of user contributions in assigned states, not full catalog.
   const [editorHistoryItems, setEditorHistoryItems] = useState<EditorHistoryItem[]>([]);
@@ -376,7 +376,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [editorHistoryPage, setEditorHistoryPage] = useState(1);
   const [editorHistoryTotal, setEditorHistoryTotal] = useState<number | null>(null);
   const [editorHistoryGoToInput, setEditorHistoryGoToInput] = useState("");
-  const editorHistoryPageSize = 10;
+  const [editorHistoryPageSize, setEditorHistoryPageSize] = useState(10);
 
   // Filter states (mirror Catalog Search)
   const [searchQuery, setSearchQuery] = useState("");
@@ -650,7 +650,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         setEditorHistoryTotal(null);
       })
       .finally(() => setEditorHistoryLoading(false));
-  }, [isEditor, activeTab, editorHistoryStatusFilter, editorHistoryPage, submissionsRefetchKey, editorStateFilter]);
+  }, [isEditor, activeTab, editorHistoryStatusFilter, editorHistoryPage, editorHistoryPageSize, submissionsRefetchKey, editorStateFilter]);
 
   // Reset editor pagination when changing history status filter or tab
   useEffect(() => {
@@ -667,6 +667,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     editorDateFrom,
     editorDateTo,
     submissionQueueSort,
+    editorHistoryPageSize,
   ]);
 
   // Apply filters (mirror Catalog Search semantics on client side)
@@ -835,10 +836,10 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     }
   };
 
-  // Reset submissions pagination when filters change
+  // Reset submissions pagination when filters or page size change
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, mySubmissionsSort, dateFrom, dateTo]);
+  }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, mySubmissionsSort, dateFrom, dateTo, itemsPerPage]);
 
   // In "removed" mode the rows on the page come from removedMarkings, not the
   // contribution list, so the page-end count must read that length instead.
@@ -1412,104 +1413,130 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                 </div>
               )}
 
-              {totalPages > 1 && !loading && user && filteredAndSortedSubmissions.length > 0 && (
+              {!loading && user && filteredAndSortedSubmissions.length > 0 && (
                 <div className="mt-8 flex flex-col items-center gap-4">
-                  <Pagination>
-                    <PaginationContent>
-                      <PaginationItem>
-                        <PaginationPrevious
-                          onClick={() => {
-                            setCurrentPage((p) => Math.max(1, p - 1));
-                            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                          }}
-                          className={currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
-                        />
-                      </PaginationItem>
+                  {totalPages > 1 && (
+                    <Pagination>
+                      <PaginationContent>
+                        <PaginationItem>
+                          <PaginationPrevious
+                            onClick={() => {
+                              setCurrentPage((p) => Math.max(1, p - 1));
+                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                            }}
+                            className={currentPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                          />
+                        </PaginationItem>
 
-                      {getPaginationPages(currentPage, totalPages).map((p, i) =>
-                        p === "ellipsis" ? (
-                          <PaginationItem key={`ellipsis-${i}`}>
-                            <PaginationEllipsis />
-                          </PaginationItem>
-                        ) : (
-                          <PaginationItem key={p}>
-                            <PaginationLink
-                              onClick={() => {
-                                setCurrentPage(p);
-                                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                              }}
-                              isActive={currentPage === p}
-                              className="cursor-pointer"
-                            >
-                              {p}
-                            </PaginationLink>
-                          </PaginationItem>
-                        ),
-                      )}
+                        {getPaginationPages(currentPage, totalPages).map((p, i) =>
+                          p === "ellipsis" ? (
+                            <PaginationItem key={`ellipsis-${i}`}>
+                              <PaginationEllipsis />
+                            </PaginationItem>
+                          ) : (
+                            <PaginationItem key={p}>
+                              <PaginationLink
+                                onClick={() => {
+                                  setCurrentPage(p);
+                                  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                                }}
+                                isActive={currentPage === p}
+                                className="cursor-pointer"
+                              >
+                                {p}
+                              </PaginationLink>
+                            </PaginationItem>
+                          ),
+                        )}
 
-                      <PaginationItem>
-                        <PaginationNext
-                          onClick={() => {
-                            setCurrentPage((p) => Math.min(totalPages, p + 1));
-                            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                          }}
-                          className={
-                            currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
-                          }
-                        />
-                      </PaginationItem>
-                    </PaginationContent>
-                  </Pagination>
+                        <PaginationItem>
+                          <PaginationNext
+                            onClick={() => {
+                              setCurrentPage((p) => Math.min(totalPages, p + 1));
+                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                            }}
+                            className={
+                              currentPage === totalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
+                            }
+                          />
+                        </PaginationItem>
+                      </PaginationContent>
+                    </Pagination>
+                  )}
 
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground">Go to page</span>
-                    <Input
-                      type="number"
-                      min={1}
-                      max={totalPages}
-                      placeholder="Page"
-                      value={goToPageInput}
-                      onChange={(e) => {
-                        const raw = e.target.value;
-                        if (raw === "") {
-                          setGoToPageInput("");
-                          return;
-                        }
-                        const n = parseInt(raw, 10);
-                        if (Number.isNaN(n)) return;
-                        const clamped = Math.max(1, Math.min(totalPages, n));
-                        setGoToPageInput(String(clamped));
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          const n = parseInt(goToPageInput, 10);
-                          if (!Number.isNaN(n)) {
-                            setCurrentPage(Math.max(1, Math.min(totalPages, n)));
-                            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                            setGoToPageInput("");
-                          }
-                        }
-                      }}
-                      className="h-9 w-16 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                      aria-label="Go to page number"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      className="h-9"
-                      onClick={() => {
-                        const n = parseInt(goToPageInput, 10);
-                        if (!Number.isNaN(n)) {
-                          setCurrentPage(Math.max(1, Math.min(totalPages, n)));
-                          window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                          setGoToPageInput("");
+                    <span className="text-sm text-muted-foreground">Records shown</span>
+                    <Select
+                      value={String(itemsPerPage)}
+                      onValueChange={(v) => {
+                        const n = parseInt(v, 10);
+                        if (n === 10 || n === 25 || n === 50 || n === 100) {
+                          setItemsPerPage(n);
                         }
                       }}
                     >
-                      Go
-                    </Button>
+                      <SelectTrigger className="h-9 w-[80px]" aria-label="Records per page">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="10">10</SelectItem>
+                        <SelectItem value="25">25</SelectItem>
+                        <SelectItem value="50">50</SelectItem>
+                        <SelectItem value="100">100</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    {totalPages > 1 && (
+                      <>
+                        <span className="text-sm text-muted-foreground">Go to page</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={totalPages}
+                          placeholder="Page"
+                          value={goToPageInput}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            if (raw === "") {
+                              setGoToPageInput("");
+                              return;
+                            }
+                            const n = parseInt(raw, 10);
+                            if (Number.isNaN(n)) return;
+                            const clamped = Math.max(1, Math.min(totalPages, n));
+                            setGoToPageInput(String(clamped));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              const n = parseInt(goToPageInput, 10);
+                              if (!Number.isNaN(n)) {
+                                setCurrentPage(Math.max(1, Math.min(totalPages, n)));
+                                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                                setGoToPageInput("");
+                              }
+                            }
+                          }}
+                          className="h-9 w-16 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          aria-label="Go to page number"
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-9"
+                          onClick={() => {
+                            const n = parseInt(goToPageInput, 10);
+                            if (!Number.isNaN(n)) {
+                              setCurrentPage(Math.max(1, Math.min(totalPages, n)));
+                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                              setGoToPageInput("");
+                            }
+                          }}
+                        >
+                          Go
+                        </Button>
+                      </>
+                    )}
                   </div>
                 </div>
               )}
@@ -2010,104 +2037,131 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                   </ul>
                 )}
 
-                {editorHistoryTotalPages > 1 && !editorHistoryLoading && !editorHistoryError && (
+                {!editorHistoryLoading && !editorHistoryError && editorHistoryTotalCount > 0 && (
                   <div className="mt-8 flex flex-col items-center gap-4">
-                    <Pagination>
-                      <PaginationContent>
-                        <PaginationItem>
-                          <PaginationPrevious
-                            onClick={() => {
-                              setEditorHistoryPage((p) => Math.max(1, p - 1));
-                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                            }}
-                            className={editorHistoryPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
-                          />
-                        </PaginationItem>
+                    {editorHistoryTotalPages > 1 && (
+                      <Pagination>
+                        <PaginationContent>
+                          <PaginationItem>
+                            <PaginationPrevious
+                              onClick={() => {
+                                setEditorHistoryPage((p) => Math.max(1, p - 1));
+                                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                              }}
+                              className={editorHistoryPage === 1 ? "pointer-events-none opacity-50" : "cursor-pointer"}
+                            />
+                          </PaginationItem>
 
-                        {getPaginationPages(editorHistoryPage, editorHistoryTotalPages).map((p, i) =>
-                          p === "ellipsis" ? (
-                            <PaginationItem key={`ellipsis-history-${i}`}>
-                              <PaginationEllipsis />
-                            </PaginationItem>
-                          ) : (
-                            <PaginationItem key={`history-${p}`}>
-                              <PaginationLink
-                                onClick={() => {
-                                  setEditorHistoryPage(p);
-                                  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                                }}
-                                isActive={editorHistoryPage === p}
-                                className="cursor-pointer"
-                              >
-                                {p}
-                              </PaginationLink>
-                            </PaginationItem>
-                          ),
-                        )}
+                          {getPaginationPages(editorHistoryPage, editorHistoryTotalPages).map((p, i) =>
+                            p === "ellipsis" ? (
+                              <PaginationItem key={`ellipsis-history-${i}`}>
+                                <PaginationEllipsis />
+                              </PaginationItem>
+                            ) : (
+                              <PaginationItem key={`history-${p}`}>
+                                <PaginationLink
+                                  onClick={() => {
+                                    setEditorHistoryPage(p);
+                                    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                                  }}
+                                  isActive={editorHistoryPage === p}
+                                  className="cursor-pointer"
+                                >
+                                  {p}
+                                </PaginationLink>
+                              </PaginationItem>
+                            ),
+                          )}
 
-                        <PaginationItem>
-                          <PaginationNext
-                            onClick={() => {
-                              setEditorHistoryPage((p) => Math.min(editorHistoryTotalPages, p + 1));
-                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                            }}
-                            className={
-                              editorHistoryPage === editorHistoryTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
-                            }
-                          />
-                        </PaginationItem>
-                      </PaginationContent>
-                    </Pagination>
+                          <PaginationItem>
+                            <PaginationNext
+                              onClick={() => {
+                                setEditorHistoryPage((p) => Math.min(editorHistoryTotalPages, p + 1));
+                                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                              }}
+                              className={
+                                editorHistoryPage === editorHistoryTotalPages ? "pointer-events-none opacity-50" : "cursor-pointer"
+                              }
+                            />
+                          </PaginationItem>
+                        </PaginationContent>
+                      </Pagination>
+                    )}
 
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-muted-foreground">Go to page</span>
-                      <Input
-                        type="number"
-                        min={1}
-                        max={editorHistoryTotalPages}
-                        placeholder="Page"
-                        value={editorHistoryGoToInput}
-                        onChange={(e) => {
-                          const raw = e.target.value;
-                          if (raw === "") {
-                            setEditorHistoryGoToInput("");
-                            return;
-                          }
-                          const n = parseInt(raw, 10);
-                          if (Number.isNaN(n)) return;
-                          const clamped = Math.max(1, Math.min(editorHistoryTotalPages, n));
-                          setEditorHistoryGoToInput(String(clamped));
-                        }}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") {
-                            e.preventDefault();
-                            const n = parseInt(editorHistoryGoToInput, 10);
-                            if (!Number.isNaN(n)) {
-                              setEditorHistoryPage(Math.max(1, Math.min(editorHistoryTotalPages, n)));
-                              window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                              setEditorHistoryGoToInput("");
-                            }
-                          }
-                        }}
-                        className="h-9 w-16 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
-                        aria-label="Go to history page number"
-                      />
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        className="h-9"
-                        onClick={() => {
-                          const n = parseInt(editorHistoryGoToInput, 10);
-                          if (!Number.isNaN(n)) {
-                            setEditorHistoryPage(Math.max(1, Math.min(editorHistoryTotalPages, n)));
-                            window.scrollTo({ top: 0, left: 0, behavior: "auto" });
-                            setEditorHistoryGoToInput("");
+                      <span className="text-sm text-muted-foreground">Records shown</span>
+                      <Select
+                        value={String(editorHistoryPageSize)}
+                        onValueChange={(v) => {
+                          const n = parseInt(v, 10);
+                          if (n === 10 || n === 25 || n === 50 || n === 100) {
+                            setEditorHistoryPageSize(n);
+                            setEditorHistoryPage(1);
                           }
                         }}
                       >
-                        Go
-                      </Button>
+                        <SelectTrigger className="h-9 w-[80px]" aria-label="Records per page">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="10">10</SelectItem>
+                          <SelectItem value="25">25</SelectItem>
+                          <SelectItem value="50">50</SelectItem>
+                          <SelectItem value="100">100</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      {editorHistoryTotalPages > 1 && (
+                        <>
+                          <span className="text-sm text-muted-foreground">Go to page</span>
+                          <Input
+                            type="number"
+                            min={1}
+                            max={editorHistoryTotalPages}
+                            placeholder="Page"
+                            value={editorHistoryGoToInput}
+                            onChange={(e) => {
+                              const raw = e.target.value;
+                              if (raw === "") {
+                                setEditorHistoryGoToInput("");
+                                return;
+                              }
+                              const n = parseInt(raw, 10);
+                              if (Number.isNaN(n)) return;
+                              const clamped = Math.max(1, Math.min(editorHistoryTotalPages, n));
+                              setEditorHistoryGoToInput(String(clamped));
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                e.preventDefault();
+                                const n = parseInt(editorHistoryGoToInput, 10);
+                                if (!Number.isNaN(n)) {
+                                  setEditorHistoryPage(Math.max(1, Math.min(editorHistoryTotalPages, n)));
+                                  window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                                  setEditorHistoryGoToInput("");
+                                }
+                              }
+                            }}
+                            className="h-9 w-16 text-center [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                            aria-label="Go to history page number"
+                          />
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="h-9"
+                            onClick={() => {
+                              const n = parseInt(editorHistoryGoToInput, 10);
+                              if (!Number.isNaN(n)) {
+                                setEditorHistoryPage(Math.max(1, Math.min(editorHistoryTotalPages, n)));
+                                window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+                                setEditorHistoryGoToInput("");
+                              }
+                            }}
+                          >
+                            Go
+                          </Button>
+                        </>
+                      )}
                     </div>
                   </div>
                 )}
