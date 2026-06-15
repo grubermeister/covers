@@ -43,6 +43,18 @@ class MarkingListFilter(django_filters.FilterSet):
         method='filter_latest_use_year_max',
         label='Latest observed year is at most',
     )
+    # Dimension exact-match filters. Stored values are Decimal(mm) with two
+    # decimal places, so Decimal("25") and Decimal("25.00") compare equal here.
+    height = django_filters.NumberFilter(
+        field_name='height',
+        lookup_expr='exact',
+        label='Height in mm (exact)',
+    )
+    width = django_filters.NumberFilter(
+        field_name='width',
+        lookup_expr='exact',
+        label='Width in mm (exact)',
+    )
 
     class Meta:
         model = Marking
