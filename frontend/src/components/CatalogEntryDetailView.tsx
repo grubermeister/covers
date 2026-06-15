@@ -16,7 +16,7 @@ export type CatalogEntry = {
   image_url: string | null;
   description?: string | null;
   citation_references?: string | null;
-  /** Optional; when missing, detail row shows "—" */
+  /** Optional; when missing, detail row shows "-". */
   dimensions?: string | null;
   manuscript?: string | null;
   /** Catalog record only */
@@ -31,19 +31,19 @@ export type CatalogEntry = {
 /** Parses date_range (e.g. "1825-1845" or "1825") into Earliest seen / Latest seen for display. */
 function parseDateRange(dateRange: string): { firstSeen: string; lastSeen: string } {
   const s = (dateRange ?? "").trim();
-  if (!s) return { firstSeen: "—", lastSeen: "—" };
+  if (!s) return { firstSeen: "-", lastSeen: "-" };
   const dash = s.indexOf("-");
-  if (dash === -1) return { firstSeen: s, lastSeen: "—" };
+  if (dash === -1) return { firstSeen: s, lastSeen: "-" };
   const first = s.slice(0, dash).trim();
   const last = s.slice(dash + 1).trim();
-  return { firstSeen: first || "—", lastSeen: last || "—" };
+  return { firstSeen: first || "-", lastSeen: last || "-" };
 }
 
 type CatalogEntryDetailViewProps = {
   entry: CatalogEntry;
   backLabel: string;
   onBack: () => void;
-  /** Main details card title: "Submission Details" or "Record Details" */
+  /** Main details card title, such as "Submission Details" or "Marking Details". */
   detailsCardTitle: string;
   /** Show "Upload Image" (record page); submission page omits */
   showUploadImage?: boolean;

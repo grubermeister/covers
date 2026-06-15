@@ -577,7 +577,7 @@ const CoverDetailPage = () => {
             <Card className="shadow-archival-md">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="font-heading text-lg">Record Details</CardTitle>
+                  <CardTitle className="font-heading text-lg">Cover Details</CardTitle>
                   {canSubmitEdit && (
                     <Button variant="outline" size="sm" onClick={openEditCover}>
                       <Pencil className="mr-2 h-4 w-4" />

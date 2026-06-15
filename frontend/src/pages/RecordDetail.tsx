@@ -597,11 +597,11 @@ const RecordDetail = () => {
       user.role === "administrator" ||
       user.is_superuser === true);
 
-  // Record History display rule: collapsed by default we show only the most
-  // recent event; when expanded we cap at the 10 newest events. Backend
+  // Record History display rule: collapsed by default we show the three most
+  // recent events; when expanded we cap at the 10 newest events. Backend
   // already returns events sorted by timestamp DESC, so we slice from the
   // front to avoid an extra sort pass on every render.
-  const HISTORY_COLLAPSED_LIMIT = 1;
+  const HISTORY_COLLAPSED_LIMIT = 3;
   const HISTORY_EXPANDED_LIMIT = 10;
   const visibleHistoryEvents = historyExpanded
     ? historyEvents.slice(0, HISTORY_EXPANDED_LIMIT)
@@ -892,7 +892,7 @@ const RecordDetail = () => {
                               onClick={() => setHistoryExpanded((v) => !v)}
                             >
                               {historyExpanded
-                                ? "Show only latest"
+                                ? `Show latest ${HISTORY_COLLAPSED_LIMIT}`
                                 : `Show recent history (up to ${HISTORY_EXPANDED_LIMIT})`}
                             </Button>
                             {historyExpanded && historyOverflow > 0 && (
@@ -920,7 +920,7 @@ const RecordDetail = () => {
               <Card className="shadow-archival-md">
                 <CardHeader>
                   <div className="flex items-center justify-between gap-3">
-                    <CardTitle className="font-heading text-lg">Record Details</CardTitle>
+                    <CardTitle className="font-heading text-lg">Marking Details</CardTitle>
                     {/* A removed marking is read-only: no edits until it is restored. */}
                     {!record.isRemoved && (
                       <Button variant="outline" size="sm" onClick={goEdit}>

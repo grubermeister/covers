@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { MarkingChangelogEvent } from "@/services/markings";
 
-const HISTORY_COLLAPSED_LIMIT = 1;
+const HISTORY_COLLAPSED_LIMIT = 3;
 const HISTORY_EXPANDED_LIMIT = 10;
 // Cap the per-event field-change list so a large edit does not flood the card.
 const DIFF_FIELD_LIMIT = 6;
@@ -120,7 +120,7 @@ export function EntryRecordHistoryCard({
               <div className="mt-3 flex items-center justify-between gap-3">
                 <Button type="button" variant="ghost" size="sm" onClick={onToggleExpanded}>
                   {expanded
-                    ? "Show only latest"
+                    ? `Show latest ${HISTORY_COLLAPSED_LIMIT}`
                     : `Show recent history (up to ${HISTORY_EXPANDED_LIMIT})`}
                 </Button>
                 {expanded && historyOverflow > 0 && (

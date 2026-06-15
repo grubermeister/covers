@@ -639,7 +639,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
           <Card className="shadow-archival-md">
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
-                <CardTitle className="font-heading text-lg">Record Details</CardTitle>
+                <CardTitle className="font-heading text-lg">Cover Details</CardTitle>
                 {canContributorResubmit && parentMarkingId != null && (
                   <Button
                     variant="outline"

@@ -11,6 +11,8 @@ import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Upload, Loader2, ChevronDown, ArrowLeft, ArrowRight, Star, Trash2 } from "lucide-react";
@@ -83,7 +85,7 @@ const MODE_COPY: Record<ContributeMode, {
   toastBody: string;
 }> = {
   "new": {
-    h1: "Create Marking",
+    h1: SUBMISSION_LABELS.action.submitNewMarking,
     intro: "Fill in the fields below. All fields match what reviewers see on the Submission Detail page.",
     card: "New Marking",
     button: SUBMISSION_LABELS.action.submitNewMarking,
@@ -99,7 +101,7 @@ const MODE_COPY: Record<ContributeMode, {
     toastBody: "Your updated submission has been sent for review again.",
   },
   "edit-marking": {
-    h1: "Edit Marking",
+    h1: "Submit Edit to Existing Marking",
     intro: "Edit requests are prefilled from the selected Marking and always go through the approval workflow before the published Marking is updated.",
     card: "Edit and Submit",
     button: SUBMISSION_LABELS.action.submitEditToMarking,
@@ -1042,7 +1044,7 @@ const Contribute = () => {
   const showAnythingElseSection = isHandstamped && (isTownmark || isRatemark || isAuxmark);
 
   const selectedDateFormatSummary = useMemo(() => {
-    if (dateFormatIds.length === 0) return "Select one or more date formats";
+    if (dateFormatIds.length === 0) return "Select Date format";
     const selectedCodes = dateFormatOptions
       .filter((opt) => dateFormatIds.includes(String(opt.id)))
       .map((opt) => opt.description || opt.name);
@@ -2144,25 +2146,22 @@ const Contribute = () => {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)] max-h-64 overflow-auto">
-                          {dateFormatOptions.map((opt) => {
-                            const value = String(opt.id);
-                            const checked = dateFormatIds.includes(value);
-                            return (
-                              <DropdownMenuCheckboxItem
-                                key={opt.id}
-                                checked={checked}
-                                onCheckedChange={(next) => {
-                                  setDateFormatIds((prev) => {
-                                    if (next) return prev.includes(value) ? prev : [...prev, value];
-                                    return prev.filter((id) => id !== value);
-                                  });
-                                  setFieldErrors((prev) => ({ ...prev, dateFormat: undefined }));
-                                }}
-                              >
-                                {opt.description || opt.name}
-                              </DropdownMenuCheckboxItem>
-                            );
-                          })}
+                          <DropdownMenuRadioGroup
+                            value={dateFormatIds[0] ?? ""}
+                            onValueChange={(value) => {
+                              setDateFormatIds(value ? [value] : []);
+                              setFieldErrors((prev) => ({ ...prev, dateFormat: undefined }));
+                            }}
+                          >
+                            {dateFormatOptions.map((opt) => {
+                              const value = String(opt.id);
+                              return (
+                                <DropdownMenuRadioItem key={opt.id} value={value}>
+                                  {opt.description || opt.name}
+                                </DropdownMenuRadioItem>
+                              );
+                            })}
+                          </DropdownMenuRadioGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
                       {fieldErrors.dateFormat && <p className="text-sm text-destructive">{fieldErrors.dateFormat}</p>}
