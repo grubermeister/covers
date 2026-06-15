@@ -1,23 +1,24 @@
 """ascc_image_extract.py -- two-stage marking-illustration extractor.
 
-Reads chunk PNGs at tools/wip/cache/<basename>/page-NNNN-MMMM.png plus the
-reviewed CSV at tools/wip/cache/<basename>.csv. For each chunk where Images
-Above >= 1:
+Reads chunk PNGs at tools/wip/cache/<basename>_chunks/page-NNNN-MMMM.png plus
+the raw extractor CSV at tools/wip/cache/<basename>.csv. For each chunk where
+Images Above >= 1:
 
   Stage 1 (deterministic, no API calls):
       Find row-blocks via find_blocks (BLANK_RUN=5 from the processor).
-      Cut at the midpoint of the LARGEST inter-block gap -- the
-      marking-to-text transition is always the widest vertical blank
-      in a chunk built by the upstream chunker. When find_blocks
-      returns a single merged block (marking and text packed too
-      tightly to separate at BLANK_RUN=5), re-scan inside it for any
-      2+ row blank gap and cut there.
+      Cut at the first catalog listing row after the top illustration area,
+      identified by its ASCC dot-leader/value footprint. If no listing row is
+      visible, fall back to the largest inter-block gap. When find_blocks
+      returns a single merged block (marking and text packed too tightly to
+      separate at BLANK_RUN=5), re-scan inside it for any 2+ row blank gap and
+      cut there.
 
       An earlier draft classified each block with a vision model. That
-      approach kept misclassifying graphically-text-like markings
-      (cursive postmarks, the lower "VA" line of a stacked marking,
-      etc.). The gap rule sidesteps the entire class of failure and
-      runs offline.
+      approach kept misclassifying graphically-text-like markings (cursive
+      postmarks, the lower "VA" line of a stacked marking, etc.). The
+      listing-footprint rule sidesteps that class of failure and avoids
+      keeping later catalog text when text-to-text gaps are wider than the
+      marking-to-listing gap.
 
   Stage 2 (deterministic, noise-aware, no API calls):
       Detect substantial dark regions in the sub-chunk on both axes:
@@ -32,7 +33,9 @@ Above >= 1:
           when a marking has wide internal blanks);
         - N == len(surviving runs): one bbox per run (side-by-side row);
         - N == len(row_blocks): one bbox per row-block (stacked);
-        - Else: log marking_count_mismatch and emit nothing.
+        - Else: log marking_count_mismatch and emit nothing unless the
+          mismatch is a safe one-content overcount that can be reconciled
+          to one emitted marking.
       Y bounds per bbox are tightened to the actual dark rows inside the
       bbox X range.
 
@@ -40,6 +43,7 @@ Outputs:
   tools/wip/cache/<basename>_subchunks/<region>-<page>-<chunk>.png
   tools/wip/cache/<basename>_images/<region>-<page>-<chunk>-<counter>.png
   tools/wip/cache/<basename>_subchunks_report.csv
+  optional reconciled CSV for downstream import-safe munger input
 
 Pipeline position: downstream of tools/ascc_page_extract.py (which
 produces the authoritative CSV with Images Above counts).
@@ -53,8 +57,8 @@ Usage:
 No caches: both stages are deterministic and re-run quickly.
 
 Report:
-    Status codes: ok, not_in_csv, no_blocks, marking_count_mismatch,
-    csv_parse_error.
+    Status codes: ok, count_reconciled, not_in_csv, no_blocks,
+    marking_count_mismatch, csv_parse_error.
 """
 
 import argparse
@@ -101,6 +105,12 @@ REPORT_COLUMNS = [
     "Page", "Chunk", "Images Above", "Markings Found", "Status", "Notes",
 ]
 
+IMPORT_BLOCKING_STATUSES = {
+    "csv_parse_error",
+    "marking_count_mismatch",
+    "no_blocks",
+}
+
 # Stage 2 noise + gap parameters (300 DPI scans). Both are deterministic.
 # A column "has content" if it has >= COL_DARK_MIN_PIXELS dark pixels.
 # Adjacent column-runs are merged if separated by <= MERGE_GAP_MAX
@@ -130,6 +140,22 @@ EDGE_ZONE_PX            = 50
 # on all sides (clamped to image bounds).
 MARKING_PADDING_PX      = 8
 
+# Stage 1 text-boundary detection. The old largest-gap rule failed when
+# catalog text below the marking contained a wider blank gap than the
+# marking-to-listing gap. Listing rows have a repeatable dot-leader footprint:
+# many narrow dark runs spread across the right half of the column. Postal
+# marking illustrations can contain words or rate marks, but they do not draw
+# a long row of leader dots ending near the value area.
+LISTING_LEADER_X0_FRAC      = 0.45
+LISTING_LEADER_X1_FRAC      = 0.96
+LISTING_LEADER_MAX_RUN_PX   = 8
+LISTING_LEADER_MIN_RUNS     = 20
+LISTING_LEADER_MIN_SPAN_PX  = 300
+WRAPPED_LISTING_MAX_GAP_PX   = 12
+WRAPPED_LISTING_MAX_HEIGHT_PX = 45
+WRAPPED_LISTING_MIN_WIDTH_FRAC = 0.55
+WRAPPED_LISTING_MAX_LEFT_FRAC = 0.18
+
 
 # ---------------------------------------------------------------------------
 # Paths and tee
@@ -140,7 +166,7 @@ class Paths:
 
     def __init__(self, basename):
         self.basename       = basename
-        self.images_dir     = WIP_DIR / "cache" / basename
+        self.images_dir     = WIP_DIR / "cache" / f"{basename}_chunks"
         self.input_csv      = WIP_DIR / "cache" / f"{basename}.csv"
         self.subchunks_dir  = WIP_DIR / "cache" / f"{basename}_subchunks"
         self.markings_dir   = WIP_DIR / "cache" / f"{basename}_images"
@@ -255,18 +281,146 @@ def _find_fine_blank_gap(im, y0, y1, min_gap_rows=2, skip_top_rows=20):
     return None
 
 
+def _narrow_dark_runs(mask_row):
+    """Return narrow dark column runs for one boolean row mask."""
+    runs = []
+    in_run = False
+    start = None
+    for x, is_dark in enumerate(mask_row):
+        if is_dark:
+            if not in_run:
+                in_run = True
+                start = x
+        elif in_run:
+            width = x - start
+            if width <= LISTING_LEADER_MAX_RUN_PX:
+                runs.append((start, x - 1))
+            in_run = False
+            start = None
+    if in_run:
+        width = len(mask_row) - start
+        if width <= LISTING_LEADER_MAX_RUN_PX:
+            runs.append((start, len(mask_row) - 1))
+    return runs
+
+
+def block_has_listing_leader(im, y0, y1):
+    """Return True when a row-block looks like ASCC listing text.
+
+    The detector is intentionally narrow. It looks only for dot-leader rows
+    in the right half of the block. Section headings, editorial paragraphs,
+    and marking illustrations may be text-like, but they should not decide
+    the image/text cut unless a listing row is visible.
+    """
+    gray = im.crop((0, y0, im.size[0], y1 + 1)).convert("L")
+    arr = np.array(gray)
+    _H, W = arr.shape
+    x0 = int(W * LISTING_LEADER_X0_FRAC)
+    x1 = int(W * LISTING_LEADER_X1_FRAC)
+    if x1 <= x0:
+        return False
+
+    mask = arr[:, x0:x1] < COL_DARK_BRIGHTNESS_MAX
+    for row in mask:
+        runs = _narrow_dark_runs(row)
+        if len(runs) < LISTING_LEADER_MIN_RUNS:
+            continue
+        span = runs[-1][1] - runs[0][0] + 1
+        if span >= LISTING_LEADER_MIN_SPAN_PX:
+            return True
+    return False
+
+
+def _block_dark_bbox_metrics(im, y0, y1):
+    """Return dark-pixel bbox metrics for one row-block."""
+    gray = im.crop((0, y0, im.size[0], y1 + 1)).convert("L")
+    arr = np.array(gray)
+    _H, W = arr.shape
+    mask = arr < COL_DARK_BRIGHTNESS_MAX
+    rows, cols = np.where(mask)
+    if not len(cols):
+        return {
+            "height": y1 - y0 + 1,
+            "left_frac": 1.0,
+            "width_frac": 0.0,
+        }
+    left = int(cols.min())
+    right = int(cols.max())
+    return {
+        "height": y1 - y0 + 1,
+        "left_frac": left / W,
+        "width_frac": (right - left + 1) / W,
+    }
+
+
+def _block_looks_like_wrapped_listing_line(im, previous, following):
+    """Return True for a first listing line wrapped above leader/value text.
+
+    Example shape:
+        block N:   UNIVERSITY of Va.(1834-57;32;...)
+        block N+1: Red,Blue,Black) ................. 25.00
+
+    The first line has no leader dots, so leader detection finds block N+1.
+    Only walk backward over short, adjacent, left-starting text blocks. This
+    avoids pulling tall marking art back into the catalog-text side.
+    """
+    prev_y0, prev_y1 = previous
+    next_y0, _next_y1 = following
+    gap = next_y0 - prev_y1 - 1
+    if gap > WRAPPED_LISTING_MAX_GAP_PX:
+        return False
+
+    metrics = _block_dark_bbox_metrics(im, prev_y0, prev_y1)
+    if metrics["height"] > WRAPPED_LISTING_MAX_HEIGHT_PX:
+        return False
+    if metrics["width_frac"] < WRAPPED_LISTING_MIN_WIDTH_FRAC:
+        return False
+    if metrics["left_frac"] > WRAPPED_LISTING_MAX_LEFT_FRAC:
+        return False
+    return True
+
+
+def _first_text_block_index_for_listing(im, blocks, leader_idx):
+    """Return first text block for a detected listing leader block."""
+    first_idx = leader_idx
+    while first_idx > 1:
+        previous = blocks[first_idx - 1]
+        following = blocks[first_idx]
+        if not _block_looks_like_wrapped_listing_line(
+            im, previous, following,
+        ):
+            break
+        first_idx -= 1
+    return first_idx
+
+
+def _first_listing_block_index(im, blocks):
+    """Return the first block index with a listing-leader footprint.
+
+    The first detected block in an image-bearing chunk is the marking area.
+    Starting at block 2 prevents display-letter or manuscript markings at the
+    very top from self-identifying as catalog text.
+    """
+    for i in range(1, len(blocks)):
+        y0, y1 = blocks[i]
+        if block_has_listing_leader(im, y0, y1):
+            return _first_text_block_index_for_listing(im, blocks, i)
+    return None
+
+
 def split_chunk(im, expected, verbose, label):
-    """Find the marking-vs-text boundary in a chunk via the LARGEST
-    inter-block gap.
+    """Find the marking-vs-text boundary in an image-bearing chunk.
 
     Rationale: every chunk produced upstream is [marking(s) at top] +
-    [catalog text at bottom]. The marking-to-text transition is always
-    the largest vertical gap between row-blocks (intra-marking blank
-    runs are smaller; inter-text-row blank runs are smaller too). We
-    used to classify each block with a vision model, but multiple real
+    [catalog text at bottom]. The first printed listing row below the
+    marking has a dot-leader/value footprint that marking illustrations
+    do not have. Cut before that first listing row. If no listing row is
+    visible, fall back to the largest inter-block gap.
+
+    We used to classify each block with a vision model, but multiple real
     chunks had the model misclassify a block (script postmark called
     'text', the lower 'VA' line of a marking called 'text'). The
-    deterministic gap rule sidesteps that entire class of failure.
+    deterministic listing-leader rule sidesteps that class of failure.
 
     Single-block fallback: when find_blocks returns one merged block
     (marking and text packed too tightly to be separated at the
@@ -296,7 +450,21 @@ def split_chunk(im, expected, verbose, label):
                 f"single-block chunk with no internal gap; using full "
                 f"chunk height {H}")
 
-    # Multi-block: cut at the largest inter-block gap.
+    first_listing_idx = _first_listing_block_index(im, blocks)
+    if first_listing_idx is not None:
+        last_illus_y1 = blocks[first_listing_idx - 1][1]
+        first_text_y0 = blocks[first_listing_idx][0]
+        cut_y = (last_illus_y1 + first_text_y0) // 2
+        illus_count = first_listing_idx
+        notes = (
+            f"cut at y={cut_y}; first listing-leader text block is "
+            f"block {first_listing_idx + 1} of {len(blocks)}"
+        )
+        return cut_y, illus_count, "ok", notes
+
+    # Fallback: cut at the largest inter-block gap when no listing row is
+    # visible. This preserves behavior for pure-illustration chunks and odd
+    # catalog fragments that do not include dot leaders.
     best_gap = -1
     best_idx = 0
     for i in range(len(blocks) - 1):
@@ -498,6 +666,50 @@ def split_subchunk_into_markings(sub_im, expected):
     return None
 
 
+def reconcile_single_marking_overcount(sub_im):
+    """Return one bbox only when geometry shows one content group.
+
+    This is intentionally narrower than split_subchunk_into_markings(..., 1):
+    the normal expected=1 path unions every surviving group, but overcount
+    reconciliation is only safe when the filtered column analysis already
+    sees exactly one substantial group.
+    """
+    gray = sub_im.convert("L")
+    W, H = sub_im.size
+    arr = np.array(gray)
+    is_dark = arr < COL_DARK_BRIGHTNESS_MAX
+
+    row_blocks = find_blocks(gray)
+    if not row_blocks:
+        return None
+
+    y_top = row_blocks[0][0]
+    y_bot = row_blocks[-1][1]
+    candidates = _column_candidates(is_dark, y_top, y_bot + 1, W)
+    if len(candidates) != 1:
+        return None
+
+    x0, x1 = candidates[0]
+    ty0, ty1 = _tight_y(is_dark, x0, x1, (y_top, y_bot))
+    return [_pad_bbox((x0, ty0, x1 + 1, ty1 + 1), W, H)]
+
+
+def save_marking_images(paths, image_slug, page, chunk_seq, subchunk, markings):
+    """Write marking crop files and return the number emitted."""
+    emitted = 0
+    for i, (x0, y0, x1, y1) in enumerate(markings, 1):
+        marking_im = subchunk.crop((x0, y0, x1, y1))
+        m_name = image_filename(image_slug, page, chunk_seq, i)
+        marking_im.save(
+            paths.markings_dir / m_name,
+            format="PNG",
+            optimize=False,
+            compress_level=1,
+        )
+        emitted += 1
+    return emitted
+
+
 # ---------------------------------------------------------------------------
 # Report writer
 # ---------------------------------------------------------------------------
@@ -518,11 +730,56 @@ def write_report(report_csv, rows):
             writer.writerow(r)
 
 
+def write_reconciled_csv(input_csv, output_csv, reconciled_counts):
+    """Copy the raw extractor CSV, applying per-chunk count corrections.
+
+    Example correction map shape:
+        {(419, 14): 1}
+
+    The first row for each corrected (Page, Chunk) receives the corrected
+    Images Above value. Later rows for that same chunk receive 0. Rows that
+    are not corrected are written unchanged.
+    """
+    output_csv = Path(output_csv)
+    output_csv.parent.mkdir(parents=True, exist_ok=True)
+    seen = set()
+    with input_csv.open(newline="") as src, output_csv.open("w", newline="") as dst:
+        reader = csv.DictReader(src)
+        writer = csv.DictWriter(
+            dst,
+            fieldnames=reader.fieldnames,
+            quoting=csv.QUOTE_MINIMAL,
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for row in reader:
+            key = None
+            try:
+                key = (int(row["Page"]), int(row["Chunk"]))
+            except (ValueError, KeyError, TypeError):
+                pass
+            if key in reconciled_counts:
+                if key in seen:
+                    row["Images Above"] = "0"
+                else:
+                    row["Images Above"] = str(int(reconciled_counts[key]))
+                    seen.add(key)
+            writer.writerow(row)
+
+
+def strict_failures(report_rows):
+    """Return report rows that make the output unsafe for import."""
+    return [
+        r for r in report_rows
+        if r.get("Status") in IMPORT_BLOCKING_STATUSES
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
 
-def run_extract(paths, page_filter, verbose):
+def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
     """Walk every chunk on disk. For each chunk with CSV Images Above >= 1
     (and inside the --pages filter), classify its row-blocks, cut above
     the first text block, and save the top portion as a sub-chunk PNG.
@@ -552,6 +809,7 @@ def run_extract(paths, page_filter, verbose):
     report_rows = []
     subchunks_emitted = 0
     markings_emitted = 0
+    reconciled_counts = {}
 
     for page, chunk_seq, path in chunks:
         if (page, chunk_seq) not in counts:
@@ -601,27 +859,37 @@ def run_extract(paths, page_filter, verbose):
                 # Stage 2: deterministic split (no API calls).
                 markings = split_subchunk_into_markings(subchunk, expected)
                 if markings is None:
-                    status = "marking_count_mismatch"
-                    found = 0
-                    notes = (
-                        f"{notes}; sub-chunk structure cannot satisfy "
-                        f"expected={expected} after noise-filter and "
-                        f"gap-merge"
+                    reconciled = (
+                        reconcile_single_marking_overcount(subchunk)
+                        if expected > 1 else None
                     )
+                    if reconciled is None:
+                        status = "marking_count_mismatch"
+                        found = 0
+                        notes = (
+                            f"{notes}; sub-chunk structure cannot satisfy "
+                            f"expected={expected} after noise-filter and "
+                            f"gap-merge"
+                        )
+                    else:
+                        found = save_marking_images(
+                            paths, image_slug, page, chunk_seq,
+                            subchunk, reconciled,
+                        )
+                        markings_emitted += found
+                        status = "count_reconciled"
+                        reconciled_counts[(page, chunk_seq)] = found
+                        notes = (
+                            f"{notes}; reconciled Images Above from "
+                            f"{expected} to {found}; emitted {found} "
+                            f"marking(s)"
+                        )
                 else:
-                    found = len(markings)
-                    for i, (x0, y0, x1, y1) in enumerate(markings, 1):
-                        marking_im = subchunk.crop((x0, y0, x1, y1))
-                        m_name = image_filename(
-                            image_slug, page, chunk_seq, i
-                        )
-                        marking_im.save(
-                            paths.markings_dir / m_name,
-                            format="PNG",
-                            optimize=False,
-                            compress_level=1,
-                        )
-                        markings_emitted += 1
+                    found = save_marking_images(
+                        paths, image_slug, page, chunk_seq,
+                        subchunk, markings,
+                    )
+                    markings_emitted += found
                     notes = f"{notes}; emitted {found} marking(s)"
 
         report_rows.append({
@@ -650,7 +918,22 @@ def run_extract(paths, page_filter, verbose):
 
     report_rows.sort(key=_sort_key)
     write_report(paths.report_csv, report_rows)
+    if reconciled_csv is not None:
+        write_reconciled_csv(
+            paths.input_csv, reconciled_csv, reconciled_counts,
+        )
+        print(f"reconciled csv:  {reconciled_csv}")
     _print_summary(subchunks_emitted, markings_emitted, report_rows)
+    failures = strict_failures(report_rows)
+    if strict and failures:
+        print()
+        print("strict mode: import-blocking image extraction status rows:")
+        for r in failures:
+            print(
+                f"  page={r['Page']} chunk={r['Chunk']} "
+                f"status={r['Status']}"
+            )
+        raise SystemExit(1)
 
 
 def _print_summary(subchunks, markings, rows):
@@ -673,20 +956,22 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Two-stage marking-illustration extractor (fully "
-            "deterministic). Stage 1: find row-blocks and cut at the "
-            "largest inter-block gap to produce a text-free sub-chunk "
-            "PNG. Stage 2: split the sub-chunk into individual markings "
-            "via row-block + column-segment analysis with noise "
-            "filtering and Y-aware merging; emit one PNG per marking "
-            "when the count satisfies the CSV's Images Above, otherwise "
-            "log the mismatch and skip marking emission for that chunk."
+            "deterministic). Stage 1: find row-blocks and cut before "
+            "the first catalog listing row after the illustration area, "
+            "falling back to the largest inter-block gap when no listing "
+            "row is visible. Stage 2: split the sub-chunk into individual "
+            "markings via row-block + column-segment analysis with noise "
+            "filtering and Y-aware merging; emit one PNG per marking when "
+            "the count satisfies the CSV's Images Above; reconcile safe "
+            "one-content overcounts; otherwise log the mismatch and skip "
+            "marking emission for that chunk."
         ),
     )
     parser.add_argument(
         "basename",
         help=(
             "base name of the catalog (e.g. VA_ASCC_CTLG). Drives input "
-            "dir tools/wip/cache/<basename>/, input CSV "
+            "dir tools/wip/cache/<basename>_chunks/, input CSV "
             "tools/wip/cache/<basename>.csv, subchunks dir "
             "tools/wip/cache/<basename>_subchunks/, markings dir "
             "tools/wip/cache/<basename>_images/, report CSV "
@@ -710,6 +995,24 @@ def main(argv=None):
             "tools/wip/cache/<basename>_subchunks.log."
         ),
     )
+    parser.add_argument(
+        "--reconciled-csv",
+        type=Path,
+        default=None,
+        help=(
+            "write an import-safe CSV that preserves the raw extractor "
+            "CSV shape but corrects Images Above for chunks whose "
+            "overcount was deterministically reconciled."
+        ),
+    )
+    parser.add_argument(
+        "--strict",
+        action="store_true",
+        help=(
+            "exit nonzero after writing the report if any import-blocking "
+            "image extraction status remains unreconciled."
+        ),
+    )
     args = parser.parse_args(argv)
 
     paths = Paths(args.basename)
@@ -731,9 +1034,13 @@ def main(argv=None):
         if args.verbose:
             print(f"verbose log: tee-ing to {paths.run_log}")
         print(f"basename:        {paths.basename}")
-        print(f"stage1:          deterministic (largest inter-block gap)")
+        print("stage1:          deterministic "
+              "(listing-leader boundary, largest-gap fallback)")
         print(f"stage2:          deterministic "
               f"(min_width={MIN_MARKING_WIDTH}, merge_gap={MERGE_GAP_MAX})")
+        if args.reconciled_csv is not None:
+            print(f"reconciled csv:  {args.reconciled_csv}")
+        print(f"strict:          {'yes' if args.strict else 'no'}")
         if args.pages is not None:
             ids = args.pages
             sample = ",".join(str(x) for x in sorted(ids)[:6])
@@ -742,7 +1049,13 @@ def main(argv=None):
         else:
             print("pages:    (no filter)")
         print()
-        run_extract(paths, args.pages, args.verbose)
+        run_extract(
+            paths,
+            args.pages,
+            args.verbose,
+            reconciled_csv=args.reconciled_csv,
+            strict=args.strict,
+        )
     finally:
         if log_fh is not None:
             sys.stdout = saved_stdout

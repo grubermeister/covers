@@ -36,6 +36,7 @@ from munger.images import (
 from munger.io import (
     OPTIONAL_COLS,
     REQUIRED_COLS,
+    apply_meta_listing_defaults,
     assign_section_regions,
     process_meta_rows,
 )
@@ -95,6 +96,7 @@ def main(argv=None):
             f'Required columns missing from {INPUT_CSV}: {missing_required}'
         )
     df['section_region_id'] = assign_section_regions(df, _region_seed, REGION_ID)
+    df = apply_meta_listing_defaults(df)
     meta_df = df[df['Type'] == 'META'].reset_index(drop=True)
     listings_df = df[df['Type'] == 'LISTING'].reset_index(drop=True)
     process_meta_rows(meta_df)

@@ -11,8 +11,9 @@
 # Expected exit code on success: 0.
 #
 # Output:
-#   tools/wip/cache/<BASE>/                    reviewed chunk PNG handoff
-#   tools/wip/cache/<BASE>.csv                 reviewed OCR CSV handoff
+#   tools/wip/cache/<BASE>_chunks/             reviewed chunk PNG handoff
+#   tools/wip/cache/<BASE>.csv                 raw OCR CSV from vision
+#   tools/wip/cache/<BASE>_reconciled.csv      import-safe OCR CSV handoff
 #   backend/media/<region>/                    copied marking images
 #   tools/wip/out/                             import_ascc_bundle-ready CSVs
 #
@@ -127,6 +128,7 @@ fi
 
 PDF_PATH="${INPUT_DIR}/${BASE}.pdf"
 CACHE_CSV="tools/wip/cache/${BASE}.csv"
+CACHE_RECONCILED_CSV="tools/wip/cache/${BASE}_reconciled.csv"
 CACHE_IMAGES_DIR="tools/wip/cache/${BASE}_images"
 
 require_file() {
@@ -210,13 +212,16 @@ echo "ASCC pipeline"
 echo "  base:       $BASE"
 echo "  pdf:        $PDF_PATH"
 echo "  cache csv:  $CACHE_CSV"
+echo "  handoff csv: $CACHE_RECONCILED_CSV"
 echo "  media dir:  $MEDIA_DIR"
 echo "  out dir:    $OUT_DIR"
 echo "  reference:  $REFERENCE_WORK_CODE"
 
 run_cmd uv run python tools/ascc_page_processor.py "${processor_args[@]}"
 run_cmd uv run python tools/ascc_page_extract.py "${extract_args[@]}"
-run_cmd uv run python tools/ascc_image_extract.py "${image_args[@]}"
+run_cmd uv run python tools/ascc_image_extract.py "${image_args[@]}" \
+  --strict \
+  --reconciled-csv "$CACHE_RECONCILED_CSV"
 
 mkdir -p "$MEDIA_DIR"
 shopt -s nullglob
@@ -236,7 +241,7 @@ if [[ "$CLEAN_OUT" -eq 1 ]]; then
 fi
 
 run_cmd uv run python tools/ascc_data_munger.py \
-  --input "$CACHE_CSV" \
+  --input "$CACHE_RECONCILED_CSV" \
   --input-dir "$INPUT_DIR" \
   --out-dir "$OUT_DIR" \
   --reference-work-code "$REFERENCE_WORK_CODE"

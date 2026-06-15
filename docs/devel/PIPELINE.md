@@ -14,7 +14,7 @@ canonical, reproducible path; it supersedes the notebook chain described in
 | Need | How |
 |------|-----|
 | Python env | `uv sync` in repo root (set `CC=gcc CXX=g++` if `mysqlclient` fails to build) |
-| MySQL DB | `worldcovers` DB migrated; see `tools/rebuild_staging_db.sh`. |
+| MySQL DB | `worldcovers` DB migrated; see `tools/rebuild_staging_db.sh`. Work on `staging` branch; see `DECISIONS.md` for the `main` migration bug. |
 | `pdftoppm` | poppler-utils. `sudo apt-get install -y poppler-utils`, or no-sudo `brew install poppler` |
 | `OPENROUTER_API_KEY` | in **`worldcovers/.env`** (the scripts load `TOOLS_DIR.parent/.env`, i.e. the repo-root `.env`, NOT the workspace-root one). Account must have credit -- the vision stages call the paid model `anthropic/claude-sonnet-4.6` |
 
@@ -42,11 +42,10 @@ Every script keys off one basename, e.g. `VA_ASCC_CTLG`. It must:
 |---|--------|------|-------|--------|
 | A | `ascc_page_processor.py ... --stages render` | no | `wip/in/<BASE>.pdf` | `wip/cache/<BASE>_full/page-*.png` |
 | B | `ascc_page_processor.py ... --stages halves` | yes | full pages | `wip/cache/<BASE>_halves/` |
-| C | `ascc_page_processor.py ... --stages chunks` | yes | halves | `wip/out/<BASE>/page-NNNN-MMMM.png` |
-| -- | **hop 1** | -- | move chunks `wip/out/<BASE>/` -> `wip/in/<BASE>/` | extract/image_extract read from `in/` |
-| D | `ascc_page_extract.py <BASE>` | yes | `wip/in/<BASE>/` chunks | `wip/out/<BASE>.csv` |
-| E | `ascc_image_extract.py <BASE>` | no | `wip/in/<BASE>/` chunks + `wip/out/<BASE>.csv` | `wip/out/<BASE>_images/` |
-| F | `ascc_data_munger.py --input ... --input-dir ...` | no | extract CSV + seeds + images | Django-shape CSVs in `wip/out/` |
+| C | `ascc_page_processor.py ... --stages chunks` | yes | halves | `wip/cache/<BASE>_chunks/page-NNNN-MMMM.png` |
+| D | `ascc_page_extract.py <BASE>` | yes | `wip/cache/<BASE>_chunks/` chunks | `wip/cache/<BASE>.csv` |
+| E | `ascc_image_extract.py <BASE>` | no | raw extract CSV + chunks | marking images + reconciled CSV |
+| F | `ascc_data_munger.py --input ... --input-dir ...` | no | reconciled CSV + seeds + images | Django-shape CSVs in `wip/out/` |
 | G | `manage.py import_ascc_bundle <out-dir>` | no | the bundle | rows in MySQL |
 
 All commands run from the repo root (`worldcovers/`).
@@ -84,19 +83,11 @@ uv run python tools/ascc_page_processor.py VA_ASCC_CTLG --stages chunks
 Per half: deterministic dark/blank row-block detection + vision per-block
 classify (illustration vs text); cut at the top of every illustration block.
 
-Result (VA): 795 blocks detected, 173 illustrations, **201 chunk PNGs** ->
-`wip/out/VA_ASCC_CTLG/page-NNNN-MMMM.png` (~34 min; 795 classify + 197 review
-vision calls).
-
-## hop 1 -- move chunks where the downstream scripts read them
-
-The processor writes chunks to `wip/out/<BASE>/`, but `ascc_page_extract.py` and
-`ascc_image_extract.py` both read from `wip/in/<BASE>/`. Move them:
-
-```bash
-mkdir -p tools/wip/in/VA_ASCC_CTLG
-mv tools/wip/out/VA_ASCC_CTLG/* tools/wip/in/VA_ASCC_CTLG/
-```
+Result (VA before the page 419 Norfolk split fix): 795 blocks detected,
+173 illustrations, **201 chunk PNGs** (~34 min; 795 classify + 197 review
+vision calls). The current chunk handoff directory is
+`wip/cache/VA_ASCC_CTLG_chunks/page-NNNN-MMMM.png`; no manual chunk move is
+needed.
 
 ## D. Extract  (vision)
 
@@ -105,33 +96,39 @@ uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
 ```
 
 Sends each chunk to the vision model; writes catalog rows (Listing, Page,
-Chunk, Images Above, Type) to `wip/out/VA_ASCC_CTLG.csv`.
+Chunk, Images Above, Type) to `wip/cache/VA_ASCC_CTLG.csv`.
 
 Result (VA): **1,596 rows** (1,539 LISTING + 57 META), 167 chunks with
-`Images Above >= 1` (~22 min).
+`Images Above >= 1` (~22 min). This CSV is raw vision output. Downstream
+import uses the reconciled handoff CSV written by image-extract.
 
-> **Per-chunk review (the "reviewed CSV"):** the vision pass can over-count
-> markings on a noisy chunk. VA page 419 chunk 14 was tagged `Images Above=2`
-> but contains only one marking (a cursive "Nfk" manuscript mark; the ornate
-> "NORFOLK" below is a section banner, not a marking). image-extract (next
-> step) refuses to fabricate the 2nd image and flags `marking_count_mismatch`,
-> and the munger then aborts on the missing file. Fix: correct that row's
-> `Images Above` to the true count in the CSV and re-run image-extract for the
-> page. This is the human review the pipeline assumes between extract and munge.
+> **Known limitation (MD run, 2026-06-12):** image-extract separates
+> illustrations from text at the chunk's single largest vertical gap. On dense
+> pages (MD's Baltimore section) real tracings can sit below that cut and are
+> unreachable; the review can only reduce the count and forfeit those images.
+> Listings still import. MD saw about 14 forfeits vs. 3 on FL. Candidate fix:
+> reuse the chunk stage's illustration-block classification instead of
+> re-deriving the boundary. Forfeits are cataloged per state in
+> `docs/<st>-edge-cases.md`.
 
 ## E. Image extract  (deterministic, no API)
 
 ```bash
-uv run python tools/ascc_image_extract.py VA_ASCC_CTLG
+uv run python tools/ascc_image_extract.py VA_ASCC_CTLG \
+  --strict \
+  --reconciled-csv tools/wip/cache/VA_ASCC_CTLG_reconciled.csv
 ```
 
 For each chunk with `Images Above >= 1`, cuts the marking illustration(s) out by
 gap/dark-region geometry (no vision). Writes
-`wip/out/VA_ASCC_CTLG_images/va-<page>-<chunk>-<counter>.png`. Use `--pages 419`
-to re-run a single page after a review correction.
+`wip/cache/VA_ASCC_CTLG_images/va-<page>-<chunk>-<counter>.png`. If the raw
+vision count safely over-counts one substantial marking group, image-extract
+emits one image, reports `count_reconciled`, and writes the corrected count to
+`tools/wip/cache/VA_ASCC_CTLG_reconciled.csv`. Unreconciled mismatches fail
+under `--strict` before the munger can reference missing files.
 
-Result (VA): 167 subchunks, **205 marking images** (after the chunk-14 review
-fix; 204 before), all `ok`.
+Result (VA): 167 subchunks, **205 marking images**, with all import-blocking
+statuses resolved.
 
 ### hop 2 -- copy marking images into Django's media root
 
@@ -140,17 +137,17 @@ The munger (next step) reads marking bytes from `MEDIA_ROOT/<region>/`, not from
 
 ```bash
 mkdir -p backend/media/va
-cp tools/wip/out/VA_ASCC_CTLG_images/*.png backend/media/va/
+cp tools/wip/cache/VA_ASCC_CTLG_images/*.png backend/media/va/
 ```
 
 ## F. Munge  (deterministic, no API)
 
-Point `--input` at the extract CSV in `out/`, `--input-dir` at the seeds in `in/`
-(avoids copying the CSV back into `in/`):
+Point `--input` at the reconciled handoff CSV from image-extract,
+`--input-dir` at the seeds in `in/`:
 
 ```bash
 uv run python tools/ascc_data_munger.py \
-  --input tools/wip/out/VA_ASCC_CTLG.csv \
+  --input tools/wip/cache/VA_ASCC_CTLG_reconciled.csv \
   --input-dir tools/wip/in
 ```
 
@@ -159,8 +156,8 @@ shapes (16), regions (58, passthrough), reference_works (1, passthrough),
 post_offices (1057), post_office_regions (1057), markings (2813), dates_seen
 (3443), citations (2813), images (276), plus `marking_lineage.csv` sidecar.
 
-> **Town-heading date parsing:** the current munger path must
-> `tools/munger/head.py` (`parse_head`) is required to strip bare trailing
+> **Town-heading date parsing:** see `DECISIONS.md`. The current munger path
+> in `tools/munger/head.py` (`parse_head`) must strip bare trailing
 > years off town-table headings (`Accomack C.H 1835` -> `Accomack C.H`).
 > Without it the munger aborts with "PostOffice normalization produced N
 > name(s) with characters outside [A-Z, space, period, single dash]."
@@ -169,7 +166,9 @@ post_offices (1057), post_office_regions (1057), markings (2813), dates_seen
 munge output. Listings are assigned the region of the catalog section they
 sit under (META banners matching a TERRITORY-tier name in `regions.csv`,
 optionally prefixed `AS `; a `STATEHOOD` banner resets to the catalog's
-default region). Check that:
+default region; a `TERRITORIAL PERIOD` banner, FL style, maps to the seed's
+`<catalog state> Territory` row when exactly one exists, and otherwise falls
+into the unmatched report). Check that:
 
 - the per-region listing counts match the catalog's section sizes
   (single-region catalogs like VA show one line: all listings on the default);
@@ -250,15 +249,21 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 - **`.env` location:** scripts read `worldcovers/.env`, not the workspace-root `.env`.
 - **Free-tier OpenRouter** keys (no credit) 402 on the paid vision model. Use a funded key.
 - **`pdftoppm`** must be on PATH (poppler). No-sudo option: `brew install poppler`.
-- **Three file-hops:** chunks `out/<BASE>/` -> `in/<BASE>/` (hop 1); marking images
-  `out/<BASE>_images/` -> `backend/media/<region>/` (hop 2); the munger can read the
-  extract CSV from `out/` directly via `--input` + `--input-dir`.
+- **Chunk handoff location:** chunks live in `wip/cache/<BASE>_chunks/`.
+  `ascc_page_extract.py` and `ascc_image_extract.py` read that directory
+  directly; do not move chunk PNGs into `wip/in/`.
+- **Media hop:** marking images still need to be copied from
+  `wip/cache/<BASE>_images/` to `backend/media/<region>/` before munger/import.
 - **`reference_works.csv` ships with 2 rows** (ASCC1 + ASCC2); the munger requires
   exactly 1. For the VA baseline we keep ASCC1 (the published 5th edition the scan
-  is from).
+  is from). See `DECISIONS.md`.
+- **Non-numeric valuations abort the munger.** MD's Baltimore Postmaster's
+  Provisional row is priced "Rare"; there is no valuation representation for it
+  yet, so such rows are provisionally re-typed `LISTING` to `META` in the
+  scratch CSV until one exists. Expect "Rare" in other states too.
 - **`main` branch** can't migrate a fresh DB (`InvalidBasesError`); use `staging`.
 - **`staging` migrates but the schema is incomplete** (4 drifts) -- see the Stage G
-  pre-reqs. This is the single biggest blocker to a clean repro and
+  pre-reqs and `DECISIONS.md`. This is the single biggest blocker to a clean repro and
   is Michael's to fix at the migration level.
 
 ## Summary of changes this runbook depends on
@@ -267,5 +272,5 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 |--------|-------|--------|
 | `parse_head` town-heading date peel | `tools/munger/head.py` (code) | local patch, branch `reese/issue-1-va-e2e`, **proposed to Michael** |
 | 4 schema fixes + user id=1 | local MySQL only | local workaround; **Michael fixes migrations** |
-| chunk-14 `Images Above` correction | scratch CSV | per-chunk review (expected workflow) |
+| safe `Images Above` overcount reconciliation | `ascc_image_extract.py` | automatic handoff correction |
 | keep ASCC1 in `reference_works.csv` | scratch seed | baseline choice |

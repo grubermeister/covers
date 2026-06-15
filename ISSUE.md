@@ -105,7 +105,7 @@ offices, 93 images), verified at API/media. Section-driven region assignment
 validated live (Detroit -> 4 regions; Michigan Territory carries 292 POs incl.
 WI/IA/MN precursors). Architecture verdict: **config-only, no Michigan adapter** --
 everything state-specific was *data*, not *code*. Entry-process notes captured in
-`docs/PIPELINE.md` for repeatability on later states.
+`docs/devel/PIPELINE.md` for repeatability on later states.
 **Remaining tails -> Issues 28-32** (territory-suffix stripping, `#N` offices,
 territory abbrevs, blessing region rows, territory search/UI).
 

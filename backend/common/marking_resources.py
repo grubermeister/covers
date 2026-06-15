@@ -22,11 +22,7 @@ from django.utils import timezone
 
 from import_export import resources, fields
 from import_export.widgets import (
-    BooleanWidget,
-    CharWidget,
-    DateWidget,
     ForeignKeyWidget,
-    IntegerWidget,
     JSONWidget,
     Widget,
 )
@@ -115,6 +111,28 @@ class UuidForeignKeyWidget(ForeignKeyWidget):
             return super().clean(value, row=row, **kwargs)
         except self.model.DoesNotExist:
             return None
+
+
+class ContributionMarkingCodeWidget(Widget):
+    """Contribution FK widget keyed by the approved Marking.code.
+
+    The command imports Contribution rows before SubmissionTransaction rows, so
+    a transaction can resolve its contribution from the portable marking code.
+    """
+
+    def clean(self, value, row=None, **kwargs):
+        if value in (None, ""):
+            return None
+        code = str(value).strip()
+        if not code:
+            return None
+        return Contribution.objects.filter(marking__code=code).first()
+
+    def render(self, value, obj=None, **kwargs):
+        if value is None or getattr(value, "marking_id", None) is None:
+            return ""
+        marking = getattr(value, "marking", None)
+        return getattr(marking, "code", "") or ""
 
 
 class UuidWidget(Widget):
@@ -259,7 +277,7 @@ class PortableTimestampedResource(
 ###################################################################################################
 
 
-class PolymorphicSubjectMixin:
+class PolymorphicPortableResource(PortableTimestampedResource):
     """Translates between (subject_type, subject_id) on the model and a
     (subject_kind, subject_code) pair on the backup row. The code is the
     Cover.code or Marking.code natural key.
@@ -273,12 +291,13 @@ class PolymorphicSubjectMixin:
 
     subject_kind = fields.Field(
         column_name="subject_kind",
-        readonly=True,
     )
     subject_code = fields.Field(
         column_name="subject_code",
-        readonly=True,
     )
+
+    class Meta(PortableTimestampedResource.Meta):
+        abstract = True
 
     def __init__(self, code_lookup=None, resolver=None, **kwargs):
         super().__init__(**kwargs)
@@ -428,7 +447,6 @@ class MarkingPostOfficeResource(PortableTimestampedResource):
     primary_region_key = fields.Field(
         column_name="primary_region_key",
         widget=RegionNaturalKeyWidget(),
-        readonly=True,
     )
 
     class Meta(PortableTimestampedResource.Meta):
@@ -468,7 +486,6 @@ class MarkingPostOfficeRegionResource(PortableTimestampedResource):
 
     post_office_key = fields.Field(
         column_name="post_office_key",
-        readonly=True,
     )
     region_key = fields.Field(
         column_name="region_key",
@@ -645,10 +662,16 @@ class MarkingCoverRecycleBinResource(
         attribute="removed_by",
         widget=UsernameForeignKeyWidget(),
     )
+    removed_at = fields.Field(
+        column_name="removed_at",
+        attribute="removed_at",
+        widget=IsoDateTimeWidget(),
+        readonly=True,
+    )
 
     class Meta:
         model = CoverRecycleBin
-        fields = ("cover", "removed_by", "reason")
+        fields = ("cover", "removed_by", "removed_at", "reason")
         import_id_fields = ("cover",)
 
     def before_save_instance(self, instance, row, **kwargs):
@@ -708,7 +731,6 @@ class MarkingMarkingResource(PortableTimestampedResource):
     )
     post_office_key = fields.Field(
         column_name="post_office_key",
-        readonly=True,
     )
 
     class Meta(PortableTimestampedResource.Meta):
@@ -814,10 +836,16 @@ class MarkingRecycleBinResource(
         attribute="removed_by",
         widget=UsernameForeignKeyWidget(),
     )
+    removed_at = fields.Field(
+        column_name="removed_at",
+        attribute="removed_at",
+        widget=IsoDateTimeWidget(),
+        readonly=True,
+    )
 
     class Meta:
         model = MarkingRecycleBin
-        fields = ("marking", "removed_by", "reason")
+        fields = ("marking", "removed_by", "removed_at", "reason")
         import_id_fields = ("marking",)
 
     def before_save_instance(self, instance, row, **kwargs):
@@ -854,7 +882,7 @@ class MarkingSubmissionTransactionResource(
     contribution = fields.Field(
         column_name="contribution_marking_code",
         attribute="contribution",
-        widget=ForeignKeyWidget(Contribution, "marking__code"),
+        widget=ContributionMarkingCodeWidget(),
     )
     marking = fields.Field(
         column_name="marking_code",
@@ -886,6 +914,12 @@ class MarkingSubmissionTransactionResource(
         attribute="extra_payload",
         widget=NullableJSONWidget(),
     )
+    created_at = fields.Field(
+        column_name="created_at",
+        attribute="created_at",
+        widget=IsoDateTimeWidget(),
+        readonly=True,
+    )
 
     class Meta:
         model = SubmissionTransaction
@@ -902,6 +936,7 @@ class MarkingSubmissionTransactionResource(
             "after_payload",
             "diff_payload",
             "extra_payload",
+            "created_at",
         )
         import_id_fields = ("transaction_uuid",)
 
@@ -1004,6 +1039,12 @@ class MarkingVersionResource(
         attribute="snapshot",
         widget=NullableJSONWidget(),
     )
+    created_at = fields.Field(
+        column_name="created_at",
+        attribute="created_at",
+        widget=IsoDateTimeWidget(),
+        readonly=True,
+    )
 
     class Meta:
         model = MarkingVersion
@@ -1014,6 +1055,7 @@ class MarkingVersionResource(
             "snapshot",
             "transaction",
             "created_by",
+            "created_at",
         )
         import_id_fields = ("marking", "version_no")
 
@@ -1047,6 +1089,12 @@ class MarkingCoverVersionResource(
         attribute="snapshot",
         widget=NullableJSONWidget(),
     )
+    created_at = fields.Field(
+        column_name="created_at",
+        attribute="created_at",
+        widget=IsoDateTimeWidget(),
+        readonly=True,
+    )
 
     class Meta:
         model = CoverVersion
@@ -1057,6 +1105,7 @@ class MarkingCoverVersionResource(
             "snapshot",
             "transaction",
             "created_by",
+            "created_at",
         )
         import_id_fields = ("cover", "version_no")
 
@@ -1128,10 +1177,7 @@ class MarkingCoverMarkingResource(PortableTimestampedResource):
 ###################################################################################################
 
 
-class MarkingDateSeenResource(
-    PolymorphicSubjectMixin,
-    PortableTimestampedResource,
-):
+class MarkingDateSeenResource(PolymorphicPortableResource):
     class Meta(PortableTimestampedResource.Meta):
         model = DateSeen
         fields = (
@@ -1147,13 +1193,10 @@ class MarkingDateSeenResource(
             "created_by",
             "modified_by",
         )
-        import_id_fields = ("subject_kind", "subject_code", "date", "granularity")
+        import_id_fields = ("subject_type", "subject_id", "date", "granularity")
 
 
-class MarkingImageResource(
-    PolymorphicSubjectMixin,
-    PortableTimestampedResource,
-):
+class MarkingImageResource(PolymorphicPortableResource):
     uploaded_by = fields.Field(
         column_name="uploaded_by",
         attribute="uploaded_by",
@@ -1186,8 +1229,8 @@ class MarkingImageResource(
             "modified_by",
         )
         import_id_fields = (
-            "subject_kind",
-            "subject_code",
+            "subject_type",
+            "subject_id",
             "file_checksum",
             "image_view",
             "display_order",
@@ -1205,10 +1248,7 @@ class MarkingImageResource(
         super().before_save_instance(instance, row, **kwargs)
 
 
-class MarkingCitationResource(
-    PolymorphicSubjectMixin,
-    PortableTimestampedResource,
-):
+class MarkingCitationResource(PolymorphicPortableResource):
     reference_work = fields.Field(
         column_name="reference_work_key",
         attribute="reference_work",
@@ -1231,8 +1271,8 @@ class MarkingCitationResource(
             "modified_by",
         )
         import_id_fields = (
-            "subject_kind",
-            "subject_code",
+            "subject_type",
+            "subject_id",
             "reference_work",
             "citation_detail",
         )
@@ -1311,14 +1351,14 @@ MARKING_DATASET_SPECS = (
         MarkingRecycleBinResource,
     ),
     MarkingDatasetSpec(
-        "submission_transactions",
-        "submission transactions",
-        MarkingSubmissionTransactionResource,
-    ),
-    MarkingDatasetSpec(
         "contributions",
         "contributions",
         MarkingContributionResource,
+    ),
+    MarkingDatasetSpec(
+        "submission_transactions",
+        "submission transactions",
+        MarkingSubmissionTransactionResource,
     ),
     MarkingDatasetSpec(
         "marking_versions",

@@ -1,7 +1,7 @@
 """ascc_page_extract.py -- single-pass ASCC chunk extraction.
 
-Reads chunk PNGs at tools/wip/cache/<basename>/page-NNNN-MMMM.png, sends each to
-Claude Sonnet through the selected provider, and writes a 4-column CSV
+Reads chunk PNGs at tools/wip/cache/<basename>_chunks/page-NNNN-MMMM.png, sends
+each to Claude Sonnet through the selected provider, and writes a 4-column CSV
 (Listing, Page, Images Above, Type) to tools/wip/cache/<basename>.csv for
 ascc_data_munger.py to consume downstream.
 
@@ -240,7 +240,7 @@ class Paths:
     """Per-run filesystem layout, derived from the basename."""
     def __init__(self, basename):
         self.basename   = basename
-        self.images_dir = WIP_DIR / "cache" / basename
+        self.images_dir = WIP_DIR / "cache" / f"{basename}_chunks"
         self.output_csv = WIP_DIR / "cache" / f"{basename}.csv"
         self.cache_file = WIP_DIR / "cache" / f"{basename}_extract.json"
         self.run_log    = WIP_DIR / "cache" / f"{basename}_extract.log"
@@ -722,14 +722,14 @@ def _print_summary(rows):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=("Single-pass ASCC chunk extraction. Reads chunk PNGs "
-                     "from tools/wip/cache/<basename>/page-NNNN-MMMM.png, sends each "
-                     "to Claude Sonnet through the selected provider, and writes "
-                     "tools/wip/cache/<basename>.csv."),
+                     "from tools/wip/cache/<basename>_chunks/page-NNNN-MMMM.png, "
+                     "sends each to Claude Sonnet through the selected provider, "
+                     "and writes tools/wip/cache/<basename>.csv."),
     )
     parser.add_argument(
         "basename",
         help=("base name of the catalog (e.g. VA_ASCC_CTLG). Drives the "
-              "input dir tools/wip/cache/<basename>/, output CSV "
+              "input dir tools/wip/cache/<basename>_chunks/, output CSV "
               "tools/wip/cache/<basename>.csv, and cache "
               "tools/wip/cache/<basename>_extract.json."),
     )

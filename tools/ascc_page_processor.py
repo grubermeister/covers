@@ -16,10 +16,10 @@ Pipeline (three stages, gateable from the CLI):
     C. chunks  -- per half: deterministic row-by-row dark/blank block
                   detector inside the half + vision per-block classify
                   (illustration vs text) + cut at the top of every
-                  illustration block; write slices into tools/wip/cache/<BASE>/
-                  as page-NNNN-MMMM.png with MMMM running 1..N across
-                  L then R per catalog page (matches what
-                  ascc_page_extract.py consumes).
+                  illustration block; write slices into
+                  tools/wip/cache/<BASE>_chunks/ as page-NNNN-MMMM.png with
+                  MMMM running 1..N across L then R per catalog page (matches
+                  what ascc_page_extract.py consumes).
 
 Usage:
 
@@ -95,6 +95,19 @@ DARK_BRIGHTNESS_MAX = 180   # pixel < this counts as dark
 ROW_DARK_MIN_PIXELS = 2     # row counts as non-blank if it has >= this many dark pixels
 BLANK_RUN           = 5     # rows of blank to start/end a block
 CENTER_FRACTION     = 0.90  # scan only the center 90% of width
+
+# Some straight-line markings look like display text to the LLM classifier.
+# Promote a text-classified block to illustration only when its geometry looks
+# like a centered marking between a prior listing and a following listing.
+PROMOTE_MAX_MARKING_HEIGHT_PX = 90
+PROMOTE_EDGE_IGNORE_FRACTION = 0.04
+PROMOTE_MAX_BBOX_WIDTH_FRACTION = 0.55
+PROMOTE_CENTER_TOLERANCE_FRACTION = 0.18
+PROMOTE_MIN_LEFT_MARGIN_FRACTION = 0.20
+PROMOTE_MAX_RIGHT_MARGIN_FRACTION = 0.80
+PROMOTE_RIGHT_AREA_FRACTION = 0.72
+PROMOTE_MIN_RIGHT_DARK_PIXELS = 25
+PROMOTE_MIN_LISTING_WIDTH_FRACTION = 0.55
 
 # Minimum slice height. Anything thinner than this gets merged into the
 # previous slice rather than emitted as its own chunk; protects the
@@ -351,7 +364,7 @@ class Paths:
         self.blocks_cache = WIP_DIR / "cache" / f"{basename}_blocks.json"
         self.review_cache = WIP_DIR / "cache" / f"{basename}_review.json"
         self.run_log      = WIP_DIR / "cache" / f"{basename}_run.log"
-        self.output_dir   = WIP_DIR / "cache" / basename
+        self.output_dir   = WIP_DIR / "cache" / f"{basename}_chunks"
 
 
 class _Tee:
@@ -819,6 +832,119 @@ def classify_block(block_im, blocks_cache, llm, model, verbose=False, label=""):
     return kind, True  # cache miss -> caller should save
 
 
+def block_dark_metrics(block_im):
+    """Return geometry metrics for dark pixels in one detected block."""
+    arr = np.array(block_im.convert("L"))
+    H, W = arr.shape
+    mask = arr < DARK_BRIGHTNESS_MAX
+    edge = int(W * PROMOTE_EDGE_IGNORE_FRACTION)
+    if edge > 0:
+        mask = mask.copy()
+        mask[:, :edge] = False
+        mask[:, W - edge:] = False
+    dark_pixels = int(mask.sum())
+    if dark_pixels == 0:
+        return {
+            "height": H,
+            "width": W,
+            "dark_pixels": 0,
+            "bbox_left_frac": 0.0,
+            "bbox_right_frac": 0.0,
+            "bbox_width_frac": 0.0,
+            "bbox_center_frac": 0.0,
+            "right_dark_pixels": 0,
+        }
+
+    rows, cols = np.where(mask)
+    left = int(cols.min())
+    right = int(cols.max())
+    bbox_width = right - left + 1
+    right_area_start = int(W * PROMOTE_RIGHT_AREA_FRACTION)
+    right_dark_pixels = int(mask[:, right_area_start:].sum())
+    return {
+        "height": H,
+        "width": W,
+        "dark_pixels": dark_pixels,
+        "bbox_left_frac": left / W,
+        "bbox_right_frac": (right + 1) / W,
+        "bbox_width_frac": bbox_width / W,
+        "bbox_center_frac": (left + right + 1) / (2 * W),
+        "right_dark_pixels": right_dark_pixels,
+    }
+
+
+def has_price_or_dotleader_footprint(metrics):
+    """Return True when a block has dark pixels in the right value area."""
+    return metrics["right_dark_pixels"] >= PROMOTE_MIN_RIGHT_DARK_PIXELS
+
+
+def looks_like_centered_marking(metrics):
+    """Return True for narrow centered display-like marking geometry."""
+    if metrics["dark_pixels"] == 0:
+        return False
+    if metrics["height"] > PROMOTE_MAX_MARKING_HEIGHT_PX:
+        return False
+    if metrics["bbox_width_frac"] > PROMOTE_MAX_BBOX_WIDTH_FRACTION:
+        return False
+    if metrics["bbox_left_frac"] < PROMOTE_MIN_LEFT_MARGIN_FRACTION:
+        return False
+    if metrics["bbox_right_frac"] > PROMOTE_MAX_RIGHT_MARGIN_FRACTION:
+        return False
+    if abs(metrics["bbox_center_frac"] - 0.5) > PROMOTE_CENTER_TOLERANCE_FRACTION:
+        return False
+    if has_price_or_dotleader_footprint(metrics):
+        return False
+    return True
+
+
+def looks_like_listing_text(metrics):
+    """Return True when a block spans the column and reaches the value area."""
+    if metrics["dark_pixels"] == 0:
+        return False
+    if metrics["bbox_width_frac"] < PROMOTE_MIN_LISTING_WIDTH_FRACTION:
+        return False
+    return has_price_or_dotleader_footprint(metrics)
+
+
+def apply_text_marking_overrides(block_records, label_prefix=""):
+    """Promote display-text-like markings that the model called text.
+
+    The override is intentionally local: it requires a prior listing text block
+    in the current slice and a following listing text block. This catches cases
+    like page 419's straight-line NORFOLK marking without changing cached LLM
+    classifications.
+    """
+    promoted = []
+    saw_listing_text_since_cut = False
+    for i, rec in enumerate(block_records):
+        rec = dict(rec)
+        if rec["kind"] == "text":
+            next_rec = None
+            for candidate in block_records[i + 1:]:
+                if candidate["metrics"]["dark_pixels"] > 0:
+                    next_rec = candidate
+                    break
+            if (
+                saw_listing_text_since_cut
+                and looks_like_centered_marking(rec["metrics"])
+                and next_rec is not None
+                and looks_like_listing_text(next_rec["metrics"])
+            ):
+                print(
+                    f"    {label_prefix}promote text block "
+                    f"y={rec['y0']}-{rec['y1']} to illustration: "
+                    f"narrow centered mark before listing text"
+                )
+                rec["kind"] = "illustration"
+                saw_listing_text_since_cut = False
+            else:
+                saw_listing_text_since_cut = True
+        elif rec["kind"] == "illustration":
+            saw_listing_text_since_cut = False
+        promoted.append(rec)
+    return promoted
+
+
 def drop_orphan_illustration_cuts(cut_ys, kinds, H, label_prefix=""):
     """Apply the rule: every chunk must contain at least one text block.
 
@@ -1081,8 +1207,7 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
                     print(f"  {side}: {img_path.name} {W}x{H}, "
                           f"{len(blocks)} blocks detected", flush=True)
 
-                cut_ys = []
-                kinds = []
+                block_records = []
                 for i, (y0, y1) in enumerate(blocks, 1):
                     block_im = im.crop((0, y0, W, y1 + 1))
                     label = (f"[{pn:04d}-{side} block {i}/{len(blocks)} "
@@ -1094,9 +1219,26 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
                     if was_call:
                         save_cache(paths.blocks_cache, blocks_cache)
                         calls += 1
-                    kinds.append((y0, y1, kind))
-                    if kind == "illustration":
-                        cut_ys.append(y0)
+                    block_records.append({
+                        "y0": y0,
+                        "y1": y1,
+                        "kind": kind,
+                        "metrics": block_dark_metrics(block_im),
+                    })
+
+                block_records = apply_text_marking_overrides(
+                    block_records,
+                    label_prefix=f"[{pn:04d}-{side}] ",
+                )
+                kinds = [
+                    (rec["y0"], rec["y1"], rec["kind"])
+                    for rec in block_records
+                ]
+                cut_ys = [
+                    rec["y0"]
+                    for rec in block_records
+                    if rec["kind"] == "illustration"
+                ]
 
                 # Drop cuts that would create chunks containing only an
                 # illustration (no text below the marking). This catches
@@ -1334,7 +1476,7 @@ def main(argv=None):
               "the output directory. The PDF is read from "
               "tools/wip/in/<basename>.pdf; halves land in "
               "tools/wip/cache/<basename>_halves/; chunks land in "
-              "tools/wip/cache/<basename>/."),
+              "tools/wip/cache/<basename>_chunks/."),
     )
     parser.add_argument(
         "--model",

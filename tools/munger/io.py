@@ -8,6 +8,15 @@ REQUIRED_COLS = ['Listing', 'Page', 'Chunk', 'Images Above', 'Type']
 OPTIONAL_COLS = ['Manuscript', 'Default Shape', 'Institutional Ownership']
 
 _WS = re.compile(r'\s+')
+_CIRCLE_HANDSTAMP_BANNER = re.compile(
+    r'\bCIRCLE\s+HANDSTAMPS\s+UNLESS\s+OTHERWISE\s+NOTED\b',
+    re.IGNORECASE,
+)
+_MS_TRUTHY = {'1', 'true', 'yes', 'y', 't'}
+_DEFAULT_SHAPE_COL = 'Default Shape'
+_MANUSCRIPT_COL = 'Manuscript'
+_CIRCLE_SHAPE_DEFAULT = 'C - Circle'
+_MANUSCRIPT_DEFAULT = 'Yes'
 
 # Unmatched-banner report: all-caps META lines that look like section
 # headings (so a misread banner shows up in the verify step instead of
@@ -23,6 +32,86 @@ _TERRITORIAL_PERIOD = re.compile(r'\bTERRITORIAL\.? PERIOD\b')
 
 def _norm_banner(text) -> str:
     return _WS.sub(' ', str(text)).strip().upper()
+
+
+def _is_blank_cell(value) -> bool:
+    return pd.isna(value) or str(value).strip() == ''
+
+
+def _is_truthy_manuscript_cell(value) -> bool:
+    if _is_blank_cell(value):
+        return False
+    return str(value).strip().lower() in _MS_TRUTHY
+
+
+def _meta_listing_default_action(text):
+    banner = _norm_banner(text)
+    loose = banner.strip(' .:-()')
+    if _CIRCLE_HANDSTAMP_BANNER.search(banner):
+        return 'circle_handstamp'
+    if loose == 'MANUSCRIPT TOWN MARKS':
+        return 'manuscript_town_marks'
+    return None
+
+
+def apply_meta_listing_defaults(df: pd.DataFrame) -> pd.DataFrame:
+    """Fill listing defaults from ordered META rows.
+
+    Recognized META rows act as state changes for following LISTING rows:
+    "Circle handstamps unless otherwise noted" sets Default Shape to
+    "C - Circle" and clears manuscript mode; "MANUSCRIPT TOWN MARKS" sets
+    Manuscript to "Yes" and clears Default Shape. Explicit per-row values in
+    the CSV are preserved.
+    """
+    out = df.copy()
+    for col in (_MANUSCRIPT_COL, _DEFAULT_SHAPE_COL):
+        if col not in out.columns:
+            out[col] = ''
+
+    active_default_shape = None
+    active_manuscript = False
+    filled_manuscript = 0
+    filled_default_shape = 0
+    switches = []
+
+    for idx, row in out.iterrows():
+        row_type = str(row.get('Type', '')).strip().upper()
+        if row_type == 'META':
+            action = _meta_listing_default_action(row.get('Listing', ''))
+            if action == 'circle_handstamp':
+                active_default_shape = _CIRCLE_SHAPE_DEFAULT
+                active_manuscript = False
+                switches.append((idx, action))
+            elif action == 'manuscript_town_marks':
+                active_default_shape = None
+                active_manuscript = True
+                switches.append((idx, action))
+            continue
+
+        if row_type != 'LISTING':
+            continue
+
+        manuscript_value = out.at[idx, _MANUSCRIPT_COL]
+        explicit_manuscript = not _is_blank_cell(manuscript_value)
+        row_is_manuscript = _is_truthy_manuscript_cell(manuscript_value)
+        if active_manuscript and not explicit_manuscript:
+            out.at[idx, _MANUSCRIPT_COL] = _MANUSCRIPT_DEFAULT
+            row_is_manuscript = True
+            filled_manuscript += 1
+
+        if row_is_manuscript:
+            continue
+        if active_default_shape is None:
+            continue
+        if _is_blank_cell(out.at[idx, _DEFAULT_SHAPE_COL]):
+            out.at[idx, _DEFAULT_SHAPE_COL] = active_default_shape
+            filled_default_shape += 1
+
+    print('META listing defaults:')
+    print(f'  Default Shape filled: {filled_default_shape}')
+    print(f'  Manuscript filled:    {filled_manuscript}')
+    print(f'  Recognized switches:  {len(switches)}')
+    return out
 
 
 def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series:
@@ -85,6 +174,8 @@ def assign_section_regions(df, region_seed, default_region_id: int) -> pd.Series
                         and _TERRITORIAL_PERIOD.search(banner)):
                     current = state_territory_id
                     switches.append((banner, current))
+                elif _meta_listing_default_action(banner) is not None:
+                    pass
                 else:
                     unmatched[banner] = unmatched.get(banner, 0) + 1
         assigned.append(current)

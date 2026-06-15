@@ -29,7 +29,10 @@ Use `./woco <command>` from repo root for Django management commands. The
 | `import_ascc_bundle` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
+| `purge_recycle_bin` | Permanently delete recycle-bin catalog rows | `backend/common/management/commands/purge_recycle_bin.py` |
 | `prune_revisions` | Prune django-reversion rows safely | `backend/common/management/commands/prune_revisions.py` |
+| `backup_marking` | Export one marking graph to JSON | `backend/common/management/commands/backup_marking.py` |
+| `restore_marking` | Restore one marking graph from JSON | `backend/common/management/commands/restore_marking.py` |
 | `backup_auth` | Export users and auth/collection config | `backend/common/management/commands/backup_auth.py` |
 | `restore_auth` | Restore users and auth/collection config | `backend/common/management/commands/restore_auth.py` |
 | `set_user_password` | Set a user's password from the CLI | `backend/common/management/commands/set_user_password.py` |
@@ -107,7 +110,7 @@ This drops and recreates the staging database using
 
 ## ASCC Pipeline Tools
 
-The detailed ASCC PDF-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
+The canonical ASCC PDF-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
 
 Run these scripts from repo root. Their default paths resolve to `tools/wip/`
 based on each script's location, not on the shell cwd:
@@ -115,8 +118,8 @@ based on each script's location, not on the shell cwd:
 ```sh
 uv run python tools/ascc_page_processor.py VA_ASCC_CTLG
 uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
-uv run python tools/ascc_image_extract.py VA_ASCC_CTLG
-uv run python tools/ascc_data_munger.py --input tools/wip/in/VA_ASCC_CTLG.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
+uv run python tools/ascc_image_extract.py VA_ASCC_CTLG --strict --reconciled-csv tools/wip/cache/VA_ASCC_CTLG_reconciled.csv
+uv run python tools/ascc_data_munger.py --input tools/wip/cache/VA_ASCC_CTLG_reconciled.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
 ```
 
 Expected exit code for each successful step: `0`.
@@ -215,6 +218,43 @@ catalog tables, auth users, groups, collections, and collection assignments.
 
 Use this only when you intentionally need to clear submission, version, and
 recycle-bin data before a separate destructive catalog refresh.
+
+### `purge_recycle_bin`
+
+Permanently hard-delete catalog markings and covers that are currently hidden
+by recycle-bin rows. The command also deletes polymorphic image, date, and
+citation rows for those subjects. It does not remove image files from disk and
+does not prune django-reversion history.
+
+```sh
+./woco purge_recycle_bin --dry-run
+./woco purge_recycle_bin --no-input
+```
+
+Use this when removed catalog records should no longer be restorable from the
+editor recycle bin. The dry run reports what would be deleted and rolls back.
+Expected exit code: `0`.
+
+### `backup_marking` And `restore_marking`
+
+Export one marking by `Marking.code` to a single JSON file, then restore the
+same marking graph elsewhere. The JSON includes the marking, directly linked
+covers, lookup rows, contribution rows, submission transactions, snapshot
+versions, recycle-bin sidecars, dates, citations, and image metadata. It does
+not copy image files; restored Image rows still point at
+`MEDIA_ROOT/<storage_filename>`.
+
+Run from repo root, with `backend/.env` and `mysql.cnf` present:
+
+```sh
+./woco backup_marking ASCC1-VA-M0001 backups/ASCC1-VA-M0001.json
+./woco restore_marking backups/ASCC1-VA-M0001.json --dry-run
+./woco restore_marking backups/ASCC1-VA-M0001.json
+```
+
+Matching auth users must already exist locally. `restore_marking` fails before
+import when a contribution contributor username is missing. Expected exit
+code: `0`.
 
 ### `prune_revisions`
 
