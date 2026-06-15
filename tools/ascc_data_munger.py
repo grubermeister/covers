@@ -1449,7 +1449,6 @@ def main(argv=None):
                 'color_name': None,
                 'color_id': None,
                 'is_multi_color_fanout': False,
-                'fanout_idx': 0,
             }
             expanded_rows.append(r)
             next_townmark_id += 1
@@ -1461,7 +1460,6 @@ def main(argv=None):
                     'color_name': color_name,
                     'color_id': color_lookup.get(color_name),
                     'is_multi_color_fanout': is_multi_color,
-                    'fanout_idx': i,
                 }
                 expanded_rows.append(r)
                 next_townmark_id += 1
@@ -1542,16 +1540,13 @@ def main(argv=None):
         else:
             chunk = None
 
-        # Townmark code: minted from RW_CODE + REGION_ABBREV + the listing's
-        # position in the original input CSV (1-based) + fanout index. The
-        # .{fanout_idx} suffix keeps codes unique across multi-color fan-outs
-        # of the same listing. This is an intermediate join key that wires
-        # townmarks_df codes are referenced as marking_code in dates_seen during construction;
-        # it is resolved to the integer marking_id at emit time (Step 10) and
-        # never appears in the final markings.csv. source_listing_idx preserves
-        # the original CSV row index because listings is a filter-copy of df.
-        listing_pos = int(fan_row['source_listing_idx']) + 1
-        code = f"{RW_CODE}-{REGION_ABBREV}-{listing_pos}.{int(fan_row['fanout_idx'])}"
+        # Townmark code: minted from RW_CODE + REGION_ABBREV + the townmark's
+        # serial number (1-based, incremented across all fan-out rows in Step
+        # 8.3). This is an intermediate join key: townmarks_df codes are
+        # referenced as marking_code in dates_seen during construction; it is
+        # resolved to the integer marking_id at emit time (Step 10) and never
+        # appears in the final markings.csv.
+        code = f"{RW_CODE}-{REGION_ABBREV}-M{int(fan_row['townmark_id'])}"
 
         return {
             'townmark_id': fan_row['townmark_id'],
@@ -2830,7 +2825,10 @@ def main(argv=None):
         desc_val = desc_by_listing.get(src_idx) if kind == "TM" else None
         marking_rows.append({
             "id": mk_id,
-            "code": f"{RW_CODE}-{REGION_ABBREV}-{mk_id}",
+            # Code numbering starts at 1001 (offset 1000 from mk_id) so the
+            # printed code series doesn't overlap with the low integer IDs
+            # used by hand-assigned codes elsewhere in the catalog.
+            "code": f"{RW_CODE}-{REGION_ABBREV}-M{mk_id + 1000}",
             "type": type_label,
             "catalog_txt": catalog_txt,
             "inscription_txt": r.get("inscription_text"),
