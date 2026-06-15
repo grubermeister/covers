@@ -11,10 +11,9 @@ import {
 } from "@/lib/contributionImages";
 
 /**
- * Unified Marking service. Replaces the legacy postmarks/ratemarks/auxmarks
- * facade that lived in services/postmarks.ts. The v2 API now returns one
- * row per marking (TOWNMARK | RATEMARK | AUXMARK), so the frontend no
- * longer fans out per-row to ratemark/auxmark side endpoints.
+ * Unified Marking service. The v2 API returns one row per marking
+ * (TOWNMARK | RATEMARK | AUXMARK), so the frontend does not fan out
+ * per-row to type-specific side endpoints.
  *
  * Endpoints (under /api/v2):
  *   GET    /markings/                       list, paginated
@@ -274,7 +273,9 @@ export interface MarkingRecord {
   postOfficeName: string;
   regionName: string;
   earliestSeen: string | null;
+  earliestSeenGranularity: string | null;
   latestSeen: string | null;
+  latestSeenGranularity: string | null;
   mainImage: MarkingImage | null;
   secondImage: MarkingImage | null;
   images: MarkingImage[];
@@ -512,7 +513,15 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     postOfficeName: toStr(o.post_office_name),
     regionName: toStr(o.region_name),
     earliestSeen: typeof o.earliest_seen === "string" && o.earliest_seen ? o.earliest_seen : null,
+    earliestSeenGranularity:
+      typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
+        ? o.earliest_seen_granularity
+        : null,
     latestSeen: typeof o.latest_seen === "string" && o.latest_seen ? o.latest_seen : null,
+    latestSeenGranularity:
+      typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
+        ? o.latest_seen_granularity
+        : null,
     mainImage,
     secondImage,
     images,
@@ -538,6 +547,8 @@ export async function getMarkingsPage(
     town?: string;
     beginYear?: string;
     endYear?: string;
+    height?: string;
+    width?: string;
     hasImages?: boolean;
     deferCount?: boolean;
     ordering?: string;
@@ -557,6 +568,8 @@ export async function getMarkingsPage(
   if (opt.town?.trim()) params.town = opt.town.trim();
   if (opt.beginYear?.trim()) params.earliest_use_year_min = opt.beginYear.trim();
   if (opt.endYear?.trim()) params.latest_use_year_max = opt.endYear.trim();
+  if (opt.height?.trim()) params.height = opt.height.trim();
+  if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();
@@ -677,7 +690,7 @@ export async function getMarkingByIdRaw(markingId: number): Promise<Record<strin
 }
 
 /**
- * PATCH /api/v2/images/{image_id}/ — update display_order on a single image.
+ * PATCH /api/v2/images/{image_id}/ -- update display_order on a single image.
  * Returns the updated MarkingImage on success, or null on failure.
  *
  * Used by the editor reorder controls on the Record Detail page. The
@@ -794,7 +807,7 @@ export type CoverMarkingReviewStatus = "pending" | "approved" | "rejected" | "ne
 
 export interface AssociatedCover {
   id: number;
-  /** Editor moderation for this cover↔marking link (defaults to approved for legacy rows). */
+  /** Editor moderation for this cover<->marking link (defaults to approved for legacy rows). */
   reviewStatus: CoverMarkingReviewStatus;
   reviewNotes: string | null;
   reviewedAt: string | null;
@@ -809,7 +822,7 @@ export interface AssociatedCover {
    * Thumbnail opens the cover editor with `?edit={id}`.
    */
   contributionDraftId?: number;
-  /** Contribution.status for draft rows (`draft`, `needs_revision`, …). */
+  /** Contribution.status for draft rows (`draft`, `needs_revision`, ...). */
   contributionStatus?: string;
   /** Human-readable title for draft rows (from submitted_data). */
   displayLabel?: string;
@@ -957,7 +970,7 @@ export async function getMarkingCovers(markingId: number): Promise<MarkingCovers
   }
 }
 
-/** Cover↔marking link row from GET /cover-markings/?cover={id}. */
+/** Cover<->marking link row from GET /cover-markings/?cover={id}. */
 export interface CoverMarkingLink {
   id: number;
   coverId: number;
@@ -989,7 +1002,7 @@ export type CoverMarkingsByCoverResult = {
   error: string | null;
 };
 
-/** GET /cover-markings/?cover={id} — markings linked to a cover. */
+/** GET /cover-markings/?cover={id} -- markings linked to a cover. */
 export async function getCoverMarkingsByCover(
   coverId: number,
 ): Promise<CoverMarkingsByCoverResult> {
@@ -1076,7 +1089,9 @@ function datesSeenFromCoverSubmission(sd: Record<string, unknown>): AssociatedDa
   const raw = sd.cover_date ?? sd.coverDate;
   if (raw == null || String(raw).trim() === "") return [];
   const date = String(raw).trim();
-  const gRaw = String(sd.date_granularity ?? sd.dateGranularity ?? "DAY").toUpperCase();
+  const gRaw = String(
+    sd.cover_granularity ?? sd.coverGranularity ?? sd.date_granularity ?? sd.dateGranularity ?? "DAY",
+  ).toUpperCase();
   const granularity: AssociatedDateSeen["granularity"] =
     gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
   return [{ id: 0, date, granularity }];

@@ -24,7 +24,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { normalizeImageUrl } from "@/services/markings";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious, type CarouselApi } from "@/components/ui/carousel";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
-import { getDateFormats, type DateFormatOption } from "@/constants/postmarkEnums";
+import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import CoverContributionDetail from "@/pages/CoverContributionDetail";
 import { CatalogRecordFields } from "@/components/CatalogRecordFields";
@@ -55,12 +55,13 @@ function buildContributionCatalogFields(input: MarkingFieldInput): CatalogFieldV
     regionAbbrev: displayCatalogField(input.state),
     manuscript: displayCatalogField(input.isManuscript ? "Yes" : "No"),
     desc: displayCatalogField(input.catalogTxt),
-    postmarkTextLines: [],
-    postmarkTextSingle: displayCatalogField(input.inscriptionTxt),
+    markingTextLines: [],
+    markingTextSingle: displayCatalogField(input.inscriptionTxt),
     shape: displayCatalogField(input.shapeName),
     lettering: displayCatalogField(input.letteringName),
     dimensions: displayCatalogField(input.dimensions),
     color: displayCatalogField(input.colorName),
+    rateValue: displayCatalogField(input.rateValFormatted),
     earliestSeen: displayCatalogField(input.earliestSeen),
     latestSeen: displayCatalogField(input.latestSeen),
   };
@@ -90,7 +91,12 @@ const ContributionDetail = () => {
   const [carouselApi, setCarouselApi] = useState<CarouselApi>();
   const [carouselCurrent, setCarouselCurrent] = useState(0);
   const [carouselCount, setCarouselCount] = useState(0);
-  const fromDashboard = location.state?.fromDashboard === true;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser;
   /** True if the logged-in user is the person who submitted this contribution (edit/review UI is for other editors only). */
@@ -166,13 +172,13 @@ const ContributionDetail = () => {
   // keep hook order stable; reads the contribution state directly.
   useEffect(() => {
     const isCover = isCoverContributionData(contribution?.submittedData);
-    if (!isCover && contribution?.status === "approved" && contribution.postmarkId != null) {
-      navigate(`/record/${contribution.postmarkId}`, {
+    if (!isCover && contribution?.status === "approved" && contribution.markingId != null) {
+      navigate(`/record/${contribution.markingId}`, {
         replace: true,
-        state: { fromDashboard: true },
+        state: { fromDashboard: true, dashboardTab },
       });
     }
-  }, [contribution, navigate]);
+  }, [contribution, dashboardTab, navigate]);
 
 
   const submitDecision = async (kind: "approve" | "reject" | "revision") => {
@@ -190,8 +196,10 @@ const ContributionDetail = () => {
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && result.postmarkId != null) {
-        navigate(`/record/${result.postmarkId}`, { state: { fromDashboard: true } });
+      if (kind === "approve" && result.markingId != null) {
+        navigate(`/record/${result.markingId}`, {
+          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
+        });
         return;
       }
       navigate("/dashboard", { state: { tab: "editor" } });
@@ -208,7 +216,7 @@ const ContributionDetail = () => {
 
 
   const handleBack = () => {
-    if (fromDashboard) navigate("/dashboard", { state: { tab: "editor" } });
+    if (fromDashboard) navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
     else navigate("/dashboard");
   };
 
@@ -237,7 +245,7 @@ const ContributionDetail = () => {
   const isRedirectingToRecord =
     !isCoverContributionData(contribution?.submittedData) &&
     contribution?.status === "approved" &&
-    contribution.postmarkId != null;
+    contribution.markingId != null;
 
   if (loading || isRedirectingToRecord) {
     return (
@@ -310,7 +318,6 @@ const ContributionDetail = () => {
       .filter((url) => url.length > 0);
   };
   const categorizedImageUrls = [
-    ...asImageUrlArray(sd.postmark_images ?? sd.postmarkImages ?? sd.PostmarkImages),
     ...asImageUrlArray(sd.ratemark_images ?? sd.ratemarkImages ?? sd.RatemarkImages),
     ...asImageUrlArray(sd.auxmark_images ?? sd.auxmarkImages ?? sd.AuxmarkImages),
   ];
@@ -404,14 +411,14 @@ const ContributionDetail = () => {
       contribution.status === "needs_revision" ||
       contribution.status === "rejected");
   const canDeleteDraft = isContributor && contribution.status === "draft";
-  const postmarkId = contribution.postmarkId;
+  const markingId = contribution.markingId;
 
   return (
     <div className="min-h-screen flex flex-col">
       <Navigation />
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* Breadcrumb + View record when approved — same as RecordDetail */}
+          {/* Breadcrumb + View record when approved -- same as RecordDetail */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <Button variant="ghost" onClick={handleBack} className="sm:-ml-4">
               <ArrowLeft className="mr-2 h-4 w-4" />
@@ -419,9 +426,9 @@ const ContributionDetail = () => {
             </Button>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Badge className={statusBadgeClassName}>{statusLabel}</Badge>
-              {postmarkId != null && (
+              {markingId != null && (
                 <Button variant="outline" size="sm" asChild>
-                  <Link to={`/record/${postmarkId}`} state={{ fromDashboard: true }}>
+                  <Link to={`/record/${markingId}`} state={{ fromDashboard: true, dashboardTab }}>
                     <ExternalLink className="mr-2 h-4 w-4" />
                     View record
                   </Link>
@@ -451,7 +458,7 @@ const ContributionDetail = () => {
             </div>
           </div>
 
-          {/* Main Content — max-lg: flex + order → image → meta → review → feedback. lg: 2 columns, 1 row; left cell is a
+          {/* Main Content -- max-lg: flex + order -> image -> meta -> review -> feedback. lg: 2 columns, 1 row; left cell is a
               flex stack so Review sits directly under the image (no multi-row grid splitting the form height). */}
           <div className="flex flex-col gap-8 mb-8 min-w-0 lg:grid lg:grid-cols-2 lg:gap-8 lg:items-start">
             <div className="contents lg:flex lg:flex-col lg:gap-8 lg:min-w-0">
@@ -602,7 +609,7 @@ const ContributionDetail = () => {
                           ? "Your submission was not accepted. See the comment below for details."
                           : contribution.status === "needs_revision"
                             ? "The editor requested changes. Please update this submission and resubmit."
-                            : "The reviewer left a comment for you. Use this feedback to improve your submission or add a new postmark if requested."}
+                            : "The reviewer left a comment for you. Use this feedback to improve your submission or add a new marking if requested."}
                     </p>
                   </CardHeader>
                   <CardContent className="space-y-3">

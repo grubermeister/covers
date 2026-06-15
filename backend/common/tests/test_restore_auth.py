@@ -1,14 +1,19 @@
 import csv
+import json
+import shutil
 import tempfile
 from pathlib import Path
 
 from allauth.account.models import EmailAddress
+from django.contrib import admin
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.test import TestCase
 
+from common import admin as common_admin
+from common.auth_resources import AUTH_BACKUP_SCHEMA
 from common.models import Collection, CollectionAssignment, Region
 
 
@@ -42,6 +47,7 @@ class RestoreAuthCommandTests(TestCase):
         self.texas_region = self._region("Texas", "TX")
         self.virginia = self._collection("Virginia", self.virginia_region)
         self.texas = self._collection("Texas", self.texas_region)
+        self.bundle_index = 0
 
     def _csv(self, name, header, rows):
         path = self.tmp_path / name
@@ -61,6 +67,34 @@ class RestoreAuthCommandTests(TestCase):
                 [997, self.other.username],
             ],
         )
+
+    def _csv_bundle(self, **files):
+        self.bundle_index += 1
+        bundle = self.tmp_path / f"auth_csv_{self.bundle_index}"
+        bundle.mkdir()
+
+        paths = {"users": self._users_csv()}
+        paths.update(files)
+        filenames = {
+            "groups": "groups.csv",
+            "users": "users.csv",
+            "emails": "emails.csv",
+            "collections": "collections.csv",
+            "assignments": "assignments.csv",
+        }
+        for key, source in paths.items():
+            shutil.copyfile(source, bundle / filenames[key])
+        return str(bundle)
+
+    def _json_backup(self, datasets):
+        path = self.tmp_path / "auth.json"
+        payload = {
+            "schema": AUTH_BACKUP_SCHEMA,
+            "generated_at": "2026-06-15T00:00:00+00:00",
+            "datasets": datasets,
+        }
+        path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+        return str(path)
 
     def _region(self, name, abbrev):
         return Region.objects.create(
@@ -97,8 +131,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            assignments_file=assignments,
+            self._csv_bundle(assignments=assignments),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -116,8 +150,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            assignments_file=assignments,
+            self._csv_bundle(assignments=assignments),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -146,8 +180,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            emails_file=emails,
+            self._csv_bundle(emails=emails),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -166,8 +200,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            assignments_file=assignments,
+            self._csv_bundle(assignments=assignments),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -186,8 +220,8 @@ class RestoreAuthCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command(
                 "restore_auth",
-                self._users_csv(),
-                assignments_file=assignments,
+                self._csv_bundle(assignments=assignments),
+                emit_csv=True,
                 verbosity=0,
             )
 
@@ -203,8 +237,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            collections_file=collections,
+            self._csv_bundle(collections=collections),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -221,8 +255,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            collections_file=collections,
+            self._csv_bundle(collections=collections),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -248,9 +282,8 @@ class RestoreAuthCommandTests(TestCase):
 
         call_command(
             "restore_auth",
-            self._users_csv(),
-            collections_file=collections,
-            assignments_file=assignments,
+            self._csv_bundle(collections=collections, assignments=assignments),
+            emit_csv=True,
             verbosity=0,
         )
 
@@ -266,3 +299,116 @@ class RestoreAuthCommandTests(TestCase):
                 collection=self.virginia,
             ).exists()
         )
+
+    def test_backup_auth_writes_single_json_file(self):
+        self.editor.groups.add(self.editors_group)
+        EmailAddress.objects.create(
+            user=self.editor,
+            email="editor@example.com",
+            verified=True,
+            primary=True,
+        )
+        self._assignment(self.editor, self.virginia)
+        out_path = self.tmp_path / "auth_backup.json"
+
+        call_command("backup_auth", str(out_path), verbosity=0)
+
+        payload = json.loads(out_path.read_text(encoding="utf-8"))
+        self.assertEqual(payload["schema"], AUTH_BACKUP_SCHEMA)
+        self.assertIn("generated_at", payload)
+        self.assertEqual(
+            set(payload["datasets"]),
+            {"groups", "users", "emails", "collections", "assignments"},
+        )
+        user_rows = payload["datasets"]["users"]["rows"]
+        self.assertIn(self.editor.username, {row["username"] for row in user_rows})
+
+    def test_backup_auth_emit_csv_writes_fixed_bundle_files(self):
+        self.assertIsNotNone(common_admin.CollectionAdmin)
+        out_dir = self.tmp_path / "auth_csv_export"
+
+        call_command("backup_auth", str(out_dir), emit_csv=True, verbosity=0)
+
+        expected_files = {
+            "groups.csv",
+            "users.csv",
+            "emails.csv",
+            "collections.csv",
+            "assignments.csv",
+        }
+        self.assertEqual(
+            {path.name for path in out_dir.iterdir()},
+            expected_files,
+        )
+        collection_headers = (out_dir / "collections.csv").read_text(
+            encoding="utf-8",
+        ).splitlines()[0].split(",")
+        assignment_headers = (out_dir / "assignments.csv").read_text(
+            encoding="utf-8",
+        ).splitlines()[0].split(",")
+        self.assertEqual(
+            collection_headers,
+            list(admin.site._registry[Collection].resource_class().export().headers),
+        )
+        self.assertEqual(
+            assignment_headers,
+            list(
+                admin.site._registry[
+                    CollectionAssignment
+                ].resource_class().export().headers
+            ),
+        )
+
+    def test_json_restore_dry_run_rolls_back(self):
+        backup = self._json_backup(
+            {
+                "groups": {"headers": ["id", "name"], "rows": []},
+                "users": {
+                    "headers": ["id", "username"],
+                    "rows": [
+                        {"id": 999, "username": self.admin.username},
+                        {"id": 998, "username": self.editor.username},
+                    ],
+                },
+                "emails": {"headers": ["id", "user", "email"], "rows": []},
+                "collections": {
+                    "headers": ["id", "name", "description", "region", "is_active"],
+                    "rows": [],
+                },
+                "assignments": {
+                    "headers": ["id", "user", "collection"],
+                    "rows": [
+                        {
+                            "id": 12345,
+                            "user": self.editor.username,
+                            "collection": self.virginia.name,
+                        }
+                    ],
+                },
+            }
+        )
+
+        call_command("restore_auth", backup, dry_run=True, verbosity=0)
+
+        self.assertFalse(
+            CollectionAssignment.objects.filter(
+                user=self.editor,
+                collection=self.virginia,
+            ).exists()
+        )
+
+    def test_restore_auth_emit_csv_requires_users_file(self):
+        bundle = self.tmp_path / "missing_users"
+        bundle.mkdir()
+
+        with self.assertRaises(CommandError):
+            call_command("restore_auth", str(bundle), emit_csv=True, verbosity=0)
+
+    def test_backup_auth_rejects_multiple_positional_paths(self):
+        with self.assertRaises(CommandError):
+            call_command(
+                "backup_auth",
+                str(self.tmp_path / "one.json"),
+                str(self.tmp_path / "two.json"),
+                verbosity=0,
+            )

@@ -1,5 +1,6 @@
 import type { MarkingRecord } from "@/services/markings";
 import { getMarkingListImageUrl, normalizeImageUrl } from "@/services/markings";
+import { formatRateValue } from "@/lib/rateDisplay";
 
 /** Shown when a catalog field has no value (Catalog Search / Record Detail contract). */
 export const CATALOG_FIELD_EMPTY = "-";
@@ -20,7 +21,7 @@ export function markingTypeLabel(type: string | null | undefined): string {
   return MARKING_TYPE_LABELS[key] ?? "";
 }
 
-function postmarkTextFromRecord(record: MarkingRecord): string {
+function markingTextFromRecord(record: MarkingRecord): string {
   const cat = record.catalogTxt?.trim();
   const ins = record.inscriptionTxt?.trim();
   if (cat && ins) return `${cat} (${ins})`;
@@ -43,6 +44,56 @@ export function formatCatalogDate(value: string | null | undefined): string {
   return s;
 }
 
+export type DateSeenGranularity = "DAY" | "MONTH" | "YEAR";
+
+const DATE_SEEN_MONTH_LABELS = [
+  "JAN",
+  "FEB",
+  "MAR",
+  "APR",
+  "MAY",
+  "JUN",
+  "JUL",
+  "AUG",
+  "SEP",
+  "OCT",
+  "NOV",
+  "DEC",
+];
+
+function normalizeDateSeenGranularity(
+  value: string | null | undefined,
+): DateSeenGranularity {
+  const s = String(value ?? "").trim().toUpperCase();
+  if (s === "MONTH") return "MONTH";
+  if (s === "YEAR") return "YEAR";
+  return "DAY";
+}
+
+/**
+ * Format a DateSeen row by its stored granularity.
+ * DAY: "1865-08-14" -> "08/14/1865"
+ * MONTH: "1865-08-01" -> "AUG, 1865"
+ * YEAR: "1865-01-01" -> "1865"
+ */
+export function formatDateSeen(
+  value: string | null | undefined,
+  granularity: string | null | undefined,
+): string {
+  const s = value != null ? String(value).trim() : "";
+  if (!s) return "";
+  const g = normalizeDateSeenGranularity(granularity);
+  const isoMatch = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(s);
+  if (g === "YEAR") return isoMatch ? isoMatch[1] : s;
+  if (g === "MONTH") {
+    if (!isoMatch || !isoMatch[2]) return s;
+    const monthIndex = Number(isoMatch[2]) - 1;
+    const monthLabel = DATE_SEEN_MONTH_LABELS[monthIndex];
+    return monthLabel ? `${monthLabel}, ${isoMatch[1]}` : s;
+  }
+  return formatCatalogDate(s) || s;
+}
+
 /** Extract the leading 4-digit year from a partial-or-full ISO date. */
 export function yearFromCatalogDate(value: string | null | undefined): string {
   const s = value != null ? String(value).trim() : "";
@@ -59,12 +110,13 @@ export type CatalogFieldValues = {
   regionAbbrev: string;
   manuscript: string;
   desc: string;
-  postmarkTextLines: string[];
-  postmarkTextSingle: string;
+  markingTextLines: string[];
+  markingTextSingle: string;
   shape: string;
   lettering: string;
   dimensions: string;
   color: string;
+  rateValue: string;
   earliestSeen: string;
   latestSeen: string;
 };
@@ -100,13 +152,13 @@ function dimensionsField(record: MarkingRecord): string {
 }
 
 export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValues {
-  const combined = postmarkTextFromRecord(record);
-  const postmarkTextLines = combined
+  const combined = markingTextFromRecord(record);
+  const markingTextLines = combined
     ? combined.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
     : [];
-  const postmarkTextSingle =
-    postmarkTextLines.length <= 1
-      ? displayCatalogField(postmarkTextLines.length === 1 ? postmarkTextLines[0] : combined)
+  const markingTextSingle =
+    markingTextLines.length <= 1
+      ? displayCatalogField(markingTextLines.length === 1 ? markingTextLines[0] : combined)
       : "";
 
   return {
@@ -116,14 +168,19 @@ export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValu
     regionAbbrev: displayCatalogField(record.stateAbbrev),
     manuscript: displayCatalogField(record.isManuscript ? "Yes" : "No"),
     desc: displayCatalogField(record.desc),
-    postmarkTextLines: postmarkTextLines.length > 1 ? postmarkTextLines : [],
-    postmarkTextSingle,
+    markingTextLines: markingTextLines.length > 1 ? markingTextLines : [],
+    markingTextSingle,
     shape: displayCatalogField(record.shapeName),
     lettering: displayCatalogField(record.letteringName),
     dimensions: displayCatalogField(dimensionsField(record)),
     color: displayCatalogField(record.colorName),
-    earliestSeen: displayCatalogField(yearFromCatalogDate(record.earliestSeen)),
-    latestSeen: displayCatalogField(yearFromCatalogDate(record.latestSeen)),
+    rateValue: displayCatalogField(formatRateValue(record.rateVal)),
+    earliestSeen: displayCatalogField(
+      formatDateSeen(record.earliestSeen, record.earliestSeenGranularity),
+    ),
+    latestSeen: displayCatalogField(
+      formatDateSeen(record.latestSeen, record.latestSeenGranularity),
+    ),
   };
 }
 

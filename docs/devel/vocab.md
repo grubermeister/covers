@@ -14,7 +14,7 @@ Selection rules for the route-level and component-level surfaces currently in us
 
 **Dashboard.** A role-specific Page that shows the logged-in user their current work: a Contributor's submissions, an Editor's review queue, an Administrator's system view. Always qualify with the role in copy (Contributor Dashboard, Editor Dashboard) so the user can tell whose dashboard they are looking at.
 
-**Dialog.** Centered, blocking modal. The default choice for any modal interaction that takes a single focused step or a short form, including destructive-confirmation prompts. Examples in code: `CoverDialog`, `EditSubmissionDialog`, `SubmitImageDialog`.
+**Dialog.** Centered, blocking modal. The default choice for any modal interaction that takes a single focused step or a short form, including destructive-confirmation prompts. Examples in code: `CoverDialog`, `EditSubmissionDialog`.
 
 **Card.** Container for a self-contained unit of content inside a list, grid, or summary view: an Entry preview in search results, a Collection summary on the dashboard, a Submission in the review queue. A Card should not contain another Card -- if you find yourself nesting Cards, the inner content probably belongs in a Dialog opened from the outer Card instead.
 
@@ -49,7 +49,7 @@ Patterns that have appeared in user-facing code and must be replaced when encoun
 
 | Replace                                              | With                                            | Notes                                                                                                                                                                              |
 |------------------------------------------------------|-------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Submit Postmark                                      | Submit Marking                                  | "Postmark" is not a canonical glossary term; "Marking" is. Use the kind-specific verb (Submit Marking, Submit Cover, Submit Image); reserve "Submit Entry" for multi-kind screens. |
+| Submit Townmark                                      | Submit Marking                                  | Use the broader Marking term for the unified TOWNMARK/RATEMARK/AUXMARK form; reserve "Submit Entry" for multi-kind screens.                                                       |
 | Submit for Approval                                  | Submit                                          | Review is implicit in Submit.                                                                                                                                                      |
 | Save changes (on a create flow)                      | Submit Marking / Submit Cover / Submit Image    | It is a creation, not a save -- pick the kind-specific verb.                                                                                                                       |
 | Submission sent                                      | Submission received                             | From the user's perspective.                                                                                                                                                       |

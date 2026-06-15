@@ -26,11 +26,10 @@ Use `./woco <command>` from repo root for Django management commands. The
 | `ascc_page_extract.py` | Extract ASCC listing text from page chunks | `tools/ascc_page_extract.py` |
 | `ascc_image_extract.py` | Extract marking images from page chunks | `tools/ascc_image_extract.py` |
 | `ascc_data_munger.py` | Build Django-shape ASCC CSV bundles | `tools/ascc_data_munger.py` |
-| `build_ascc2_overlay.py` | Build ASCC2 overlay mapping data | `tools/build_ascc2_overlay.py` |
 | `import_ascc_bundle` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
-| `apply_ascc2_overlay` | Apply ASCC2 updates to an ASCC1 baseline | `backend/common/management/commands/apply_ascc2_overlay.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
+| `prune_revisions` | Prune django-reversion rows safely | `backend/common/management/commands/prune_revisions.py` |
 | `backup_auth` | Export users and auth/collection config | `backend/common/management/commands/backup_auth.py` |
 | `restore_auth` | Restore users and auth/collection config | `backend/common/management/commands/restore_auth.py` |
 | `set_user_password` | Set a user's password from the CLI | `backend/common/management/commands/set_user_password.py` |
@@ -85,21 +84,13 @@ Expected exit code: `0`.
 Current sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/cache/ascc1
-uv run python backend/manage.py apply_ascc2_overlay \
-  --base-dir tools/wip/cache/ascc1 \
-  --overlay-dir tools/wip/cache/ascc2_overlay_bundle \
-  --overlay-map tools/wip/out/VA_ASCC2_overlay_map.csv \
-  --v1-image-refs tools/wip/in/v1_VA_image_refs.csv \
-  --region-abbrev VA \
-  --ascc1-code ASCC1 \
-  --ascc2-code ASCC2 \
-  --audit-user-id "${WOCO_ASCC_AUDIT_USER_ID:-1}" \
-  --skip-missing-images
+uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
 ```
 
-This reload does not call `wipe_user_data` and does not pass `--truncate`.
-Existing rows are updated in place by the import and overlay commands.
+This reload does not call `wipe_user_data`. It does pass `--truncate`, which
+deletes all 14 catalog import tables, including covers, before reloading the
+bundle. Run `wipe_user_data` first when submission, version, and recycle-bin
+history must also be cleared.
 
 ### `tools/rebuild_staging_db.sh`
 
@@ -125,7 +116,7 @@ based on each script's location, not on the shell cwd:
 uv run python tools/ascc_page_processor.py VA_ASCC_CTLG
 uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
 uv run python tools/ascc_image_extract.py VA_ASCC_CTLG
-uv run python tools/ascc_data_munger.py --input tools/wip/in/VA_ASCC_CTLG.csv --out-dir tools/wip/out/
+uv run python tools/ascc_data_munger.py --input tools/wip/in/VA_ASCC_CTLG.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
 ```
 
 Expected exit code for each successful step: `0`.
@@ -212,26 +203,6 @@ Umbrella importer for the American Postal Markings Catalog. It delegates to
 It accepts the same `--only`, `--allow-missing`, `--dry-run`, and `--truncate`
 flags as `import_ascc_bundle`.
 
-### `apply_ascc2_overlay`
-
-Apply the ASCC2 overlay bundle to an ASCC1 baseline import.
-
-```sh
-./woco apply_ascc2_overlay \
-  --base-dir tools/wip/cache/ascc1 \
-  --overlay-dir tools/wip/cache/ascc2_overlay_bundle \
-  --overlay-map tools/wip/out/VA_ASCC2_overlay_map.csv \
-  --v1-image-refs tools/wip/in/v1_VA_image_refs.csv \
-  --region-abbrev VA \
-  --ascc1-code ASCC1 \
-  --ascc2-code ASCC2 \
-  --audit-user-id 1 \
-  --skip-missing-images \
-  --dry-run
-```
-
-Run `--dry-run` before a real overlay. Expected exit code: `0`.
-
 ### `wipe_user_data`
 
 Clear user-generated submissions, versions, and recycle bins while preserving
@@ -244,6 +215,21 @@ catalog tables, auth users, groups, collections, and collection assignments.
 
 Use this only when you intentionally need to clear submission, version, and
 recycle-bin data before a separate destructive catalog refresh.
+
+### `prune_revisions`
+
+Prune django-reversion storage while preserving the newest configured number
+of Version rows per object. This command also purges legacy Version rows for
+the custom audit/snapshot tables that are excluded from reversion tracking.
+
+```sh
+./woco prune_revisions --dry-run
+./woco prune_revisions
+```
+
+The dry run reports what would be deleted and rolls back. Expected exit code:
+`0`. Retention defaults live in `backend/woco/settings.py` as
+`REVERSION_PRUNE_RETENTION_DAYS` and `REVERSION_PRUNE_KEEP_PER_OBJECT`.
 
 ### `backup_auth` And `restore_auth`
 

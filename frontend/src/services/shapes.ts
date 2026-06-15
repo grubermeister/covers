@@ -1,6 +1,6 @@
 /**
  * Shapes (v2 Shape entity): GET /shapes/.
- * Shape is a shared vocabulary used by Postmark, Ratemark, and Auxmark.
+ * Shape is a shared vocabulary used by Townmark, Ratemark, and Auxmark.
  */
 import apiClient from "@/lib/api";
 

@@ -30,7 +30,6 @@ from rest_framework.permissions import (
     BasePermission,
     IsAdminUser,
     IsAuthenticated,
-    IsAuthenticatedOrReadOnly,
 )
 from rest_framework import serializers
 from rest_framework.response import Response
@@ -38,7 +37,7 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 
-from common.contribution_apply import _parse_int
+from common.contribution_apply import ContributionApplyError, _parse_int
 from common.audit import (
     build_cover_snapshot,
     build_marking_snapshot,
@@ -84,6 +83,7 @@ from .permissions import (
     CanManageReferenceWorks,
     CanReviewContribution,
     IsDraftOwner,
+    IsEditorOrAdminWrite,
     _get_user_assigned_regions,
     _user_is_responsible_for_cover,
     _user_is_responsible_for_marking,
@@ -133,7 +133,12 @@ class IsResponsibleForRegion(BasePermission):
     def has_permission(self, request, view):
         if request.method in {"GET", "HEAD", "OPTIONS"}:
             return True
-        return bool(request.user and request.user.is_authenticated)
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM))
+        )
 
     def has_object_permission(self, request, view, obj):
         if request.method in {"GET", "HEAD", "OPTIONS"}:
@@ -162,7 +167,7 @@ def _marking_list_queryset():
 class ColorViewSet(viewsets.ModelViewSet):
     queryset = Color.objects.all()
     serializer_class = ColorSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name"]
     ordering = ["name"]
@@ -178,7 +183,7 @@ class RegionViewSet(viewsets.ModelViewSet):
     """Regions; supports ?assigned_only=true to scope to the user's Collections."""
     queryset = Region.objects.all().select_related("parent_region")
     serializer_class = RegionSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["region_tier", "parent_region"]
     search_fields = ["name", "abbrev"]
@@ -214,7 +219,7 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
         "post_office_regions__region"
     )
     serializer_class = PostOfficeSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = {"post_office_regions__region": ["exact"]}
     search_fields = [
@@ -252,7 +257,7 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
 class LetteringViewSet(viewsets.ModelViewSet):
     queryset = Lettering.objects.all()
     serializer_class = LetteringSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name"]
     ordering_fields = ["name", "created_date"]
@@ -268,7 +273,7 @@ class LetteringViewSet(viewsets.ModelViewSet):
 class ShapeViewSet(viewsets.ModelViewSet):
     queryset = Shape.objects.all()
     serializer_class = ShapeSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "code"]
     ordering_fields = ["name", "code", "created_date"]
@@ -322,7 +327,7 @@ class ImageViewSet(viewsets.ModelViewSet):
     """
     queryset = Image.objects.all().select_related("uploaded_by")
     serializer_class = ImageSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "image_view", "is_tracing"]
@@ -370,7 +375,7 @@ class ImageViewSet(viewsets.ModelViewSet):
 class CitationViewSet(viewsets.ModelViewSet):
     queryset = Citation.objects.all().select_related("reference_work")
     serializer_class = CitationSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["reference_work", "subject_type", "subject_id"]
     search_fields = ["citation_detail", "reference_work__title"]
@@ -390,7 +395,7 @@ class CitationViewSet(viewsets.ModelViewSet):
 class CoverV2ViewSet(viewsets.ModelViewSet):
     queryset = Cover.objects.all().select_related("color")
     serializer_class = CoverSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["color", "type", "has_adhesive", "is_institutional"]
     ordering_fields = ["id", "code", "created_date"]
@@ -716,7 +721,7 @@ class DateSeenViewSet(viewsets.ModelViewSet):
     # cover or marking.
     queryset = DateSeen.objects.all()
     serializer_class = DateSeenSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "granularity"]
     ordering_fields = ["date", "created_date"]
@@ -732,7 +737,7 @@ class DateSeenViewSet(viewsets.ModelViewSet):
 class CoverValuationViewSet(viewsets.ModelViewSet):
     queryset = CoverValuation.objects.all().select_related("cover")
     serializer_class = CoverValuationSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["cover"]
     ordering_fields = ["appraisal_date", "amt"]
@@ -760,7 +765,7 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
         .select_related("cover", "cover__color", "marking", "reviewer")
     )
     serializer_class = CoverMarkingSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_class = CoverMarkingFilter
     ordering_fields = ["id", "created_date", "reviewed_at"]
@@ -1073,13 +1078,13 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
 ###################################################################################################
 class MarkingViewSet(viewsets.ModelViewSet):
     """
-    Unified marking ViewSet. Replaces PostmarkViewSet / RatemarkViewSet /
+    Unified marking ViewSet. Handles Townmark / Ratemark /
     AuxmarkViewSet. List supports `?type=TOWNMARK|RATEMARK|AUXMARK`
     and the legacy filters preserved on MarkingListFilter.
     """
     pagination_class = MarkingListPagination
     queryset = Marking.objects.all()
-    permission_classes = [IsAuthenticatedOrReadOnly, IsResponsibleForRegion]
+    permission_classes = [IsEditorOrAdminWrite, IsResponsibleForRegion]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_class = MarkingListFilter
     # No raw DELETE: removing a marking goes through the audited, reversible
@@ -1670,10 +1675,19 @@ class ContributionViewSet(
         mode = (self.request.query_params.get("mode") or "").strip().lower()
         if mode == "editor":
             if user.is_superuser:
-                return base_qs
-            if user.has_perm(REVIEW_CONTRIBUTION_PERM):
-                return _get_editor_contribution_queryset(user)
-            return base_qs.none()
+                qs = base_qs
+            elif user.has_perm(REVIEW_CONTRIBUTION_PERM):
+                qs = _get_editor_contribution_queryset(user)
+            else:
+                return base_qs.none()
+            state = (self.request.query_params.get("state") or "").strip()
+            if state:
+                qs = qs.filter(
+                    Q(collection__region__name__iexact=state)
+                    | Q(collection__region__abbrev__iexact=state)
+                    | Q(submitted_data__state__iexact=state)
+                )
+            return qs
         return base_qs.filter(contributor=user).distinct()
 
     def get_serializer_class(self):
@@ -1699,7 +1713,7 @@ class ContributionViewSet(
                 # live DB state, so this must run BEFORE apply. CREATE leaves
                 # these empty, so the audit diff for a create stays before={}.
                 sd = contrib.submitted_data or {}
-                edit_marking_id = _parse_int(sd.get("edit_postmark_id"))
+                edit_marking_id = _parse_int(sd.get("edit_marking_id"))
                 edit_cover_id = _parse_int(sd.get("edit_cover_id"))
                 before_marking_snapshot = {}
                 before_cover_snapshot = {}
@@ -1813,12 +1827,11 @@ class ContributionViewSet(
                     approved_response = {
                         "detail": "Contribution approved.",
                         "markingId": marking.pk,
-                        "postmarkId": marking.pk,
                     }
-        except NotImplementedError as exc:
+        except ContributionApplyError as exc:
             return Response(
                 {"detail": str(exc)},
-                status=status.HTTP_501_NOT_IMPLEMENTED,
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
             )
         return Response(approved_response, status=status.HTTP_200_OK)
 
@@ -1968,7 +1981,7 @@ def _is_cover_submission_data(data) -> bool:
     kind = str(data.get("submission_kind") or data.get("submissionKind") or "").strip().lower()
     if kind == "cover":
         return True
-    if kind in {"marking", "postmark", "townmark", "ratemark", "auxmark"}:
+    if kind in {"marking", "townmark", "ratemark", "auxmark"}:
         return False
     type_value = str(data.get("type") or "").strip().upper()
     has_cover_type = type_value in {"FC", "FL"}
@@ -2031,16 +2044,12 @@ class ContributionSubmitView(APIView):
     """
     Public submission endpoint for new contributions.
 
-    Accepts the new unified payload shape: marking_* keys (formerly postmark_*),
+    Accepts the unified payload shape: marking_* keys,
     plus `type` (TOWNMARK | RATEMARK | AUXMARK) and `desc`. The payload is
     persisted to Contribution.submitted_data and routed to a Collection by
     state. Final application to the catalog (creating / updating Marking,
     Image, CoverMarking, DateSeen, CoverValuation rows) happens at approval
-    time; that pipeline is rebuilt against the unified schema in a follow-up
-    pass and currently raises ContributionApplyNotImplemented.
-
-    See plan: docs/devel/scope.md and
-    .claude/plans/the-latest-changes-made-functional-zebra.md sections 2c.
+    time.
     """
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -2081,7 +2090,7 @@ class ContributionSubmitView(APIView):
                 )
             sd = contrib.submitted_data or {}
             is_cover_draft = _submitted_data_is_cover(sd)
-            is_marking_edit_draft = bool(sd.get("edit_postmark_id"))
+            is_marking_edit_draft = bool(sd.get("edit_marking_id"))
             if not (is_cover_draft or is_marking_edit_draft):
                 return Response(
                     {"detail": "This draft type cannot be abandoned via this endpoint."},
@@ -2203,24 +2212,24 @@ class ContributionSubmitView(APIView):
             submitted_data["routing_deferred"] = True
 
         # Collapse duplicate marking-edit drafts. When a contributor saves a
-        # draft against an existing marking (edit_postmark_id) without already
+        # draft against an existing marking (edit_marking_id) without already
         # targeting a specific draft (no edit_contribution_id), look for an
         # open draft of theirs against the same marking and route the save
         # through the update branch below. Closes the race where two tabs (or
         # a fast click before the frontend dedupe GET resolves) would each
         # create a parallel draft row. Form-posted values arrive as strings;
-        # the JSON branch posts ints. Query both to cover legacy rows.
+        # the JSON branch posts ints, so query both shapes.
         if edit_pk is None and is_draft:
-            edit_postmark_id_raw = submitted_data.get("edit_postmark_id")
-            if edit_postmark_id_raw not in (None, ""):
+            edit_marking_id_raw = submitted_data.get("edit_marking_id")
+            if edit_marking_id_raw not in (None, ""):
                 try:
-                    epi_int = int(edit_postmark_id_raw)
+                    epi_int = int(edit_marking_id_raw)
                 except (TypeError, ValueError):
                     epi_int = None
-                epi_str = str(edit_postmark_id_raw)
-                value_filter = Q(submitted_data__edit_postmark_id=epi_str)
+                epi_str = str(edit_marking_id_raw)
+                value_filter = Q(submitted_data__edit_marking_id=epi_str)
                 if epi_int is not None:
-                    value_filter |= Q(submitted_data__edit_postmark_id=epi_int)
+                    value_filter |= Q(submitted_data__edit_marking_id=epi_int)
                 existing_draft = (
                     Contribution.objects.filter(
                         contributor=request.user,
@@ -2311,7 +2320,7 @@ class ContributionSubmitView(APIView):
         # existing Image rows so approval-time apply reconciles correctly
         # (existing-image removals are otherwise dropped on this branch).
         # Otherwise this is a plain create: store the uploads as-is.
-        edit_marking_marker = _parse_int(submitted_data.get("edit_postmark_id"))
+        edit_marking_marker = _parse_int(submitted_data.get("edit_marking_id"))
         edit_cover_marker = _parse_int(submitted_data.get("edit_cover_id"))
         if is_cover_submission and edit_cover_marker is not None:
             _apply_fresh_edit_image_metas(

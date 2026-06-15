@@ -11,7 +11,7 @@ export function isCoverContributionData(sd: Record<string, unknown> | null | und
     .trim()
     .toLowerCase();
   if (kind === "cover") return true;
-  if (kind === "marking" || kind === "postmark") return false;
+  if (kind === "marking") return false;
 
   const type = String(sd.type ?? "")
     .trim()
@@ -55,6 +55,6 @@ export function coverContributionDisplayName(
   const parts = [isDraft ? "Cover draft" : "Cover", typeLabel];
   if (date) parts.push(date);
   if (markingId != null) parts.push(`Marking #${markingId}`);
-  const label = parts.filter(Boolean).join(" · ");
+  const label = parts.filter(Boolean).join(" - ");
   return label || `${isDraft ? "Cover draft" : "Cover"} #${contributionId}`;
 }

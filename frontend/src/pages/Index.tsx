@@ -74,11 +74,12 @@ const Index = () => {
         for (const endpoint of getFaqApiCandidates()) {
           const response = await fetch(endpoint);
           if (!response.ok) continue;
-          const data = await response.json();
-          const rawItems = Array.isArray(data) ? data : data?.results || [];
+          const data = (await response.json()) as { results?: unknown[] } | unknown[];
+          const rawItems = Array.isArray(data) ? data : data.results || [];
           const items: FAQItem[] = rawItems
-            .map((item: any, index: number) => {
-              if (!item) return null;
+            .map((raw, index: number) => {
+              if (!raw || typeof raw !== "object") return null;
+              const item = raw as Record<string, unknown>;
               const question = item.question ?? "";
               const answer = item.answer ?? "";
               if (!question || !answer) return null;
@@ -105,11 +106,11 @@ const Index = () => {
   }, []);
 
   const [stats, setStats] = useState<{
-    postmarks: number | null;
+    markings: number | null;
     towns: number | null;
     states: number | null;
   }>({
-    postmarks: null,
+    markings: null,
     towns: null,
     states: null,
   });
@@ -120,7 +121,7 @@ const Index = () => {
     let cancelled = false;
 
     const loadStats = async () => {
-      const [postmarksResult, officesResult, regionsResult] =
+      const [markingsResult, officesResult, regionsResult] =
         await Promise.allSettled([
           getMarkingCount(),
           getPostOfficeCount(),
@@ -129,15 +130,15 @@ const Index = () => {
 
       if (cancelled) return;
 
-      const postmarks =
-        postmarksResult.status === "fulfilled" ? postmarksResult.value : null;
+      const markings =
+        markingsResult.status === "fulfilled" ? markingsResult.value : null;
       const offices =
         officesResult.status === "fulfilled" ? officesResult.value : null;
       const regions =
         regionsResult.status === "fulfilled" ? regionsResult.value : [];
 
       setStats({
-        postmarks: typeof postmarks === "number" ? postmarks : null,
+        markings: typeof markings === "number" ? markings : null,
         towns: typeof offices === "number" ? offices : null,
         states: Array.isArray(regions) ? regions.length : null,
       });
@@ -150,9 +151,9 @@ const Index = () => {
     };
   }, []);
 
-  const postmarksStatDisplay =
-    stats.postmarks != null ? stats.postmarks.toLocaleString() : "—";
-  const historicalRangeDisplay = `${earliestYear}–${latestYear}`;
+  const markingsStatDisplay =
+    stats.markings != null ? stats.markings.toLocaleString() : "-";
+  const historicalRangeDisplay = `${earliestYear}-${latestYear}`;
 
   const handleContributeClick = () => {
     if (user) {
@@ -181,8 +182,8 @@ const Index = () => {
               American Postal Markings Catalogue
             </h1>
             <p className="text-lg md:text-xl text-muted-foreground mb-8 leading-relaxed">
-              {stats.postmarks != null
-                ? `Explore ${postmarksStatDisplay} historical postal markings from across America. `
+              {stats.markings != null
+                ? `Explore ${markingsStatDisplay} historical postal markings from across America. `
                 : "Explore historical postal markings from across America. "}
               A comprehensive, open-access archive for researchers, collectors, and philatelic enthusiasts.
             </p>
@@ -217,19 +218,19 @@ const Index = () => {
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
             <div className="text-center">
               <div className="text-3xl md:text-4xl font-heading font-bold text-primary mb-2">
-                {postmarksStatDisplay}
+                {markingsStatDisplay}
               </div>
-              <div className="text-sm text-muted-foreground">Postmarks Cataloged</div>
+              <div className="text-sm text-muted-foreground">Markings Cataloged</div>
             </div>
             <div className="text-center">
               <div className="text-3xl md:text-4xl font-heading font-bold text-primary mb-2">
-                {stats.towns != null ? stats.towns.toLocaleString() : "—"}
+                {stats.towns != null ? stats.towns.toLocaleString() : "-"}
               </div>
               <div className="text-sm text-muted-foreground">Towns Documented</div>
             </div>
             <div className="text-center">
               <div className="text-3xl md:text-4xl font-heading font-bold text-primary mb-2">
-                {stats.states != null ? stats.states.toLocaleString() : "—"}
+                {stats.states != null ? stats.states.toLocaleString() : "-"}
               </div>
               <div className="text-sm text-muted-foreground">States/Territories Covered</div>
             </div>
@@ -263,7 +264,7 @@ const Index = () => {
                 </div>
                 <h3 className="font-heading text-xl font-semibold mb-2">Advanced Search</h3>
                 <p className="text-muted-foreground text-sm leading-relaxed">
-                  Filter by state, town, date range, postmark type, color, and more. View results in list or gallery format.
+                  Filter by state, town, date range, marking type, color, and more. View results in list or gallery format.
                 </p>
               </CardContent>
             </Card>

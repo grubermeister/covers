@@ -6,6 +6,8 @@
 
 # Vite cache
 frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 
 # Local / legacy data (optional: remove if you want to track)
 frontend/public/Old Data/
@@ -218,6 +220,7 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
 .vscode/
+worldcovers.code-workspace
 
 # Ruff stuff:
 .ruff_cache/
@@ -267,3 +270,4 @@ tools/wip/**/*.jpeg
 /backend/imports
 docs/data/
 docs/.project
+overview.md

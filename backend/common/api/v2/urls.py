@@ -1,9 +1,9 @@
 ###################################################################################################
 ## WoCo Commons - API v2 Routing (Phase 2 rewrite)
 ##
-## Unified routes per docs/model.md and the Phase 2 plan: markings replaces
-## postmarks/ratemarks/auxmarks; images is polymorphic; cover-dates and
-## cover-valuations replace postmark-scoped versions; framing routes are gone.
+## Unified routes per docs/model.md: markings is polymorphic across
+## TOWNMARK/RATEMARK/AUXMARK; images is polymorphic; cover-dates and
+## cover-valuations are cover-scoped; framing routes are gone.
 ###################################################################################################
 from django.urls import include, path
 from django.views.decorators.csrf import csrf_exempt

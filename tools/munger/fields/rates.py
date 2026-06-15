@@ -1,18 +1,30 @@
 import re
 
 
+BRACKET_OPENERS = '[{|'
+BRACKET_CLOSERS = ']}|'
+
+
+def _is_bracket_opener(ch):
+    return ch in BRACKET_OPENERS
+
+
+def _is_bracket_closer(ch, depth):
+    return depth > 0 and ch in BRACKET_CLOSERS
+
+
 def split_rate_tokens(field_text):
-    """Split rate field on commas, respecting brackets.
+    """Split rate field on commas, respecting bracket OCR variants.
     Returns list of raw token strings."""
     tokens = []
     current = []
     depth = 0
     for ch in field_text:
-        if ch == '[':
-            depth += 1
-            current.append(ch)
-        elif ch == ']':
+        if _is_bracket_closer(ch, depth):
             depth -= 1
+            current.append(ch)
+        elif _is_bracket_opener(ch):
+            depth += 1
             current.append(ch)
         elif ch == ',' and depth == 0:
             tokens.append(''.join(current).strip())
@@ -27,7 +39,7 @@ RATE_AMOUNT_RE = re.compile(
     r'(\d+(?:[/-]\d+(?:/\d+)?)?)'  # amount: "3", "12-1/2", "3/CENTS"
 )
 
-RATE_BRACKET_RE = re.compile(r'\[([^\]]+)\]')
+RATE_BRACKET_RE = re.compile(r'[\[\{\|]([^\]\}\|]+)[\]\}\|]')
 
 RATE_KEYWORD_RE = re.compile(
     r'\b(PAID|FREE|STEAM|DUE)\b', re.IGNORECASE

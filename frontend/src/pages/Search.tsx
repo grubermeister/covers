@@ -248,11 +248,11 @@ const Search = () => {
   const navigate = useNavigate();
   const { toast } = useToast();
 
-  // Fetch filter options from API (colors, postmark shapes, states)
+  // Fetch filter options from API (colors, marking shapes, states)
   const { colorOptions, shapeOptions, stateOptions, isLoading: isLoadingFilters, error: filterError } =
     useFilterOptions();
 
-  // Catalog's earliest/latest observed year — used for input placeholders and validation bounds.
+  // Catalog's earliest/latest observed year -- used for input placeholders and validation bounds.
   const { earliestYear: minYear, latestYear: maxYear } = useMarkingYearRange();
 
   // Filter states - initialize from URL so filters persist when navigating back from detail
@@ -261,6 +261,8 @@ const Search = () => {
   const [townFilter, setTownFilter] = useState(() => getSearchParam(searchParams, "town", ""));
   const [beginYear, setBeginYear] = useState(() => getSearchParam(searchParams, "from", ""));
   const [endYear, setEndYear] = useState(() => getSearchParam(searchParams, "to", ""));
+  const [heightFilter, setHeightFilter] = useState(() => getSearchParam(searchParams, "height", ""));
+  const [widthFilter, setWidthFilter] = useState(() => getSearchParam(searchParams, "width", ""));
   const [shapeFilter, setShapeFilter] = useState(() =>
     getSearchParam(searchParams, "shape", "") || getSearchParam(searchParams, "type", "all"),
   );
@@ -301,8 +303,10 @@ const Search = () => {
   const debouncedTownFilter = useDebounce(townFilter, DEBOUNCE_MS);
   const debouncedBeginYear = useDebounce(beginYear, DEBOUNCE_MS);
   const debouncedEndYear = useDebounce(endYear, DEBOUNCE_MS);
+  const debouncedHeightFilter = useDebounce(heightFilter, DEBOUNCE_MS);
+  const debouncedWidthFilter = useDebounce(widthFilter, DEBOUNCE_MS);
 
-  // Pagination - 10 records per page from api/postmarks/
+  // Pagination - 10 records per page from api/markings/
   const [currentPage, setCurrentPage] = useState(() => {
     const p = searchParams.get("page");
     const n = p ? parseInt(p, 10) : 1;
@@ -323,6 +327,8 @@ const Search = () => {
   const prevTownFilterRef = useRef(debouncedTownFilter);
   const prevBeginYearRef = useRef(debouncedBeginYear.trim().length === 4 ? debouncedBeginYear.trim() : "");
   const prevEndYearRef = useRef(debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : "");
+  const prevHeightFilterRef = useRef("");
+  const prevWidthFilterRef = useRef("");
   const prevImagesOnlyRef = useRef(imagesOnly);
   const prevManuscriptFilterRef = useRef(manuscriptFilter);
   const prevTypeFilterRef = useRef(typeFilter);
@@ -339,8 +345,8 @@ const Search = () => {
   );
 
   // Manuscripts have null shape, so the two filters are mutually exclusive:
-  // - manuscripts=Only → Shape field is cleared and hidden (no shape to filter on).
-  // - shape selected  → "Only" option in the manuscripts dropdown is disabled
+  // - manuscripts=Only -> Shape field is cleared and hidden (no shape to filter on).
+  // - shape selected  -> "Only" option in the manuscripts dropdown is disabled
   //   (and snapped back to "both" if somehow already on "only" via URL state).
   useEffect(() => {
     if (manuscriptFilter === "only" && shapeFilter !== "all") {
@@ -354,6 +360,27 @@ const Search = () => {
     }
   }, [shapeFilter, manuscriptFilter]);
 
+  // Circle-family shapes whose width == height == diameter. Matched by the
+  // shape code prefix (the part before " - " in the label) so the UI collapses
+  // height/width into a single Diameter input. Explicit allow-list because
+  // other curved shapes (ARC - Arc or Semi-circle) are not true circles.
+  const CIRCLE_SHAPE_CODES = ["C", "DC", "DLC", "DLDC"] as const;
+  const isCircleShape = useMemo(() => {
+    if (shapeFilter === "all") return false;
+    const opts = Array.isArray(shapeOptions) ? shapeOptions : [];
+    const selected = opts.find((s) => s.value === shapeFilter);
+    if (!selected) return false;
+    const code = selected.label.split(" - ", 1)[0].trim().toUpperCase();
+    return (CIRCLE_SHAPE_CODES as readonly string[]).includes(code);
+  }, [shapeFilter, shapeOptions]);
+  // While the circle UI is showing, keep widthFilter mirrored to heightFilter so
+  // the API sees height == width and the URL persistence stays symmetric.
+  useEffect(() => {
+    if (isCircleShape && widthFilter !== heightFilter) {
+      setWidthFilter(heightFilter);
+    }
+  }, [isCircleShape, heightFilter, widthFilter]);
+
   // Reset page to 1 when filters change
   useEffect(() => {
     const currentNormalizedBegin = debouncedBeginYear.trim().length === 4 ? debouncedBeginYear.trim() : "";
@@ -366,6 +393,19 @@ const Search = () => {
     const townFilterJustChanged = prevTownFilterRef.current !== debouncedTownFilter;
     const beginYearJustChanged = prevBeginYearRef.current !== currentNormalizedBegin;
     const endYearJustChanged = prevEndYearRef.current !== currentNormalizedEnd;
+    // Inline normalization to avoid forward-referencing normalizedHeight /
+    // normalizedWidth, which are declared later (TDZ).
+    const normalizeDim = (raw: string): string => {
+      const t = raw.trim();
+      if (!t) return "";
+      const n = Number(t);
+      if (!Number.isFinite(n) || n <= 0) return "";
+      return t;
+    };
+    const currentNormalizedHeight = normalizeDim(debouncedHeightFilter);
+    const currentNormalizedWidth = normalizeDim(debouncedWidthFilter);
+    const heightFilterJustChanged = prevHeightFilterRef.current !== currentNormalizedHeight;
+    const widthFilterJustChanged = prevWidthFilterRef.current !== currentNormalizedWidth;
     const imagesOnlyJustChanged = prevImagesOnlyRef.current !== imagesOnly;
     const manuscriptFilterJustChanged = prevManuscriptFilterRef.current !== manuscriptFilter;
     const typeFilterJustChanged = prevTypeFilterRef.current !== typeFilter;
@@ -378,6 +418,8 @@ const Search = () => {
     if (townFilterJustChanged) prevTownFilterRef.current = debouncedTownFilter;
     if (beginYearJustChanged) prevBeginYearRef.current = currentNormalizedBegin;
     if (endYearJustChanged) prevEndYearRef.current = currentNormalizedEnd;
+    if (heightFilterJustChanged) prevHeightFilterRef.current = currentNormalizedHeight;
+    if (widthFilterJustChanged) prevWidthFilterRef.current = currentNormalizedWidth;
     if (imagesOnlyJustChanged) prevImagesOnlyRef.current = imagesOnly;
     if (manuscriptFilterJustChanged) prevManuscriptFilterRef.current = manuscriptFilter;
     if (typeFilterJustChanged) prevTypeFilterRef.current = typeFilter;
@@ -392,6 +434,8 @@ const Search = () => {
       townFilterJustChanged ||
       beginYearJustChanged ||
       endYearJustChanged ||
+      heightFilterJustChanged ||
+      widthFilterJustChanged ||
       imagesOnlyJustChanged ||
       manuscriptFilterJustChanged ||
       typeFilterJustChanged ||
@@ -400,7 +444,7 @@ const Search = () => {
     if (anyFilterChanged) {
       setCurrentPage(1);
     }
-  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, debouncedBeginYear, debouncedEndYear, imagesOnly, colorFilter, manuscriptFilter, typeFilter, submissionQueueSort, catalogSortKey]);
+  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, typeFilter, submissionQueueSort, catalogSortKey]);
 
   // Treat years as active filters only when they are valid and 4 digits.
   const normalizedBeginYear = useMemo(() => {
@@ -413,6 +457,22 @@ const Search = () => {
       ? ""
       : (debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : "");
   }, [debouncedEndYear, minYear, maxYear]);
+  // Dimensions: only treat as active when the input parses to a positive number.
+  const normalizeDimensionInput = (raw: string): string => {
+    const t = raw.trim();
+    if (!t) return "";
+    const n = Number(t);
+    if (!Number.isFinite(n) || n <= 0) return "";
+    return t;
+  };
+  const normalizedHeight = useMemo(
+    () => normalizeDimensionInput(debouncedHeightFilter),
+    [debouncedHeightFilter],
+  );
+  const normalizedWidth = useMemo(
+    () => normalizeDimensionInput(debouncedWidthFilter),
+    [debouncedWidthFilter],
+  );
 
   // Map UI typeFilter ("all" | "townmark" | "ratemark" | "auxmark") to API value.
   const typeFilterApi: MarkingTypeValue | "all" =
@@ -442,6 +502,8 @@ const Search = () => {
       debouncedTownFilter,
       normalizedBeginYear,
       normalizedEndYear,
+      normalizedHeight,
+      normalizedWidth,
       imagesOnly,
       colorFilter,
       manuscriptFilter,
@@ -468,6 +530,8 @@ const Search = () => {
           town: debouncedTownFilter.trim() || undefined,
           beginYear: normalizedFrom,
           endYear: normalizedTo,
+          height: normalizedHeight || undefined,
+          width: normalizedWidth || undefined,
           hasImages: imagesOnly,
           ordering: orderingParamForSort(catalogSort),
         }
@@ -512,6 +576,8 @@ const Search = () => {
     // Only persist valid years (normalized values) to the URL
     if (normalizedBeginYear) params.set("from", normalizedBeginYear);
     if (normalizedEndYear) params.set("to", normalizedEndYear);
+    if (normalizedHeight) params.set("height", normalizedHeight);
+    if (normalizedWidth) params.set("width", normalizedWidth);
     if (shapeFilter !== "all") params.set("shape", shapeFilter);
     if (typeFilter !== "all") params.set("markType", typeFilter);
     if (colorFilter !== "all") params.set("color", colorFilter);
@@ -528,7 +594,7 @@ const Search = () => {
     if (next !== current) {
       setSearchParams(next ? params : {}, { replace: true });
     }
-  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, normalizedBeginYear, normalizedEndYear, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
+  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
 
   const totalPages = Math.ceil(totalCount / itemsPerPage) || 1;
   const pageStart = (currentPage - 1) * itemsPerPage;
@@ -546,6 +612,8 @@ const Search = () => {
     setTownFilter("");
     setBeginYear("");
     setEndYear("");
+    setHeightFilter("");
+    setWidthFilter("");
     setShapeFilter("all");
     setTypeFilter("all");
     setColorFilter("all");
@@ -734,6 +802,76 @@ const Search = () => {
                         emptyMessage="No shape found."
                         aria-label="Filter by shape"
                       />
+                    </div>
+                  )}
+
+                  {isCircleShape ? (
+                    <div className="space-y-2">
+                      <Label htmlFor="diameterFilter">Diameter (mm)</Label>
+                      <Input
+                        id="diameterFilter"
+                        type="text"
+                        placeholder="Any"
+                        inputMode="decimal"
+                        value={heightFilter}
+                        onChange={(e) => {
+                          let v = e.target.value.replace(/[^0-9.]/g, "");
+                          const firstDot = v.indexOf(".");
+                          if (firstDot !== -1) {
+                            v = v.slice(0, firstDot + 1) + v.slice(firstDot + 1).replace(/\./g, "");
+                          }
+                          setHeightFilter(v);
+                          setWidthFilter(v);
+                        }}
+                        disabled={filtersDisabled}
+                        className="[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                        aria-label="Filter by diameter in millimeters"
+                      />
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label htmlFor="heightFilter">Height (mm)</Label>
+                        <Input
+                          id="heightFilter"
+                          type="text"
+                          placeholder="Any"
+                          inputMode="decimal"
+                          value={heightFilter}
+                          onChange={(e) => {
+                            let v = e.target.value.replace(/[^0-9.]/g, "");
+                            const firstDot = v.indexOf(".");
+                            if (firstDot !== -1) {
+                              v = v.slice(0, firstDot + 1) + v.slice(firstDot + 1).replace(/\./g, "");
+                            }
+                            setHeightFilter(v);
+                          }}
+                          disabled={filtersDisabled}
+                          className="[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          aria-label="Filter by height in millimeters"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="widthFilter">Width (mm)</Label>
+                        <Input
+                          id="widthFilter"
+                          type="text"
+                          placeholder="Any"
+                          inputMode="decimal"
+                          value={widthFilter}
+                          onChange={(e) => {
+                            let v = e.target.value.replace(/[^0-9.]/g, "");
+                            const firstDot = v.indexOf(".");
+                            if (firstDot !== -1) {
+                              v = v.slice(0, firstDot + 1) + v.slice(firstDot + 1).replace(/\./g, "");
+                            }
+                            setWidthFilter(v);
+                          }}
+                          disabled={filtersDisabled}
+                          className="[appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+                          aria-label="Filter by width in millimeters"
+                        />
+                      </div>
                     </div>
                   )}
 

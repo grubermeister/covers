@@ -141,22 +141,13 @@ That reload script is the source of truth for data refresh behavior.
 Current reload sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/cache/ascc1
-uv run python backend/manage.py apply_ascc2_overlay \
-  --base-dir tools/wip/cache/ascc1 \
-  --overlay-dir tools/wip/cache/ascc2_overlay_bundle \
-  --overlay-map tools/wip/out/VA_ASCC2_overlay_map.csv \
-  --v1-image-refs tools/wip/in/v1_VA_image_refs.csv \
-  --region-abbrev VA \
-  --ascc1-code ASCC1 \
-  --ascc2-code ASCC2 \
-  --audit-user-id "${WOCO_ASCC_AUDIT_USER_ID:-1}" \
-  --skip-missing-images
+uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
 ```
 
-This reload no longer calls `wipe_user_data` and no longer passes
-`--truncate` to `import_ascc_bundle`. Existing rows are updated in place by the
-import and overlay commands.
+This reload does not call `wipe_user_data`. It does pass `--truncate`, which
+deletes all 14 catalog import tables before reloading the bundle. Run
+`wipe_user_data` first when submission, version, and recycle-bin history must
+also be cleared.
 
 ## Troubleshooting
 

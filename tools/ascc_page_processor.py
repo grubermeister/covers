@@ -16,10 +16,10 @@ Pipeline (three stages, gateable from the CLI):
     C. chunks  -- per half: deterministic row-by-row dark/blank block
                   detector inside the half + vision per-block classify
                   (illustration vs text) + cut at the top of every
-                  illustration block; write slices into tools/wip/out/<BASE>/
+                  illustration block; write slices into tools/wip/cache/<BASE>/
                   as page-NNNN-MMMM.png with MMMM running 1..N across
                   L then R per catalog page (matches what
-                  apmc_page_extract.ipynb already consumes).
+                  ascc_page_extract.py consumes).
 
 Usage:
 
@@ -351,7 +351,7 @@ class Paths:
         self.blocks_cache = WIP_DIR / "cache" / f"{basename}_blocks.json"
         self.review_cache = WIP_DIR / "cache" / f"{basename}_review.json"
         self.run_log      = WIP_DIR / "cache" / f"{basename}_run.log"
-        self.output_dir   = WIP_DIR / "out" / basename
+        self.output_dir   = WIP_DIR / "cache" / basename
 
 
 class _Tee:
@@ -1334,7 +1334,7 @@ def main(argv=None):
               "the output directory. The PDF is read from "
               "tools/wip/in/<basename>.pdf; halves land in "
               "tools/wip/cache/<basename>_halves/; chunks land in "
-              "tools/wip/out/<basename>/."),
+              "tools/wip/cache/<basename>/."),
     )
     parser.add_argument(
         "--model",

@@ -22,11 +22,11 @@ export interface MarkingFieldInput {
   state: string;
   town: string;
   inscriptionTxt: string;
-  // Already trimmed to year only (e.g. "1880" or "").
+  // Already formatted according to DateSeen granularity.
   earliestSeen: string;
   latestSeen: string;
   shapeName: string;
-  // Pre-formatted via formatRateValue (e.g. "0.03" or "").
+  // Pre-formatted via formatRateValue (e.g. "3¢" or "").
   rateValFormatted: string;
   dateFmt: string;
   // Already mapped: empty string for the default "Normal" impression so

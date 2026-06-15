@@ -10,7 +10,7 @@ from .models import CoverMarking, Marking, MarkingType
 
 class MarkingListFilter(django_filters.FilterSet):
     """
-    List-view filters for Marking. Phase 1 ports the prior PostmarkListFilter
+    List-view filters for Marking.
     onto the unified Marking model. The Phase 2 API rewrite will wire this
     into MarkingViewSet and add the `type` discriminator filter that the
     frontend already passes.
@@ -42,6 +42,18 @@ class MarkingListFilter(django_filters.FilterSet):
     latest_use_year_max = django_filters.NumberFilter(
         method='filter_latest_use_year_max',
         label='Latest observed year is at most',
+    )
+    # Dimension exact-match filters. Stored values are Decimal(mm) with two
+    # decimal places, so Decimal("25") and Decimal("25.00") compare equal here.
+    height = django_filters.NumberFilter(
+        field_name='height',
+        lookup_expr='exact',
+        label='Height in mm (exact)',
+    )
+    width = django_filters.NumberFilter(
+        field_name='width',
+        lookup_expr='exact',
+        label='Width in mm (exact)',
     )
 
     class Meta:

@@ -1,7 +1,7 @@
 """ascc_image_extract.py -- two-stage marking-illustration extractor.
 
-Reads chunk PNGs at tools/wip/in/<basename>/page-NNNN-MMMM.png plus the
-reviewed CSV at tools/wip/out/<basename>.csv. For each chunk where Images
+Reads chunk PNGs at tools/wip/cache/<basename>/page-NNNN-MMMM.png plus the
+reviewed CSV at tools/wip/cache/<basename>.csv. For each chunk where Images
 Above >= 1:
 
   Stage 1 (deterministic, no API calls):
@@ -37,9 +37,9 @@ Above >= 1:
       bbox X range.
 
 Outputs:
-  tools/wip/out/<basename>_subchunks/<state>-<page>-<chunk>.png
-  tools/wip/out/<basename>_images/<state>-<page>-<chunk>-<counter>.png
-  tools/wip/out/<basename>_subchunks_report.csv
+  tools/wip/cache/<basename>_subchunks/<region>-<page>-<chunk>.png
+  tools/wip/cache/<basename>_images/<region>-<page>-<chunk>-<counter>.png
+  tools/wip/cache/<basename>_subchunks_report.csv
 
 Pipeline position: downstream of tools/ascc_page_extract.py (which
 produces the authoritative CSV with Images Above counts).
@@ -86,6 +86,10 @@ from ascc_page_processor import (   # noqa: E402
 from ascc_page_extract import (     # noqa: E402
     discover_chunks,
     parse_pages_arg,
+)
+from munger.images import (         # noqa: E402
+    catalog_image_slug,
+    image_filename,
 )
 
 
@@ -136,11 +140,11 @@ class Paths:
 
     def __init__(self, basename):
         self.basename       = basename
-        self.images_dir     = WIP_DIR / "in" / basename
-        self.input_csv      = WIP_DIR / "out" / f"{basename}.csv"
-        self.subchunks_dir  = WIP_DIR / "out" / f"{basename}_subchunks"
-        self.markings_dir   = WIP_DIR / "out" / f"{basename}_images"
-        self.report_csv     = WIP_DIR / "out" / f"{basename}_subchunks_report.csv"
+        self.images_dir     = WIP_DIR / "cache" / basename
+        self.input_csv      = WIP_DIR / "cache" / f"{basename}.csv"
+        self.subchunks_dir  = WIP_DIR / "cache" / f"{basename}_subchunks"
+        self.markings_dir   = WIP_DIR / "cache" / f"{basename}_images"
+        self.report_csv     = WIP_DIR / "cache" / f"{basename}_subchunks_report.csv"
         self.run_log        = WIP_DIR / "cache" / f"{basename}_subchunks.log"
 
 
@@ -158,12 +162,30 @@ class _Tee:
             st.flush()
 
 
+def _legacy_image_slug_for_cleanup(basename):
+    """Return the pre-helper image prefix for stale-output cleanup only."""
+    return Path(str(basename)).stem.split("_", 1)[0].lower()
+
+
+def _cleanup_chunk_outputs(paths, image_slug, page, chunk_seq):
+    """Remove current and legacy output files for one page/chunk pair."""
+    prefixes = {image_slug, _legacy_image_slug_for_cleanup(paths.basename)}
+    for prefix in prefixes:
+        subchunk_path = paths.subchunks_dir / f"{prefix}-{page}-{chunk_seq}.png"
+        if subchunk_path.exists():
+            subchunk_path.unlink()
+        for old in paths.markings_dir.glob(
+            f"{prefix}-{page}-{chunk_seq}-*.png"
+        ):
+            old.unlink()
+
+
 # ---------------------------------------------------------------------------
 # CSV ingest
 # ---------------------------------------------------------------------------
 
 def load_csv_counts(csv_path):
-    """Read tools/wip/out/<basename>.csv. Returns:
+    """Read tools/wip/cache/<basename>.csv. Returns:
         counts:       {(page, chunk): images_above_sum}
         parse_errors: list of (page, chunk, raw_value) for rows whose
                       Images Above column was not parseable as int.
@@ -513,7 +535,7 @@ def run_extract(paths, page_filter, verbose):
         f"{len(parse_errors)} parse error(s)"
     )
 
-    state = paths.basename.split("_", 1)[0].lower()
+    image_slug = catalog_image_slug(paths.basename)
     paths.subchunks_dir.mkdir(parents=True, exist_ok=True)
     paths.markings_dir.mkdir(parents=True, exist_ok=True)
 
@@ -561,7 +583,8 @@ def run_extract(paths, page_filter, verbose):
             if status == "ok":
                 W, _H = im.size
                 subchunk = im.crop((0, 0, W, cut_y))
-                sub_name = f"{state}-{page}-{chunk_seq}.png"
+                sub_name = f"{image_slug}-{page}-{chunk_seq}.png"
+                _cleanup_chunk_outputs(paths, image_slug, page, chunk_seq)
                 # Explicit lossless PNG: format=PNG, no optimize pass,
                 # compress_level=0 (stored -- no DEFLATE at all). PNG is
                 # already lossless at any level, but compress_level=0
@@ -574,14 +597,6 @@ def run_extract(paths, page_filter, verbose):
                     compress_level=0,
                 )
                 subchunks_emitted += 1
-
-                # Wipe any stale marking files for this chunk before
-                # stage 2 emits fresh ones (or leaves nothing on
-                # mismatch).
-                for old in paths.markings_dir.glob(
-                    f"{state}-{page}-{chunk_seq}-*.png"
-                ):
-                    old.unlink()
 
                 # Stage 2: deterministic split (no API calls).
                 markings = split_subchunk_into_markings(subchunk, expected)
@@ -597,7 +612,9 @@ def run_extract(paths, page_filter, verbose):
                     found = len(markings)
                     for i, (x0, y0, x1, y1) in enumerate(markings, 1):
                         marking_im = subchunk.crop((x0, y0, x1, y1))
-                        m_name = f"{state}-{page}-{chunk_seq}-{i}.png"
+                        m_name = image_filename(
+                            image_slug, page, chunk_seq, i
+                        )
                         marking_im.save(
                             paths.markings_dir / m_name,
                             format="PNG",
@@ -669,11 +686,11 @@ def main(argv=None):
         "basename",
         help=(
             "base name of the catalog (e.g. VA_ASCC_CTLG). Drives input "
-            "dir tools/wip/in/<basename>/, input CSV "
-            "tools/wip/out/<basename>.csv, subchunks dir "
-            "tools/wip/out/<basename>_subchunks/, markings dir "
-            "tools/wip/out/<basename>_images/, report CSV "
-            "tools/wip/out/<basename>_subchunks_report.csv."
+            "dir tools/wip/cache/<basename>/, input CSV "
+            "tools/wip/cache/<basename>.csv, subchunks dir "
+            "tools/wip/cache/<basename>_subchunks/, markings dir "
+            "tools/wip/cache/<basename>_images/, report CSV "
+            "tools/wip/cache/<basename>_subchunks_report.csv."
         ),
     )
     parser.add_argument(

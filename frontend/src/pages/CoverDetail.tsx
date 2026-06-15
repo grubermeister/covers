@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type CarouselApi } from "@/components/ui/carousel";
-import { formatCatalogDate } from "@/lib/catalogRecordDisplay";
+import { formatDateSeen } from "@/lib/catalogRecordDisplay";
 import { EntryDetailLayout } from "@/components/entry-detail/EntryDetailLayout";
 import { EntryImageGalleryCard } from "@/components/entry-detail/EntryImageGalleryCard";
 import { EntryAssociatedThumbnailsCard } from "@/components/entry-detail/EntryAssociatedThumbnailsCard";
@@ -68,6 +68,8 @@ const EMPTY = "-";
 
 type CoverDetailLocationState = {
   from?: string;
+  fromDashboard?: boolean;
+  dashboardTab?: "submissions" | "editor";
   markingId?: number;
   coverMarkingId?: number;
 };
@@ -89,14 +91,7 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: CoverDateSeenItem): string {
-  const raw = d.date || "";
-  const truncated =
-    d.granularity === "YEAR"
-      ? raw.slice(0, 4)
-      : d.granularity === "MONTH"
-        ? raw.slice(0, 7)
-        : raw.slice(0, 10);
-  return formatCatalogDate(truncated) || truncated;
+  return formatDateSeen(d.date, d.granularity) || d.date || "";
 }
 
 
@@ -276,6 +271,10 @@ const CoverDetailPage = () => {
   };
 
   const handleBack = () => {
+    if (state?.fromDashboard) {
+      navigate("/dashboard", { state: { tab: state.dashboardTab ?? "submissions" } });
+      return;
+    }
     if (state?.from) {
       navigate(state.from);
       return;

@@ -1,12 +1,12 @@
 /**
  * Citations (v2 Citation entity): GET /citations/.
- * Links a ReferenceWork to a subject (Cover or Postmark) with a
+ * Links a ReferenceWork to a subject (Cover or Marking) with a
  * free-form `citation_detail` string.
  */
 import apiClient, { ensureCsrfToken } from "@/lib/api";
 
 /** Subject polymorphic discriminator (v2 model) */
-export type CitationSubjectType = "COVER" | "POSTMARK";
+export type CitationSubjectType = "COVER" | "MARKING";
 
 /** One item from GET /citations/ (DRF snake_case) */
 export interface CitationApiResultItem {
@@ -62,7 +62,7 @@ export async function getCitations(): Promise<CitationRecord[]> {
   return data.results.map(mapApiResultToRecord);
 }
 
-/** Polymorphic subject type accepted by v2 Citation rows (POSTMARK is legacy naming only). */
+/** Polymorphic subject type accepted by v2 Citation rows. */
 export type WritableCitationSubjectType = "COVER" | "MARKING";
 
 export interface CitationSubjectRow {

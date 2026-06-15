@@ -4,13 +4,13 @@ DRF permission classes backed by real Django RBAC.
 Role mapping (see plan in
 .claude/plans/currently-the-system-has-prancy-wilkinson.md):
 
-    Guest          → anonymous request
-    Contributor    → in `Contributors` group
-    Editor         → in `Editors` group (has `common.review_contribution`)
-    Administrator  → `is_superuser` (single-person admin per design)
+    Guest          -> anonymous request
+    Contributor    -> in `Contributors` group
+    Editor         -> in `Editors` group (has `common.review_contribution`)
+    Administrator  -> `is_superuser` (single-person admin per design)
 
 `IsAdminUser` (DRF built-in) is used directly in views for Administrator-only
-endpoints — there is no separate Administrator group.
+endpoints -- there is no separate Administrator group.
 """
 from __future__ import annotations
 
@@ -98,6 +98,21 @@ class IsEditor(BasePermission):
         return user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)
 
 
+class IsEditorOrAdminWrite(IsEditor):
+    """
+    Public reads pass; unsafe writes require an Editor or Administrator.
+
+    Use this for direct catalog endpoints where contributors must go through
+    the contribution review flow, but editors are allowed to enter live catalog
+    vocabulary and records.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return super().has_permission(request, view)
+
+
 class CanReviewContribution(BasePermission):
     """
     Object-level: user can review (approve/reject/edit) THIS contribution.
@@ -183,6 +198,6 @@ class CanManageReferenceWorks(BasePermission):
         if request.method in ("PUT", "PATCH"):
             return user.has_perm("common.change_referencework")
         if request.method == "DELETE":
-            # Spec says "add and edit" only — delete is admin-only.
+            # Spec says "add and edit" only -- delete is admin-only.
             return False
         return False

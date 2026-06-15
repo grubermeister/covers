@@ -32,15 +32,22 @@ class SessionAuthenticationNoCSRF(SessionAuthentication):
 
 
 def _get_user_role(user):
+    if getattr(user, "is_superuser", False):
+        return "administrator"
     if user.groups.filter(name__iexact="Editors").exists():
-        return "state_editor"
+        return "editor"
     return "contributor"
 
 
-def _get_user_assigned_regions(user):
-    """Regions covered by Collections this user is assigned to."""
-    from common.models import Region
-    return Region.objects.filter(collection__editor_assignments__user=user).distinct()
+def _get_user_assigned_collections(user):
+    """Collections this editor is assigned to, with region loaded for the SPA."""
+    from common.models import Collection
+    return (
+        Collection.objects.filter(editor_assignments__user=user)
+        .select_related("region")
+        .distinct()
+        .order_by("name")
+    )
 
 
 def _build_user_payload(user):
@@ -53,11 +60,19 @@ def _build_user_payload(user):
         "is_superuser": getattr(user, "is_superuser", False),
         "role": role,
     }
-    if role == "state_editor":
-        regions = _get_user_assigned_regions(user)
-        payload["assigned_locations"] = [
-            {"name": r.name, "reference_code": r.abbrev or ""}
-            for r in regions
+    if role == "editor":
+        collections = _get_user_assigned_collections(user)
+        payload["assigned_collections"] = [
+            {
+                "id": c.pk,
+                "name": c.name,
+                "region": {
+                    "id": c.region_id,
+                    "name": c.region.name if c.region_id else "",
+                    "abbrev": c.region.abbrev if c.region_id else "",
+                },
+            }
+            for c in collections
         ]
     return payload
 

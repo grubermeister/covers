@@ -27,7 +27,12 @@ from munger.fields.dates import parse_date_field
 from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
 from munger.head import parse_head, parse_manuscript_row
-from munger.images import MEDIA_ROOT
+from munger.images import (
+    MEDIA_ROOT,
+    catalog_region_abbrev,
+    image_filename,
+    region_media_slug,
+)
 from munger.io import (
     OPTIONAL_COLS,
     REQUIRED_COLS,
@@ -44,13 +49,14 @@ WIP_DIR = TOOLS_DIR / "wip"
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--input", default=WIP_DIR / "in" / "VA_ASCC_CTLG.csv")
-    ap.add_argument("--input-dir", default=None)
+    ap.add_argument("--input", default=WIP_DIR / "cache" / "VA_ASCC_CTLG.csv")
+    ap.add_argument("--input-dir", default=WIP_DIR / "in")
     ap.add_argument("--out-dir", default=WIP_DIR / "out")
+    ap.add_argument("--reference-work-code", default="ASCC1")
     args = ap.parse_args(argv)
 
     INPUT_CSV = Path(args.input)
-    INPUT_DIR = Path(args.input_dir) if args.input_dir is not None else INPUT_CSV.parent
+    INPUT_DIR = Path(args.input_dir)
     OUT_DIR = Path(args.out_dir)
 
 
@@ -58,14 +64,19 @@ def main(argv=None):
     # 0. Setup
     # ======================================================================
     # INPUT_CSV / INPUT_DIR / OUT_DIR supplied by main() argparse.
-    REGION_ABBREV = os.path.basename(INPUT_CSV)[:2].upper()
+    REGION_ABBREV = catalog_region_abbrev(INPUT_CSV)
+    REFERENCE_WORK_CODE = str(args.reference_work_code).strip()
     _rw_seed = pd.read_csv(os.path.join(INPUT_DIR, 'reference_works.csv'))
-    if len(_rw_seed) != 1:
+    _rw_match = _rw_seed[
+        _rw_seed['code'].astype(str).str.strip() == REFERENCE_WORK_CODE
+    ]
+    if len(_rw_match) != 1:
         raise ValueError(
-            f"reference_works.csv must contain exactly 1 row (got {len(_rw_seed)})."
+            f"reference_works.csv must contain exactly 1 row with "
+            f"code={REFERENCE_WORK_CODE!r} (matched {len(_rw_match)})."
         )
-    RW_ID   = int(_rw_seed.iloc[0]['id'])
-    RW_CODE = str(_rw_seed.iloc[0]['code']).strip()
+    RW_ID   = int(_rw_match.iloc[0]['id'])
+    RW_CODE = str(_rw_match.iloc[0]['code']).strip()
     _region_seed = pd.read_csv(os.path.join(INPUT_DIR, 'regions.csv'))
     _match = _region_seed[_region_seed['abbrev'].astype(str).str.upper() == REGION_ABBREV]
     if len(_match) != 1:
@@ -1518,7 +1529,7 @@ def main(argv=None):
 
         # Page and chunk from the OCR extractor. Together they identify the
         # extracted image files used in Step 11:
-        # backend/media/<state>/va-<page>-<chunk>-<counter>.png
+        # backend/media/<region>/va-<page>-<chunk>-<counter>.png
         page = src.get('Page')
         if pd.notna(page):
             page = int(page)
@@ -1765,7 +1776,7 @@ def main(argv=None):
     # ======================================================================
     _apostrophe_re = re.compile(r"[\u2019']")  # straight + curly apostrophe
     _amp_re        = re.compile(r"\s*&\s*")
-    _strip_punct   = re.compile(r"[,/=()\[\]:`*?]")
+    _strip_punct   = re.compile(r"[,/=()\[\]:`*]")
     _double_dash   = re.compile(r"-{2,}")
     _multi_space   = re.compile(r"\s+")
     _edge_trim     = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
@@ -2177,6 +2188,27 @@ def main(argv=None):
     assert resolve_bracket('C')['lettering_name'] is None
     print('Bracket resolver self-tests passed')
 
+    def resolve_bracket_shape_id(shape_code_or_name):
+        # Bracket shape parsing returns ASCC codes such as "O" and "ARC".
+        # shape_lookup is keyed by seed names such as "O - Oval".
+        if not shape_code_or_name:
+            return None
+        raw = str(shape_code_or_name).strip()
+        if not raw:
+            return None
+        direct_id = shape_lookup.get(raw.upper())
+        if direct_id is not None:
+            return direct_id
+        shape_name, shape_error = resolve_shape_name(raw.upper())
+        if shape_error is not None or not shape_name:
+            return None
+        return shape_lookup.get(shape_name.upper())
+
+    assert resolve_bracket_shape_id('O') == shape_lookup['O - OVAL']
+    assert resolve_bracket_shape_id(resolve_bracket('oval')['shape_name']) == shape_lookup['O - OVAL']
+    assert resolve_bracket_shape_id(resolve_bracket('arc')['shape_name']) == shape_lookup['ARC - ARC OR SEMI-CIRCLE']
+    assert resolve_bracket_shape_id(resolve_bracket('box')['shape_name']) == shape_lookup['BOX']
+
     # ======================================================================
     # 9.3 Token Classification & Entity Emission
     # ======================================================================
@@ -2218,7 +2250,7 @@ def main(argv=None):
 
             # Resolve bracket -> shape/lettering
             br = resolve_bracket(bracket)
-            bracket_shape_id = shape_lookup.get(br['shape_name'].upper()) if br['shape_name'] else None
+            bracket_shape_id = resolve_bracket_shape_id(br['shape_name'])
             bracket_lettering_id = lettering_lookup.get(br['lettering_name']) if br['lettering_name'] else None
 
             # Determine impression
@@ -2656,10 +2688,6 @@ def main(argv=None):
         out["modified_by"]   = AUDIT_USER_ID
         return out
 
-    def _csv_scalar(value):
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            return ""
-        return str(value)
     tm_idx_by_listing = _by_listing(townmarks_df, "townmark_id") if (townmarks_df is not None and "townmark_id" in townmarks_df.columns) else {}
     rm_idx_by_listing = _by_listing(ratemarks_df, "ratemark_id") if (ratemarks_df is not None and "ratemark_id" in ratemarks_df.columns) else {}
     ax_idx_by_listing = _by_listing(auxmarks_df, "auxmark_id")  if (auxmarks_df  is not None and "auxmark_id"  in auxmarks_df.columns)  else {}
@@ -2893,133 +2921,6 @@ def main(argv=None):
     )
     citations_out.insert(0, "id", range(1, len(citations_out) + 1))
     citations_out = _stamp(citations_out)
-
-    lineage_rows = []
-    for kind, src_id, mk_id in emit_order:
-        if kind == "TM":
-            r = _src_row_by(townmarks_df, "townmark_id", src_id)
-            kind_label = "TM"
-            type_label = "TOWNMARK"
-            color_name = r.get("color_name") if r is not None else None
-            local_index = r.get("townmark_id") if r is not None else None
-            parent_mark_type = ""
-            parent_mark_id = ""
-            parent_local_index = ""
-            fanout_idx = ""
-            if r is not None:
-                siblings = townmarks_df[townmarks_df["source_listing_idx"] == r.get("source_listing_idx")]
-                local_index = int((siblings["townmark_id"] < src_id).sum())
-                fanout_idx = int(local_index)
-        elif kind == "RM":
-            r = _src_row_by(ratemarks_df, "ratemark_id", src_id)
-            kind_label = "RM"
-            type_label = "RATEMARK"
-            color_name = None
-            local_index = 0
-            parent_mark_type = "TOWNMARK"
-            parent_mark_id = ""
-            parent_local_index = ""
-            fanout_idx = ""
-            if r is not None:
-                tmr_sel = townmark_ratemark_df[townmark_ratemark_df["ratemark_id"] == src_id]
-                if len(tmr_sel):
-                    parent_mark_id = int(tmr_sel.iloc[0]["townmark_id"])
-                    parent_tm = _src_row_by(townmarks_df, "townmark_id", parent_mark_id)
-                    if parent_tm is not None:
-                        color_name = parent_tm.get("color_name")
-                        tm_siblings = townmarks_df[
-                            townmarks_df["source_listing_idx"] == parent_tm.get("source_listing_idx")
-                        ]
-                        parent_local_index = int((tm_siblings["townmark_id"] < parent_mark_id).sum())
-                        sibling_rms = townmark_ratemark_df[
-                            townmark_ratemark_df["townmark_id"] == parent_mark_id
-                        ]["ratemark_id"].tolist()
-                        local_index = sibling_rms.index(src_id)
-        else:
-            r = _src_row_by(auxmarks_df, "auxmark_id", src_id)
-            kind_label = "AX"
-            type_label = "AUXMARK"
-            color_name = None
-            local_index = 0
-            parent_mark_type = ""
-            parent_mark_id = ""
-            parent_local_index = ""
-            fanout_idx = ""
-            if r is not None:
-                parent_mark_type = _csv_scalar(r.get("parent_mark_type"))
-                parent_mark_id = _csv_scalar(r.get("parent_mark_id"))
-                if parent_mark_type == "TOWNMARK":
-                    parent_tm = _src_row_by(townmarks_df, "townmark_id", r.get("parent_mark_id"))
-                    if parent_tm is not None:
-                        color_name = parent_tm.get("color_name")
-                        tm_siblings = townmarks_df[
-                            townmarks_df["source_listing_idx"] == parent_tm.get("source_listing_idx")
-                        ]
-                        parent_local_index = int((tm_siblings["townmark_id"] < r.get("parent_mark_id")).sum())
-                        aux_sel = auxmarks_df[
-                            (auxmarks_df["parent_mark_type"] == "TOWNMARK") &
-                            (auxmarks_df["parent_mark_id"] == r.get("parent_mark_id"))
-                        ]["auxmark_id"].tolist()
-                        local_index = aux_sel.index(src_id)
-                elif parent_mark_type == "RATEMARK":
-                    parent_rm = _src_row_by(ratemarks_df, "ratemark_id", r.get("parent_mark_id"))
-                    if parent_rm is not None:
-                        tmr_sel = townmark_ratemark_df[
-                            townmark_ratemark_df["ratemark_id"] == r.get("parent_mark_id")
-                        ]
-                        if len(tmr_sel):
-                            parent_tm = _src_row_by(townmarks_df, "townmark_id", tmr_sel.iloc[0]["townmark_id"])
-                            if parent_tm is not None:
-                                color_name = parent_tm.get("color_name")
-                        rm_sel = ratemarks_df[
-                            ratemarks_df["source_listing_idx"] == parent_rm.get("source_listing_idx")
-                        ]
-                        parent_local_index = int((rm_sel["ratemark_id"] < r.get("parent_mark_id")).sum())
-                        aux_sel = auxmarks_df[
-                            (auxmarks_df["parent_mark_type"] == "RATEMARK") &
-                            (auxmarks_df["parent_mark_id"] == r.get("parent_mark_id"))
-                        ]["auxmark_id"].tolist()
-                        local_index = aux_sel.index(src_id)
-
-        if r is None:
-            continue
-
-        src_idx = int(r.get("source_listing_idx"))
-        src_listing = listings.loc[src_idx]
-        family_root_idx = src_idx
-        parent_idx = src_listing.get("parent_idx")
-        if parent_idx is not None and not (isinstance(parent_idx, float) and pd.isna(parent_idx)):
-            family_root_idx = int(parent_idx)
-        family_root = listings.loc[family_root_idx]
-        lineage_rows.append({
-            "marking_id": mk_id,
-            "marking_code": f"{RW_CODE}-{REGION_ABBREV}-{mk_id}",
-            "mark_type": type_label,
-            "mark_kind": kind_label,
-            "local_index": int(local_index),
-            "source_listing_idx": src_idx,
-            "source_chunk": _csv_scalar(src_listing.get("Chunk")),
-            "source_page": _csv_scalar(src_listing.get("Page")),
-            "family_root_idx": family_root_idx,
-            "family_root_chunk": _csv_scalar(family_root.get("Chunk")),
-            "family_root_page": _csv_scalar(family_root.get("Page")),
-            "family_role": "parent" if src_idx == family_root_idx else "child",
-            "parent_mark_type": parent_mark_type,
-            "parent_mark_source_id": parent_mark_id,
-            "parent_local_index": _csv_scalar(parent_local_index),
-            "color_name": _csv_scalar(color_name),
-            "fanout_index": _csv_scalar(fanout_idx),
-            "inscription_txt": _csv_scalar(r.get("inscription_text")),
-            "catalog_txt": _csv_scalar(markings_out.loc[markings_out["id"] == mk_id, "catalog_txt"].iloc[0]) if len(markings_out[markings_out["id"] == mk_id]) else "",
-            "rate_raw": _csv_scalar(r.get("rate_raw")),
-        })
-    lineage_out = pd.DataFrame(lineage_rows) if lineage_rows else pd.DataFrame(columns=[
-        "marking_id", "marking_code", "mark_type", "mark_kind", "local_index",
-        "source_listing_idx", "source_chunk", "source_page", "family_root_idx",
-        "family_root_chunk", "family_root_page", "family_role",
-        "parent_mark_type", "parent_mark_source_id", "parent_local_index", "color_name",
-        "fanout_index", "inscription_txt", "catalog_txt", "rate_raw",
-    ])
     GENERATED = [
         ("colors",           colors_out,           ["id", "name", "hex_val", "pantone_code"]),
         ("letterings",       letterings_out,       ["id", "name"]),
@@ -3054,14 +2955,10 @@ def main(argv=None):
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
     print(f"Load via: ./woco import_ascc_bundle {OUT_DIR}")
 
-    _lineage_path = os.path.join(OUT_DIR, "marking_lineage.csv")
-    lineage_out.to_csv(_lineage_path, index=False)
-    print(f'  {"marking_lineage.csv":<22s} {len(lineage_out):>5d} rows  ->  {_lineage_path}  (sidecar)')
-
     # ======================================================================
     # Step 11: Images Table Assembly
     # ======================================================================
-    IMAGES_SUBDIR = REGION_ABBREV.lower()  # e.g. 'va'
+    IMAGES_SUBDIR = region_media_slug(REGION_ABBREV)  # e.g. 'va'
     pm_to_final_id = marking_id_by_tm
     image_rows = []
     next_image_id = 1
@@ -3079,7 +2976,7 @@ def main(argv=None):
             print(f'WARNING: no marking_id for townmark_id={pm["townmark_id"]}; skipping.')
             continue
         for display_order, (page, chunk, counter) in enumerate(refs, start=1):
-            fname = f'{IMAGES_SUBDIR}-{page}-{chunk}-{counter}.png'
+            fname = image_filename(IMAGES_SUBDIR, page, chunk, counter)
             disk_path = MEDIA_ROOT / IMAGES_SUBDIR / fname
             if not disk_path.exists():
                 raise FileNotFoundError(

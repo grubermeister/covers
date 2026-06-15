@@ -56,12 +56,12 @@ print('Site updated.')
 
 echo "[5/5] Running full import (reference + legacy + ASCC)..."
 if [[ $SKIP_IMPORT -eq 1 ]]; then
-  echo "Skipped (--no-import). Run manually: uv run python backend/manage.py import_all_legacy_csv --dir imports --user admin"
+  echo "Skipped (--no-import). Run manually: uv run python backend/manage.py import_apmc_bundle backend/imports --allow-missing"
 else
   if [[ ! -d "backend/$IMPORT_DIR" ]]; then
-    echo "Warning: Import dir backend/$IMPORT_DIR not found. Run import manually: uv run python backend/manage.py import_all_legacy_csv --dir imports --user admin" >&2
+    echo "Warning: Import dir backend/$IMPORT_DIR not found. Run import manually: uv run python backend/manage.py import_apmc_bundle backend/imports --allow-missing" >&2
   else
-    uv run python backend/manage.py import_all_legacy_csv --dir "$IMPORT_DIR" --user admin
+    uv run python backend/manage.py import_apmc_bundle "backend/$IMPORT_DIR" --allow-missing
   fi
 fi
 

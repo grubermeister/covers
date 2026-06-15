@@ -1,9 +1,11 @@
 ###################################################################################################
-## WoCo Commons - Restore Auth objects from backup
+## WoCo Commons - Restore auth objects from backup
 ## MPC: 2025/11/17
 ###################################################################################################
-from django.core.management.base import BaseCommand, CommandError
+import json
+from pathlib import Path
 
+from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
 from django.db.models import Q
 
@@ -11,18 +13,34 @@ from tablib import Dataset
 
 from common.models import Collection, CollectionAssignment
 from common.auth_resources import (
-    UserResource,
-    GroupResource,
-    EmailAddressResource,
-    CollectionResource,
-    CollectionAssignmentResource,
+    AUTH_BACKUP_SCHEMA,
+    auth_dataset_specs,
 )
 
 
-def _load_dataset(path, fmt):
-    with open(path, "r", encoding="utf-8") as f:
+def _load_csv_dataset(path):
+    with path.open("r", encoding="utf-8") as f:
         raw = f.read()
-    return Dataset().load(raw, format=fmt)
+    return Dataset().load(raw, format="csv")
+
+
+def _dataset_from_payload(name, payload):
+    if not isinstance(payload, dict):
+        raise CommandError(f"Dataset {name} must be an object.")
+
+    headers = payload.get("headers")
+    rows = payload.get("rows")
+    if not isinstance(headers, list):
+        raise CommandError(f"Dataset {name} must include a headers list.")
+    if not isinstance(rows, list):
+        raise CommandError(f"Dataset {name} must include a rows list.")
+
+    dataset = Dataset(headers=headers)
+    for index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            raise CommandError(f"Dataset {name} row {index} must be an object.")
+        dataset.append([row.get(header) for header in headers])
+    return dataset
 
 
 def _format_import_errors(result):
@@ -92,137 +110,133 @@ def _without_skipped_collection_assignments(dataset, skipped_collection_names):
 
 class Command(BaseCommand):
     help = (
-        "Import users (required), and optionally groups, email addresses, "
-        "state collections, and collection assignments, using "
-        "django-import-export resources.\n\n"
-        "Usage (positional):\n"
-        "  restore_auth users.csv [groups.csv] [emails.csv] [collections.csv] [assignments.csv]\n"
-        "Or with explicit paths:\n"
-        "  restore_auth users.csv --emails-file emails.csv --assignments-file assignments.csv\n"
+        "Import auth/config data from one JSON backup file. With --emit-csv, "
+        "read a directory containing fixed CSV files."
     )
 
     def add_arguments(self, parser):
-        # 1-5 positional paths: users [groups] [emails] [collections] [assignments]
         parser.add_argument(
-            "paths",
-            nargs="+",
+            "path",
             help=(
-                "One to five paths: users_file [groups_file] [emails_file] "
-                "[collections_file] [assignments_file]"
+                "JSON input file, or input directory when --emit-csv is used."
             ),
         )
-
-        # Optional explicit overrides
         parser.add_argument(
-            "--users-file",
-            dest="users_file",
-            help="Explicit users import path (overrides first positional)",
-        )
-        parser.add_argument(
-            "--groups-file",
-            dest="groups_file",
-            help="Explicit groups import path (overrides second positional)",
-        )
-        parser.add_argument(
-            "--emails-file",
-            dest="emails_file",
-            help="Explicit email addresses import path (overrides third positional)",
-        )
-        parser.add_argument(
-            "--collections-file",
-            dest="collections_file",
-            help="Explicit state collections import path (overrides fourth positional)",
-        )
-        parser.add_argument(
-            "--assignments-file",
-            dest="assignments_file",
-            help=(
-                "Explicit collection assignments import path "
-                "(overrides fifth positional)"
-            ),
-        )
-
-        parser.add_argument(
-            "--format",
-            default="csv",
-            choices=["csv", "json", "yaml", "xls", "xlsx", "tsv"],
-            help="File format (must match how you exported; default: csv)",
+            "--emit-csv",
+            action="store_true",
+            help="Read a directory bundle of CSV files instead of one JSON file.",
         )
         parser.add_argument(
             "--dry-run",
             action="store_true",
-            help="Run import validation without committing changes",
+            help="Run import validation without committing changes.",
         )
 
     @transaction.atomic
     def handle(self, *args, **options):
-        fmt = options["format"]
+        path = Path(options["path"])
         dry_run = options["dry_run"]
-        paths = options["paths"]
 
-        # Resolve effective paths (flags override positionals)
-        users_path = options.get("users_file") or (paths[0] if len(paths) >= 1 else None)
-        groups_path = options.get("groups_file") or (paths[1] if len(paths) >= 2 else None)
-        emails_path = options.get("emails_file") or (paths[2] if len(paths) >= 3 else None)
-        collections_path = options.get("collections_file") or (paths[3] if len(paths) >= 4 else None)
-        assignments_path = options.get("assignments_file") or (paths[4] if len(paths) >= 5 else None)
+        if options["emit_csv"]:
+            datasets = self._load_csv_bundle(path)
+        else:
+            datasets = self._load_json_backup(path)
 
-        if not users_path:
-            raise SystemExit("You must provide at least a users import path.")
+        self._import_datasets(datasets)
 
-        user_res = UserResource()
-        group_res = GroupResource()
-        email_res = EmailAddressResource()
-        collection_res = CollectionResource()
-        assignment_res = CollectionAssignmentResource()
-        collection_dataset = None
+        if dry_run:
+            transaction.set_rollback(True)
+            self.stdout.write(
+                self.style.SUCCESS("Dry run completed; no data committed.")
+            )
+        else:
+            self.stdout.write(
+                self.style.SUCCESS("Auth import completed successfully.")
+            )
+
+    def _load_json_backup(self, path):
+        if not path.exists():
+            raise CommandError(f"JSON input file does not exist: {path}")
+        if path.is_dir():
+            raise CommandError(f"JSON input path is a directory: {path}")
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise CommandError(f"Could not parse JSON backup: {exc}") from exc
+
+        if payload.get("schema") != AUTH_BACKUP_SCHEMA:
+            raise CommandError(
+                "Unsupported auth backup schema: "
+                f"{payload.get('schema')!r}"
+            )
+        raw_datasets = payload.get("datasets")
+        if not isinstance(raw_datasets, dict):
+            raise CommandError("Auth backup must include a datasets object.")
+
+        datasets = {}
+        for spec in auth_dataset_specs():
+            raw_dataset = raw_datasets.get(spec.name)
+            if raw_dataset is None:
+                if spec.required:
+                    raise CommandError(
+                        f"Auth backup is missing required dataset: {spec.name}"
+                    )
+                continue
+            datasets[spec.name] = _dataset_from_payload(spec.name, raw_dataset)
+        return datasets
+
+    def _load_csv_bundle(self, path):
+        if not path.exists():
+            raise CommandError(f"CSV input directory does not exist: {path}")
+        if not path.is_dir():
+            raise CommandError(f"CSV input path is not a directory: {path}")
+
+        datasets = {}
+        for spec in auth_dataset_specs():
+            file_path = path / spec.filename
+            if not file_path.exists():
+                if spec.required:
+                    raise CommandError(
+                        f"CSV bundle is missing required file: {file_path}"
+                    )
+                continue
+            datasets[spec.name] = _load_csv_dataset(file_path)
+        return datasets
+
+    def _import_datasets(self, datasets):
+        specs = {spec.name: spec for spec in auth_dataset_specs()}
         skipped_collection_names = set()
 
-        # Dry-run validation still performs writes inside this outer transaction
-        # so later files can resolve rows imported by earlier files. The whole
-        # transaction is rolled back at the end when dry_run is true.
-
-        # --- Groups first (if any), so user->group relations can resolve ---
-        if groups_path:
-            group_dataset = _load_dataset(groups_path, fmt)
-            _import_or_raise(group_res, group_dataset, "groups")
-            self.stdout.write(self.style.SUCCESS(f"Groups imported from {groups_path}"))
+        group_dataset = datasets.get("groups")
+        if group_dataset is not None:
+            spec = specs["groups"]
+            _import_or_raise(spec.resource_class(), group_dataset, spec.label)
+            self.stdout.write(self.style.SUCCESS("Groups imported."))
         else:
-            self.stdout.write("Groups import skipped (no groups path provided).")
+            self.stdout.write("Groups import skipped.")
 
-        # --- Users (required) ---
-        user_dataset = _load_dataset(users_path, fmt)
-        _import_or_raise(user_res, user_dataset, "users")
-        self.stdout.write(self.style.SUCCESS(f"Users imported from {users_path}"))
+        user_dataset = datasets.get("users")
+        if user_dataset is None:
+            raise CommandError("Auth backup is missing required users dataset.")
+        spec = specs["users"]
+        _import_or_raise(spec.resource_class(), user_dataset, spec.label)
+        self.stdout.write(self.style.SUCCESS("Users imported."))
 
-        # --- Email addresses (optional; must come after users) ---
-        if emails_path:
-            email_dataset = _load_dataset(emails_path, fmt)
-            _import_or_raise(email_res, email_dataset, "email addresses")
-            self.stdout.write(
-                self.style.SUCCESS(f"Email addresses imported from {emails_path}")
-            )
+        email_dataset = datasets.get("emails")
+        if email_dataset is not None:
+            spec = specs["emails"]
+            _import_or_raise(spec.resource_class(), email_dataset, spec.label)
+            self.stdout.write(self.style.SUCCESS("Email addresses imported."))
         else:
-            self.stdout.write(
-                "Email address import skipped (no emails path provided)."
-            )
+            self.stdout.write("Email address import skipped.")
 
-        # --- State Collections (optional; after Users so audit fields can be
-        # populated when a row needs to be created. Regions must already exist
-        # on the destination.) ---
-        if collections_path:
-            collection_dataset = _load_dataset(collections_path, fmt)
-            _import_or_raise(
-                collection_res,
-                collection_dataset,
-                "state collections",
-            )
+        collection_dataset = datasets.get("collections")
+        if collection_dataset is not None:
+            spec = specs["collections"]
+            _import_or_raise(spec.resource_class(), collection_dataset, spec.label)
             skipped_collection_names = _missing_collection_names(collection_dataset)
-            self.stdout.write(
-                self.style.SUCCESS(
-                    f"State collections imported from {collections_path}"
-                )
-            )
+            self.stdout.write(self.style.SUCCESS("State collections imported."))
             if skipped_collection_names:
                 self.stdout.write(
                     self.style.WARNING(
@@ -232,31 +246,22 @@ class Command(BaseCommand):
                     )
                 )
         else:
-            self.stdout.write(
-                "State collections import skipped (no collections path provided)."
-            )
+            self.stdout.write("State collections import skipped.")
 
-        # --- Collection Assignments (optional; must come after both Users
-        # and Collections, since each row references both) ---
-        if assignments_path:
-            assignment_dataset = _load_dataset(assignments_path, fmt)
+        assignment_dataset = datasets.get("assignments")
+        if assignment_dataset is not None:
             assignment_dataset, skipped_assignments = (
                 _without_skipped_collection_assignments(
                     assignment_dataset,
                     skipped_collection_names,
                 )
             )
-            _import_or_raise(
-                assignment_res,
-                assignment_dataset,
-                "collection assignments",
-            )
+            spec = specs["assignments"]
+            _import_or_raise(spec.resource_class(), assignment_dataset, spec.label)
             keep_ids = _assignment_keep_ids(assignment_dataset)
             deleted, _ = CollectionAssignment.objects.exclude(pk__in=keep_ids).delete()
             self.stdout.write(
-                self.style.SUCCESS(
-                    f"Collection assignments imported from {assignments_path}"
-                )
+                self.style.SUCCESS("Collection assignments imported.")
             )
             if skipped_assignments:
                 self.stdout.write(
@@ -272,19 +277,6 @@ class Command(BaseCommand):
                 )
             )
         else:
-            self.stdout.write(
-                "Collection assignments import skipped "
-                "(no assignments path provided)."
-            )
-
-        if dry_run:
-            transaction.set_rollback(True)
-            self.stdout.write(
-                self.style.SUCCESS("Dry run completed; no data committed.")
-            )
-        else:
-            self.stdout.write(
-                self.style.SUCCESS("Auth import completed successfully.")
-            )
+            self.stdout.write("Collection assignments import skipped.")
 
 ###################################################################################################

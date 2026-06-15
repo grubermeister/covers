@@ -28,7 +28,7 @@ v1 = the legacy ColdFusion/MSSQL system behind worldcovers.org (`worldcovers-v1/
 
 ---
 
-## Status snapshot (as of 2026-06-11)
+## Status snapshot (as of 2026-06-14)
 
 **State rollout order (Ian):** VA → WV → **Michigan** → Maryland → Florida → Tennessee → Alabama.
 
@@ -43,8 +43,7 @@ v1 = the legacy ColdFusion/MSSQL system behind worldcovers.org (`worldcovers-v1/
 **Highest-value finding (resolved):** the four "fresh-install schema drift" alarms
 from the VA write-up **did not reproduce** on a clean DB — they were residue of an
 earlier broken-`main` migrate against the same DB. Migration-integrity alarm
-**downgraded**. The one real remaining infra gap: `wocod` can't create
-`test_worldcovers`, so the backend test suite doesn't run locally (Issue 33).
+**downgraded**. The local test-DB privilege gap is fixed (Issue 33).
 
 ---
 
@@ -336,13 +335,23 @@ avoid digit-bearing PO-name aborts. Still a **proposal** for Michael. It current
 **drops** the peeled year — which conflicts with Issue 20 ("Years Seen") wanting
 years preserved. Long-term fix may capture the year into a date field instead.
 
-### Issue 33 — Local backend test-DB privilege
-**Status:** open (infra) · **Depends on:** none
-`wocod` has grants only on `worldcovers.*`, so Django can't create
-`test_worldcovers` and the backend test suite doesn't run locally. A `GRANT` on
-`test_worldcovers.*` (or a documented convention) closes it. *(The four
-"migration drift" alarms from the VA write-up are **withdrawn** — fresh installs
-are healthy; see DECISIONS.md.)*
+### Issue 33 -- Local backend test-DB privilege
+**Status:** done (infra) - **Depends on:** none
+Resolved locally on 2026-06-12: `wocod@localhost` has `GRANT ALL PRIVILEGES ON
+test_worldcovers.*`, and Django can create/drop the test DB. Verified from repo
+root with `uv run python backend/manage.py test common.tests.test_api_permissions
+-v 2 --noinput` (exit code 0). The setup SQL now grants `test_worldcovers.*` for
+fresh installs.
+
+Staging checkouts without that test module can verify the DB grant directly:
+
+```sh
+sudo -u wocod -H bash -lc 'cd /srv/woco && mysql --defaults-file=mysql.cnf -e "DROP DATABASE IF EXISTS test_worldcovers; CREATE DATABASE test_worldcovers CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; DROP DATABASE test_worldcovers;"'
+```
+
+Expected exit code: 0.
+*(The four "migration drift" alarms from the VA write-up are
+**withdrawn** -- fresh installs are healthy; see DECISIONS.md.)*
 
 ### Issue 34 — VA + MI coexistence in one DB (ID offsetting)
 **Status:** open (tracked elsewhere) · **Depends on:** 5, 7
@@ -350,6 +359,49 @@ The importer keys on raw PKs and the munger renumbers each state from 1, so MI w
 into a **fresh** DB for the E2E proof. Multi-state coexistence needs the
 ID-offsetting work (tracked as Ian's Issue #8 in the v2 backlog). Noted here only
 to confirm MI E2E does **not** attempt it.
+
+---
+
+# Completed staging fixes
+
+These were found while debugging staging after the original 1-34 issue merge.
+They are recorded here so the next cleanup pass does not rediscover them.
+
+## Staging orphan submissions pointing at missing records
+**Status:** done (staging data cleanup) - **Date:** 2026-06-14
+Approved submission rows were visible from the user-submissions dashboard even
+when their target marking or cover route no longer resolved. Example symptoms:
+`/record/3005` returned not found, and `/record/3005/cover/1673` linked through
+the same missing parent marking. Root cause was staging data, not stale code:
+approved contribution/version rows referenced records that no longer existed or
+could no longer be reached.
+
+Cleanup rule used on staging:
+- Find approved `Contributions` rows whose `marking_id` is missing, or whose
+  cover/version data points through a missing parent marking.
+- Delete dependent version rows first, or set their `transaction_id` to `NULL`
+  before deleting parent `SubmissionTransactions`.
+- Delete the bad `SubmissionTransactions`.
+- Delete the bad `Contributions`.
+
+No code change was required for the data purge itself.
+
+## Dashboard Back from approved submissions
+**Status:** done (frontend) - **Date:** 2026-06-14
+Opening an approved marking or cover from the user-submissions dashboard and then
+clicking Back could navigate to a parent record instead of returning to the
+dashboard. The dashboard now passes `fromDashboard` plus the originating
+`dashboardTab`, and the detail pages preserve that state through approved-record
+redirects.
+
+Files changed:
+- `frontend/src/pages/Dashboard.tsx`
+- `frontend/src/pages/ContributionDetail.tsx`
+- `frontend/src/pages/CoverContributionDetail.tsx`
+- `frontend/src/pages/CoverDetail.tsx`
+- `frontend/src/pages/RecordDetail.tsx`
+
+Verified from `frontend/` with `npm run build`; expected exit code 0.
 
 ---
 

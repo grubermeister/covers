@@ -23,7 +23,7 @@ import { getPostOffices, type PostOfficeOption } from "@/services/postOffices";
 import { getRegions } from "@/services/regions";
 import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
-import { getDateFormats, type DateFormatOption } from "@/constants/postmarkEnums";
+import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import { getContribution, listContributions, createContribution, deleteDraftContribution } from "@/services/contributions";
 import { ENTRY_LABELS } from "@/labels/entry";
@@ -127,7 +127,7 @@ const FIELD_ERROR_SCROLL_TARGETS: Array<[string, string]> = [
   ["heightMm", "height-mm"],
   ["lettering", "lettering"],
   ["rateValue", "rate-value"],
-  ["images", "postmark-images-input"],
+  ["images", "marking-images-input"],
 ];
 
 function scrollToFirstError(errors: Record<string, string | undefined>) {
@@ -164,8 +164,8 @@ type ReferenceDetailFieldErrors = {
  * Per-image tag persisted on Contribution.submitted_data. Marking-image
  * uploads can only ever be one of two things from the contributor's POV:
  *
- *   - "photograph" (default) — a normal photo of the marking on a cover
- *   - "tracing"              — a hand-traced or computer-traced diagram
+ *   - "photograph" (default) -- a normal photo of the marking on a cover
+ *   - "tracing"              -- a hand-traced or computer-traced diagram
  *
  * We retain the string form (rather than a bare boolean) for forward-compat
  * with any cover-image plumbing that may grow back later, and so the editor
@@ -300,7 +300,7 @@ const Contribute = () => {
   // marking, this holds that marking's id. Drives both the staleness
   // banner and the page copy ("Submit edit to Marking" vs "Submit new
   // Marking"). Null for new-marking drafts.
-  const [resumedEditPostmarkId, setResumedEditPostmarkId] = useState<number | null>(null);
+  const [resumedEditMarkingId, setResumedEditMarkingId] = useState<number | null>(null);
   // Resolve page copy. For "edit-contribution" we further split on the
   // loaded contribution's status so a draft does not show the
   // "use the editor feedback" wording reserved for needs_revision /
@@ -317,7 +317,7 @@ const Contribute = () => {
     loadedContributionStatus === "needs_revision" ||
     loadedContributionStatus === "rejected";
   const isResumingDraft = isEditContribution && !isResubmissionStatus;
-  const isResumingMarkingEditDraft = isResumingDraft && resumedEditPostmarkId != null;
+  const isResumingMarkingEditDraft = isResumingDraft && resumedEditMarkingId != null;
   const copy = isResumingDraft
     ? isResumingMarkingEditDraft
       ? {
@@ -353,7 +353,7 @@ const Contribute = () => {
   const [townFocused, setTownFocused] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Form state – all fields shown on Submission Detail
+  // Form state - all fields shown on Submission Detail
   const [state, setState] = useState("");
 
   const [town, setTown] = useState("");
@@ -513,7 +513,7 @@ const Contribute = () => {
    *   - the shape options have finished loading (otherwise the SL row isn't
    *     in the dropdown yet and the prefill silently no-ops).
    *
-   * Townmark intentionally does NOT trigger this default — Townmarks have a
+   * Townmark intentionally does NOT trigger this default -- Townmarks have a
    * far wider variety of shapes and forcing SL would be misleading.
    */
   useEffect(() => {
@@ -702,22 +702,22 @@ const Contribute = () => {
         // the marking's current images (the draft only snapshots field
         // edits, not images) and (b) we can compare its modified_date to
         // the baseline stamped in submitted_data and flag a stale draft.
-        const editPostmarkIdRaw = (sd as Record<string, unknown>).edit_postmark_id;
-        const editPostmarkIdNum =
-          typeof editPostmarkIdRaw === "number"
-            ? editPostmarkIdRaw
-            : typeof editPostmarkIdRaw === "string" && editPostmarkIdRaw.trim() !== ""
-              ? Number(editPostmarkIdRaw)
+        const editMarkingIdRaw = (sd as Record<string, unknown>).edit_marking_id;
+        const editMarkingIdNum =
+          typeof editMarkingIdRaw === "number"
+            ? editMarkingIdRaw
+            : typeof editMarkingIdRaw === "string" && editMarkingIdRaw.trim() !== ""
+              ? Number(editMarkingIdRaw)
               : NaN;
-        if (Number.isFinite(editPostmarkIdNum) && editPostmarkIdNum > 0) {
-          setResumedEditPostmarkId(editPostmarkIdNum);
+        if (Number.isFinite(editMarkingIdNum) && editMarkingIdNum > 0) {
+          setResumedEditMarkingId(editMarkingIdNum);
           const baselineRaw = (sd as Record<string, unknown>).marking_modified_at_baseline;
           const baseline = typeof baselineRaw === "string" ? baselineRaw : null;
           const removedRaw = (sd as Record<string, unknown>).removed_existing_image_keys;
           if (Array.isArray(removedRaw)) {
             setRemovedExistingImageKeys(removedRaw.map((k) => String(k)));
           }
-          getMarkingByIdRaw(editPostmarkIdNum)
+          getMarkingByIdRaw(editMarkingIdNum)
             .then((m) => {
               if (cancelled || !m) return;
               if (existingUrls.length === 0 && Array.isArray(m.images)) {
@@ -852,6 +852,7 @@ const Contribute = () => {
         setImpression(normalizedImpression ?? "Normal");
         setInscriptionText(typeof data.inscription_txt === "string" ? data.inscription_txt : "");
         setDescription(typeof data.desc === "string" ? data.desc : "");
+        setRateValue(String(data.rate_val ?? "").trim());
 
         setLetteringId(data.lettering != null ? String(data.lettering) : "");
         const dateFmt = String(data.date_fmt ?? "").trim();
@@ -881,7 +882,7 @@ const Contribute = () => {
           const sd = (r.submitted_data ?? r.submittedData) as
             | Record<string, unknown>
             | undefined;
-          const epi = sd?.edit_postmark_id;
+          const epi = sd?.edit_marking_id;
           if (epi == null || epi === "") return false;
           return Number(epi) === Number(editMarkingId);
         });
@@ -1116,6 +1117,7 @@ const Contribute = () => {
       (c) => c.name.trim().toLowerCase() === colorVal.toLowerCase()
     )?.id;
     const isCircular = isCircularType(shapeVal);
+    const rateValueToSend = rateValue.trim();
 
     const errors: typeof fieldErrors = {};
     if (!saveAsDraft) {
@@ -1138,6 +1140,8 @@ const Contribute = () => {
       }
       if (isRatemark && !rateValue.trim()) {
         errors.rateValue = "Rate Value is required for Ratemarks";
+      } else if (showRateValueField && rateValueToSend && !/^\d+(?:\.\d{1,2})?$/.test(rateValueToSend)) {
+        errors.rateValue = "Rate Value must be cents, like 3 or 3.5";
       }
 
       // At least one image must accompany every entry. The combined gallery
@@ -1279,7 +1283,7 @@ const Contribute = () => {
           form.append("edit_contribution_id", String(editContributionId));
         }
         if (isEditMarking && editMarkingId != null) {
-          form.append("edit_postmark_id", String(editMarkingId));
+          form.append("edit_marking_id", String(editMarkingId));
         }
         if (saveAsDraft) {
           form.append("save_as_draft", "true");
@@ -1302,7 +1306,7 @@ const Contribute = () => {
           form.append("is_irreg", String(isIrregular));
           if (impression.trim()) form.append("impression", impression.trim());
         }
-        if (showRateValueField && rateValue.trim()) form.append("rate_val", rateValue.trim());
+        if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
         if (description.trim()) {
           form.append("desc", description.trim());
         }
@@ -1345,7 +1349,7 @@ const Contribute = () => {
             ? { edit_contribution_id: editContributionId }
             : {}),
           ...(isEditMarking && editMarkingId != null
-            ? { edit_postmark_id: editMarkingId }
+            ? { edit_marking_id: editMarkingId }
             : {}),
           post_office_id: selectedPostOfficeId ?? undefined,
           state: stateVal,
@@ -1360,7 +1364,7 @@ const Contribute = () => {
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
-          rate_val: showRateValueField ? rateValue.trim() || undefined : undefined,
+          rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
           inscription_txt: inscriptionToSend || undefined,
           reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
@@ -1475,7 +1479,7 @@ const Contribute = () => {
         {fieldErrors.imageTags && <p className="text-sm text-destructive">{fieldErrors.imageTags}</p>}
         <input
           ref={inputRef}
-          id="postmark-images-input"
+          id="marking-images-input"
           type="file"
           accept={ALLOWED_IMAGE_TYPES.join(",")}
           multiple
@@ -1705,7 +1709,7 @@ const Contribute = () => {
                     </div>
                   )}
 
-                  {markingChangedSinceDraft && resumedEditPostmarkId != null && (
+                  {markingChangedSinceDraft && resumedEditMarkingId != null && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-4 text-sm text-amber-800 dark:text-amber-200 space-y-3">
                       <p className="leading-relaxed">
                         This marking has been updated since you saved this draft.
@@ -1718,7 +1722,7 @@ const Contribute = () => {
                           size="sm"
                           className="border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40"
                           onClick={() => {
-                            window.open(`/record/${resumedEditPostmarkId}`, "_blank", "noopener,noreferrer");
+                            window.open(`/record/${resumedEditMarkingId}`, "_blank", "noopener,noreferrer");
                           }}
                         >
                           View current marking
@@ -1730,7 +1734,7 @@ const Contribute = () => {
                           className="border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40"
                           disabled={discardingDraft || editContributionId == null}
                           onClick={async () => {
-                            if (editContributionId == null || resumedEditPostmarkId == null) return;
+                            if (editContributionId == null || resumedEditMarkingId == null) return;
                             const ok = window.confirm(
                               "Discard this draft and start over from the current marking? Your saved draft will be deleted.",
                             );
@@ -1741,7 +1745,7 @@ const Contribute = () => {
                                 edit_contribution_id: editContributionId,
                                 abandon_draft: "true",
                               });
-                              navigate(`/contribute/edit/${resumedEditPostmarkId}`, { replace: true });
+                              navigate(`/contribute/edit/${resumedEditMarkingId}`, { replace: true });
                             } catch (err: unknown) {
                               toast({
                                 title: "Could not discard draft",
@@ -2072,12 +2076,12 @@ const Contribute = () => {
 
                     {showRateValueField && <div className="space-y-2">
                       <Label htmlFor="rate-value">
-                        Rate Value <span className="text-destructive" aria-hidden="true">*</span>
+                        Rate Value (cents) <span className="text-destructive" aria-hidden="true">*</span>
                       </Label>
                       <Input
                         id="rate-value"
                         type="text"
-                        placeholder="e.g. 5"
+                        placeholder="e.g. 3 or 3.5"
                         value={rateValue}
                         onChange={(e) => {
                           setRateValue(e.target.value);
@@ -2250,7 +2254,7 @@ const Contribute = () => {
                                   <p className="text-xs text-muted-foreground truncate">
                                     {[work.authorship, work.publisher]
                                       .filter((x) => (x ?? "").trim() !== "")
-                                      .join(" — ")}
+                                      .join(" -- ")}
                                   </p>
                                 </div>
                                 <Button
@@ -2363,7 +2367,7 @@ const Contribute = () => {
                         <Label>
                           <span
                             className="cursor-help border-b border-dotted border-muted-foreground/40"
-                            title="Lettering style describes the shape/appearance of the letters used in the postmark text."
+                            title="Lettering style describes the shape/appearance of the letters used in the marking text."
                           >
                             Lettering style
                           </span>
@@ -2505,7 +2509,7 @@ const Contribute = () => {
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
                   <p className="leading-relaxed">
-                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs of postmarks.
+                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs of markings.
                   </p>
                   <p className="leading-relaxed">
                     <strong className="text-foreground">Accuracy:</strong> Verify all dates, locations, and details before submission.
