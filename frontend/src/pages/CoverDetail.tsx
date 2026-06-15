@@ -375,7 +375,7 @@ const CoverDetailPage = () => {
         if (!data) {
           setHistoryEvents([]);
           setHistoryError(
-            "Unable to load record history (you may not be assigned to this region).",
+            "Direct import from catalog",
           );
           return;
         }
