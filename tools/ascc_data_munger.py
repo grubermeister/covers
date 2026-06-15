@@ -27,7 +27,12 @@ from munger.fields.dates import parse_date_field
 from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
 from munger.head import parse_head, parse_manuscript_row
-from munger.images import MEDIA_ROOT
+from munger.images import (
+    MEDIA_ROOT,
+    catalog_region_abbrev,
+    image_filename,
+    region_media_slug,
+)
 from munger.io import (
     OPTIONAL_COLS,
     REQUIRED_COLS,
@@ -44,14 +49,14 @@ WIP_DIR = TOOLS_DIR / "wip"
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--input", default=WIP_DIR / "in" / "VA_ASCC_CTLG.csv")
-    ap.add_argument("--input-dir", default=None)
+    ap.add_argument("--input", default=WIP_DIR / "cache" / "VA_ASCC_CTLG.csv")
+    ap.add_argument("--input-dir", default=WIP_DIR / "in")
     ap.add_argument("--out-dir", default=WIP_DIR / "out")
     ap.add_argument("--reference-work-code", default="ASCC1")
     args = ap.parse_args(argv)
 
     INPUT_CSV = Path(args.input)
-    INPUT_DIR = Path(args.input_dir) if args.input_dir is not None else INPUT_CSV.parent
+    INPUT_DIR = Path(args.input_dir)
     OUT_DIR = Path(args.out_dir)
 
 
@@ -59,7 +64,7 @@ def main(argv=None):
     # 0. Setup
     # ======================================================================
     # INPUT_CSV / INPUT_DIR / OUT_DIR supplied by main() argparse.
-    REGION_ABBREV = os.path.basename(INPUT_CSV)[:2].upper()
+    REGION_ABBREV = catalog_region_abbrev(INPUT_CSV)
     REFERENCE_WORK_CODE = str(args.reference_work_code).strip()
     _rw_seed = pd.read_csv(os.path.join(INPUT_DIR, 'reference_works.csv'))
     _rw_match = _rw_seed[
@@ -1524,7 +1529,7 @@ def main(argv=None):
 
         # Page and chunk from the OCR extractor. Together they identify the
         # extracted image files used in Step 11:
-        # backend/media/<state>/va-<page>-<chunk>-<counter>.png
+        # backend/media/<region>/va-<page>-<chunk>-<counter>.png
         page = src.get('Page')
         if pd.notna(page):
             page = int(page)
@@ -2183,6 +2188,27 @@ def main(argv=None):
     assert resolve_bracket('C')['lettering_name'] is None
     print('Bracket resolver self-tests passed')
 
+    def resolve_bracket_shape_id(shape_code_or_name):
+        # Bracket shape parsing returns ASCC codes such as "O" and "ARC".
+        # shape_lookup is keyed by seed names such as "O - Oval".
+        if not shape_code_or_name:
+            return None
+        raw = str(shape_code_or_name).strip()
+        if not raw:
+            return None
+        direct_id = shape_lookup.get(raw.upper())
+        if direct_id is not None:
+            return direct_id
+        shape_name, shape_error = resolve_shape_name(raw.upper())
+        if shape_error is not None or not shape_name:
+            return None
+        return shape_lookup.get(shape_name.upper())
+
+    assert resolve_bracket_shape_id('O') == shape_lookup['O - OVAL']
+    assert resolve_bracket_shape_id(resolve_bracket('oval')['shape_name']) == shape_lookup['O - OVAL']
+    assert resolve_bracket_shape_id(resolve_bracket('arc')['shape_name']) == shape_lookup['ARC - ARC OR SEMI-CIRCLE']
+    assert resolve_bracket_shape_id(resolve_bracket('box')['shape_name']) == shape_lookup['BOX']
+
     # ======================================================================
     # 9.3 Token Classification & Entity Emission
     # ======================================================================
@@ -2224,7 +2250,7 @@ def main(argv=None):
 
             # Resolve bracket -> shape/lettering
             br = resolve_bracket(bracket)
-            bracket_shape_id = shape_lookup.get(br['shape_name'].upper()) if br['shape_name'] else None
+            bracket_shape_id = resolve_bracket_shape_id(br['shape_name'])
             bracket_lettering_id = lettering_lookup.get(br['lettering_name']) if br['lettering_name'] else None
 
             # Determine impression
@@ -2932,7 +2958,7 @@ def main(argv=None):
     # ======================================================================
     # Step 11: Images Table Assembly
     # ======================================================================
-    IMAGES_SUBDIR = REGION_ABBREV.lower()  # e.g. 'va'
+    IMAGES_SUBDIR = region_media_slug(REGION_ABBREV)  # e.g. 'va'
     pm_to_final_id = marking_id_by_tm
     image_rows = []
     next_image_id = 1
@@ -2950,7 +2976,7 @@ def main(argv=None):
             print(f'WARNING: no marking_id for townmark_id={pm["townmark_id"]}; skipping.')
             continue
         for display_order, (page, chunk, counter) in enumerate(refs, start=1):
-            fname = f'{IMAGES_SUBDIR}-{page}-{chunk}-{counter}.png'
+            fname = image_filename(IMAGES_SUBDIR, page, chunk, counter)
             disk_path = MEDIA_ROOT / IMAGES_SUBDIR / fname
             if not disk_path.exists():
                 raise FileNotFoundError(
