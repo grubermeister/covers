@@ -16,6 +16,7 @@ from common.models import Collection, CollectionAssignment, Region
 
 
 User = get_user_model()
+AUTH_BACKUP_SCHEMA = "worldcovers.auth_backup.v1"
 
 
 def _fallback_audit_user():
@@ -195,5 +196,37 @@ class CollectionAssignmentResource(
         model = CollectionAssignment
         fields = ("id", "user", "collection")
         import_id_fields = ("user", "collection")
+
+
+class AuthDatasetSpec:
+    def __init__(self, name, filename, label, resource_class, required=False):
+        self.name = name
+        self.filename = filename
+        self.label = label
+        self.resource_class = resource_class
+        self.required = required
+
+
+AUTH_DATASET_SPECS = (
+    AuthDatasetSpec("groups", "groups.csv", "groups", GroupResource),
+    AuthDatasetSpec("users", "users.csv", "users", UserResource, required=True),
+    AuthDatasetSpec("emails", "emails.csv", "email addresses", EmailAddressResource),
+    AuthDatasetSpec(
+        "collections",
+        "collections.csv",
+        "state collections",
+        CollectionResource,
+    ),
+    AuthDatasetSpec(
+        "assignments",
+        "assignments.csv",
+        "collection assignments",
+        CollectionAssignmentResource,
+    ),
+)
+
+
+def auth_dataset_specs():
+    return AUTH_DATASET_SPECS
 
 ###################################################################################################
