@@ -72,6 +72,14 @@ export interface Contribution {
   coverId: number | null;
 }
 
+export interface CatalogCodeSuggestion {
+  catalogCode: string;
+  prefix: string;
+  referenceCode: string;
+  regionAbbrev: string;
+  subjectType: "MARKING" | "COVER";
+}
+
 function toNumberOrNull(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v === "string" && v.trim() !== "") {
@@ -220,6 +228,8 @@ export interface DecideOptions {
   reviewNotes?: string;
   /** Approve only; sent only when provided. */
   estimatedValue?: number;
+  /** Approve only; editor-owned catalog code. Empty means regenerate. */
+  catalogCode?: string | null;
 }
 
 export interface DecideResult {
@@ -244,6 +254,7 @@ export async function decideContribution(
   const notes = opts?.reviewNotes?.trim();
   if (notes) body.review_notes = notes;
   if (opts?.estimatedValue != null) body.estimated_value = opts.estimatedValue;
+  if (opts && "catalogCode" in opts) body.catalog_code = opts.catalogCode ?? "";
 
   const res = await apiClient.post(`/contributions/${id}/${actionPath}/`, body);
   const o = res.data && typeof res.data === "object" ? (res.data as Record<string, unknown>) : {};
@@ -252,6 +263,54 @@ export async function decideContribution(
     coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
+}
+
+function mapCatalogCodeSuggestion(raw: unknown): CatalogCodeSuggestion {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    catalogCode: String(o.catalog_code ?? o.catalogCode ?? ""),
+    prefix: String(o.prefix ?? ""),
+    referenceCode: String(o.reference_code ?? o.referenceCode ?? ""),
+    regionAbbrev: String(o.region_abbrev ?? o.regionAbbrev ?? ""),
+    subjectType:
+      String(o.subject_type ?? o.subjectType ?? "MARKING").toUpperCase() === "COVER"
+        ? "COVER"
+        : "MARKING",
+  };
+}
+
+export async function getContributionCatalogCodeSuggestion(
+  contributionId: number,
+  opts?: { force?: boolean },
+): Promise<CatalogCodeSuggestion> {
+  await ensureCsrfToken();
+  const res = await apiClient.post(
+    `/contributions/${contributionId}/catalog-code-suggestion/`,
+    opts?.force ? { force: true } : {},
+  );
+  return mapCatalogCodeSuggestion(res.data);
+}
+
+export async function getDirectCatalogCodeSuggestion(payload: {
+  subjectType: "MARKING" | "COVER";
+  state?: string;
+  regionId?: number | null;
+  markingId?: number | null;
+  referenceWorkId?: number | null;
+  referenceWorkIds?: number[];
+  excludeId?: number | null;
+}): Promise<CatalogCodeSuggestion> {
+  await ensureCsrfToken();
+  const res = await apiClient.post("/catalog-code-suggestions/", {
+    subject_type: payload.subjectType,
+    state: payload.state,
+    region_id: payload.regionId ?? undefined,
+    marking_id: payload.markingId ?? undefined,
+    reference_work_id: payload.referenceWorkId ?? undefined,
+    reference_work_ids: payload.referenceWorkIds,
+    exclude_id: payload.excludeId ?? undefined,
+  });
+  return mapCatalogCodeSuggestion(res.data);
 }
 
 // DELETE /contributions/{id}/  -- hard-deletes a draft; backend enforces IsDraftOwner

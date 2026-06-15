@@ -26,7 +26,7 @@ export interface MarkingFieldInput {
   earliestSeen: string;
   latestSeen: string;
   shapeName: string;
-  // Pre-formatted via formatRateValue (e.g. "3¢" or "").
+  // Pre-formatted via formatRateValue (e.g. "3 cents" or "").
   rateValFormatted: string;
   dateFmt: string;
   // Already mapped: empty string for the default "Normal" impression so
@@ -90,8 +90,8 @@ export function buildMarkingFields(
   }
   if (opts.isStaff) {
     rows.push({ label: "Catalog text", value: i.catalogTxt, alwaysShow: false });
+    rows.push({ label: "Catalog code", value: i.code, alwaysShow: false });
   }
-  rows.push({ label: "Catalog code", value: i.code, alwaysShow: false });
   return rows;
 }
 

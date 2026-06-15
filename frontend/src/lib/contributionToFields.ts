@@ -75,11 +75,16 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   // marking; marking_modified_at_baseline is the timestamp captured when the
   // draft was last saved so resume can detect upstream edits.
   "edit_marking_id", "editMarkingId",
+  "existing_image_tags", "existingImageTags",
   "marking_modified_at_baseline", "markingModifiedAtBaseline",
   "post_office_id", "postOfficeId",
   "submission_kind", "submissionKind",
   "entity_type", "entityType",
   "routing_deferred", "routingDeferred",
+  "catalog_code", "catalogCode",
+  "catalog_code_source", "catalogCodeSource",
+  "catalog_code_reference_code", "catalogCodeReferenceCode",
+  "catalog_code_region_abbrev", "catalogCodeRegionAbbrev",
   // ignored: submit-mode controls that older rows captured into
   // submitted_data before the backend started stripping them.
   "save_as_draft", "saveAsDraft",

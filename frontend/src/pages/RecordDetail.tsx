@@ -236,7 +236,7 @@ function buildGalleryImages(record: MarkingRecord): GalleryImage[] {
     imageUrl: normalizeImageUrl(img.imageUrl),
     originalFilename: img.originalFilename || undefined,
     subjectLabel: img.subjectType === "COVER" ? "Cover" : typeLabel,
-    // display_order=0 is the canonical "default" slot — matches the editor
+    // display_order=0 is the canonical "default" slot -- matches the editor
     // tooling on ContributionDetail.tsx where displayOrder===0 is what gets
     // labeled "Default" / "Set default".
     isDefault: img.displayOrder === 0,
@@ -971,7 +971,7 @@ const RecordDetail = () => {
                           const thumb = cover.defaultImageUrl ?? null;
                           const codeLabel =
                             cover.displayLabel?.trim() ||
-                            c?.code?.trim() ||
+                            (isStaff ? c?.code?.trim() : "") ||
                             (cover.contributionDraftId != null
                               ? `Cover draft #${cover.contributionDraftId}`
                               : `Cover #${c?.id ?? cover.id}`);

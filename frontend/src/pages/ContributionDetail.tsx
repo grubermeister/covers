@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Loader2, CheckCircle, XCircle, MessageSquare, ExternalLink, Pencil, Trash2 } from "lucide-react";
 import {
@@ -36,7 +37,13 @@ import {
 } from "@/lib/catalogRecordDisplay";
 import { submittedDataToFieldInput } from "@/lib/contributionToFields";
 import type { MarkingFieldInput } from "@/lib/markingFields";
-import { type Contribution, getContribution, decideContribution, deleteDraftContribution } from "@/services/contributions";
+import {
+  type Contribution,
+  getContribution,
+  decideContribution,
+  deleteDraftContribution,
+  getContributionCatalogCodeSuggestion,
+} from "@/services/contributions";
 
 
 /** Shape of the per-image metadata blobs stored in a contribution's submitted_data. */
@@ -80,6 +87,9 @@ const ContributionDetail = () => {
   // Editor form state (only Value and Comment; lettering/framing/date format come from contribution's submitted_data when approving)
   const [comment, setComment] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [catalogCode, setCatalogCode] = useState("");
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // Draft delete (recycle) -- only a draft the contributor owns can be deleted;
   // the backend enforces IsDraftOwner on DELETE /contributions/{id}/.
@@ -180,6 +190,47 @@ const ContributionDetail = () => {
     }
   }, [contribution, dashboardTab, navigate]);
 
+  useEffect(() => {
+    if (!contribution || contribution.status !== "pending" || !isStateEditor || !user) return;
+    if (isCoverContributionData(contribution.submittedData)) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getContributionCatalogCodeSuggestion(contribution.id)
+      .then((suggestion) => {
+        if (!cancelled) setCatalogCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contribution?.id, contribution?.status, isStateEditor, user]);
+
+  const ensureCatalogCode = async (): Promise<string> => {
+    if (!contribution) return "";
+    const current = catalogCode.trim();
+    if (current) return current;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    try {
+      const suggestion = await getContributionCatalogCodeSuggestion(contribution.id, { force: true });
+      setCatalogCode(suggestion.catalogCode);
+      return suggestion.catalogCode;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not generate catalog code.";
+      setCatalogCodeError(message);
+      throw err;
+    } finally {
+      setCatalogCodeLoading(false);
+    }
+  };
 
   const submitDecision = async (kind: "approve" | "reject" | "revision") => {
     if (!contribution) return;
@@ -191,8 +242,10 @@ const ContributionDetail = () => {
 
     setSubmitting(true);
     try {
+      const finalCatalogCode = kind === "approve" ? await ensureCatalogCode() : "";
       const result = await decideContribution(contribution.id, kind, {
         reviewNotes: comment.trim() || undefined,
+        ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
@@ -542,6 +595,25 @@ const ContributionDetail = () => {
                     </p>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="contribution-catalog-code">Catalog code</Label>
+                      <Input
+                        id="contribution-catalog-code"
+                        value={catalogCode}
+                        onChange={(e) => {
+                          setCatalogCode(e.target.value);
+                          if (catalogCodeError) setCatalogCodeError(null);
+                        }}
+                        onBlur={() => {
+                          if (!catalogCode.trim()) void ensureCatalogCode();
+                        }}
+                        placeholder={catalogCodeLoading ? "Generating..." : "Catalog code"}
+                        disabled={submitting || catalogCodeLoading}
+                      />
+                      {catalogCodeError ? (
+                        <p className="text-sm text-destructive">{catalogCodeError}</p>
+                      ) : null}
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="contribution-comment">Comment</Label>
                       <Textarea

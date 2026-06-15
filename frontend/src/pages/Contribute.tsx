@@ -25,7 +25,13 @@ import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
 import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
-import { getContribution, listContributions, createContribution, deleteDraftContribution } from "@/services/contributions";
+import {
+  getContribution,
+  listContributions,
+  createContribution,
+  deleteDraftContribution,
+  getDirectCatalogCodeSuggestion,
+} from "@/services/contributions";
 import { ENTRY_LABELS } from "@/labels/entry";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { useToast } from "@/hooks/use-toast";
@@ -394,6 +400,10 @@ const Contribute = () => {
   const [isIrregular, setIsIrregular] = useState(false);
   const [impression, setImpression] = useState("Normal");
   const [inscriptionText, setInscriptionText] = useState("");
+  const [catalogCode, setCatalogCode] = useState("");
+  const [catalogCodeTouched, setCatalogCodeTouched] = useState(false);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
   const [selectedReferenceWorks, setSelectedReferenceWorks] = useState<ReferenceWorkRecord[]>([]);
   const [referenceDetailsById, setReferenceDetailsById] = useState<Record<number, ReferenceDetailInput>>({});
   const [referenceDetailErrorsById, setReferenceDetailErrorsById] = useState<Record<number, ReferenceDetailFieldErrors>>({});
@@ -426,7 +436,10 @@ const Contribute = () => {
   const [referenceWorksError, setReferenceWorksError] = useState<string | null>(null);
   const [referenceWorksFetched, setReferenceWorksFetched] = useState(false);
 
-  const isStateEditor = user?.role === "editor";
+  const isStateEditor =
+    user?.role === "editor" || user?.role === "administrator" || user?.is_superuser === true;
+
+  const canEditCatalogCode = Boolean(isStateEditor);
 
   /** Town/City: letters, spaces, hyphens, apostrophes only */
   const sanitizeTown = (v: string) => v.replace(/[^a-zA-Z\s\-']/g, "");
@@ -592,6 +605,71 @@ const Contribute = () => {
     setPendingReferenceWorkIds([]);
   }, [pendingReferenceWorkIds, referenceWorks]);
 
+  const fetchCatalogCodeSuggestion = async (force = false): Promise<string> => {
+    if (!canEditCatalogCode) return "";
+    const stateVal = state.trim();
+    if (!stateVal) {
+      setCatalogCodeError("Select a state before generating a catalog code.");
+      return "";
+    }
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    try {
+      const suggestion = await getDirectCatalogCodeSuggestion({
+        subjectType: "MARKING",
+        state: stateVal,
+        referenceWorkIds: selectedReferenceWorks.map((work) => work.id),
+        excludeId: editMarkingId ?? resumedEditMarkingId ?? null,
+      });
+      if (force || !catalogCodeTouched || !catalogCode.trim()) {
+        setCatalogCode(suggestion.catalogCode);
+      }
+      return suggestion.catalogCode;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not generate catalog code.";
+      setCatalogCodeError(message);
+      throw err;
+    } finally {
+      setCatalogCodeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canEditCatalogCode) return;
+    if (!state.trim()) return;
+    if (catalogCodeTouched) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getDirectCatalogCodeSuggestion({
+      subjectType: "MARKING",
+      state: state.trim(),
+      referenceWorkIds: selectedReferenceWorks.map((work) => work.id),
+      excludeId: editMarkingId ?? resumedEditMarkingId ?? null,
+    })
+      .then((suggestion) => {
+        if (!cancelled) setCatalogCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canEditCatalogCode,
+    state,
+    selectedReferenceWorks,
+    editMarkingId,
+    resumedEditMarkingId,
+    catalogCodeTouched,
+  ]);
+
   // Load contribution for edit-and-resubmit (rejected / needs_revision)
   useEffect(() => {
     if (!editContributionId) {
@@ -614,8 +692,17 @@ const Contribute = () => {
         const shapeVal = getStr(sd.shape);
         const colorVal = getStr(sd.color);
         const typeVal = getStr(sd.type);
+        const loadedCatalogCode = getStr(
+          (sd as Record<string, unknown>).catalog_code ??
+            (sd as Record<string, unknown>).catalogCode ??
+            (sd as Record<string, unknown>).code,
+        );
         setState(stateVal);
         setTown(townVal);
+        if (loadedCatalogCode) {
+          setCatalogCode(loadedCatalogCode);
+          setCatalogCodeTouched(true);
+        }
         if (typeVal) setMarkingType(typeVal);
         setContributorComment(getStr((sd as Record<string, unknown>).contributor_comment));
         setShape(shapeVal || "");
@@ -830,6 +917,10 @@ const Contribute = () => {
 
         setState(typeof data.state === "string" ? data.state : "");
         setTown(sanitizeTown(typeof data.town === "string" ? data.town : ""));
+        if (typeof data.code === "string" && data.code.trim()) {
+          setCatalogCode(data.code.trim());
+          setCatalogCodeTouched(true);
+        }
 
         const shapeName = typeof data.shape_name === "string" ? data.shape_name : "";
         if (shapeName) {
@@ -1276,6 +1367,13 @@ const Contribute = () => {
         return opt ? String(opt.description ?? "").trim() : "";
       })();
       const inscriptionToSend = inscriptionText.trim();
+      let catalogCodeToSend = catalogCode.trim();
+      if (canEditCatalogCode && !catalogCodeToSend) {
+        catalogCodeToSend = await fetchCatalogCodeSuggestion(true);
+        if (!catalogCodeToSend) {
+          return;
+        }
+      }
 
       if (allImageFiles.length > 0 || isEditMarking) {
         const form = new FormData();
@@ -1309,6 +1407,9 @@ const Contribute = () => {
         if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
         if (description.trim()) {
           form.append("desc", description.trim());
+        }
+        if (canEditCatalogCode && catalogCodeToSend) {
+          form.append("catalog_code", catalogCodeToSend);
         }
         if (inscriptionToSend) form.append("inscription_txt", inscriptionToSend);
         referenceWorkIdsToSend.forEach((id) => form.append("reference_work_ids[]", String(id)));
@@ -1366,6 +1467,9 @@ const Contribute = () => {
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
           rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
+          ...(canEditCatalogCode && catalogCodeToSend
+            ? { catalog_code: catalogCodeToSend }
+            : {}),
           inscription_txt: inscriptionToSend || undefined,
           reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
           reference_work_details: referenceWorkDetailsToSend.length > 0 ? referenceWorkDetailsToSend : undefined,
@@ -2095,6 +2199,32 @@ const Contribute = () => {
                         <p className="text-sm text-destructive">{fieldErrors.rateValue}</p>
                       )}
                     </div>}
+
+                    {canEditCatalogCode && (
+                      <div className="space-y-2">
+                        <Label htmlFor="catalog-code">Catalog code</Label>
+                        <Input
+                          id="catalog-code"
+                          value={catalogCode}
+                          onChange={(e) => {
+                            setCatalogCode(e.target.value);
+                            setCatalogCodeTouched(true);
+                            if (catalogCodeError) setCatalogCodeError(null);
+                          }}
+                          onBlur={() => {
+                            if (!catalogCode.trim()) {
+                              setCatalogCodeTouched(false);
+                              void fetchCatalogCodeSuggestion(true);
+                            }
+                          }}
+                          placeholder={catalogCodeLoading ? "Generating..." : "e.g. APMC-VA-M0001"}
+                          disabled={submitting || catalogCodeLoading}
+                        />
+                        {catalogCodeError ? (
+                          <p className="text-sm text-destructive">{catalogCodeError}</p>
+                        ) : null}
+                      </div>
+                    )}
 
                     {isHandstamped && (
                       <>

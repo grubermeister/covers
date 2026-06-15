@@ -20,6 +20,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { getColors, type ColorOption } from "@/services/colors";
+import { getDirectCatalogCodeSuggestion } from "@/services/contributions";
 import {
   createCover,
   createCoverMarking,
@@ -182,16 +183,19 @@ export function CoverDialog({
 
   const [colorOptions, setColorOptions] = useState<ColorOption[]>([]);
   const [colorsLoading, setColorsLoading] = useState(false);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   // Re-prime the form whenever the dialog opens, so that switching from
-  // "edit cover A" to "edit cover B" — or to "create new" — without an
+  // "edit cover A" to "edit cover B" -- or to "create new" -- without an
   // unmount in between always shows the right starting values. The reset
   // on close path is important too: without it, partial edits that the
   // user abandons stay in component state and reappear if they reopen
   // the dialog on a *different* row.
   useEffect(() => {
     setCode(initial.code);
+    setCatalogCodeError(null);
     setColorId(initial.colorId);
     setType(initial.type);
     setWidth(initial.width);
@@ -202,6 +206,33 @@ export function CoverDialog({
     setPlacement(initial.placement);
     setDates(initial.dates);
   }, [open, initial]);
+
+  useEffect(() => {
+    if (!open) return;
+    if (initial.code.trim()) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getDirectCatalogCodeSuggestion({
+      subjectType: "COVER",
+      markingId,
+      excludeId: cover?.coverDetails?.id ?? null,
+    })
+      .then((suggestion) => {
+        if (!cancelled) setCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, initial.code, markingId, cover?.coverDetails?.id]);
 
   // Lazy-load colour options the first time the dialog opens. We don't
   // want to fire this from the parent component because the Record Detail
@@ -291,8 +322,26 @@ export function CoverDialog({
 
     const widthTrim = (width ?? "").trim();
     const heightTrim = (height ?? "").trim();
-    const codeTrim = (code ?? "").trim();
+    let codeTrim = (code ?? "").trim();
     const placementTrim = (placement ?? "").trim();
+    if (!codeTrim) {
+      setCatalogCodeLoading(true);
+      setCatalogCodeError(null);
+      try {
+        const suggestion = await getDirectCatalogCodeSuggestion({
+          subjectType: "COVER",
+          markingId,
+          excludeId: cover?.coverDetails?.id ?? null,
+        });
+        codeTrim = suggestion.catalogCode;
+        setCode(suggestion.catalogCode);
+      } catch (err) {
+        setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        setCatalogCodeLoading(false);
+        return;
+      }
+      setCatalogCodeLoading(false);
+    }
 
     const coverPayload: CoverWritePayload = {
       code: codeTrim || null,
@@ -413,10 +462,31 @@ export function CoverDialog({
               <Input
                 id="cover-code"
                 value={code}
-                onChange={(e) => setCode(e.target.value)}
-                placeholder="e.g. C-1234"
-                disabled={submitting}
+                onChange={(e) => {
+                  setCode(e.target.value);
+                  if (catalogCodeError) setCatalogCodeError(null);
+                }}
+                onBlur={() => {
+                  if (!code.trim()) {
+                    void getDirectCatalogCodeSuggestion({
+                      subjectType: "COVER",
+                      markingId,
+                      excludeId: cover?.coverDetails?.id ?? null,
+                    })
+                      .then((suggestion) => setCode(suggestion.catalogCode))
+                      .catch((err) => {
+                        setCatalogCodeError(
+                          err instanceof Error ? err.message : "Could not generate catalog code.",
+                        );
+                      });
+                  }
+                }}
+                placeholder={catalogCodeLoading ? "Generating..." : "e.g. APMC-VA-C0001"}
+                disabled={submitting || catalogCodeLoading}
               />
+              {catalogCodeError ? (
+                <p className="text-sm text-destructive">{catalogCodeError}</p>
+              ) : null}
             </div>
 
             <div className="space-y-2">

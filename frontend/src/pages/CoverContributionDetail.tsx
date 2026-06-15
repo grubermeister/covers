@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type CarouselApi } from "@/components/ui/carousel";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
@@ -26,7 +27,12 @@ import {
   contributionImageMetasFromSubmittedData,
   contributionMetaImageUrl,
 } from "@/lib/contributionImages";
-import { type Contribution, decideContribution, getContribution } from "@/services/contributions";
+import {
+  type Contribution,
+  decideContribution,
+  getContribution,
+  getContributionCatalogCodeSuggestion,
+} from "@/services/contributions";
 import { getMarkingById, type MarkingRecord } from "@/services/markings";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 
@@ -43,17 +49,17 @@ type ReferenceDetailInput = {
 function boolLabel(raw: unknown): string {
   if (raw === true || raw === "true" || raw === "1" || raw === 1) return "Yes";
   if (raw === false || raw === "false" || raw === "0" || raw === 0) return "No";
-  return "—";
+  return "--";
 }
 
 function coverTypeLabel(typeCode: string): string {
   const code = typeCode.trim().toUpperCase();
-  return COVER_TYPE_LABELS[code] || code || "—";
+  return COVER_TYPE_LABELS[code] || code || "--";
 }
 
 function formatCoverDate(sd: Record<string, unknown>): string {
   const raw = String(sd.cover_date ?? sd.coverDate ?? "").trim();
-  if (!raw) return "—";
+  if (!raw) return "--";
   const granularity = String(sd.cover_granularity ?? sd.coverGranularity ?? "DAY").trim();
   return formatDateSeen(raw, granularity) || raw;
 }
@@ -173,6 +179,9 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   const [carouselCurrent, setCarouselCurrent] = useState(0);
   const [comment, setComment] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [catalogCode, setCatalogCode] = useState("");
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [parentMarking, setParentMarking] = useState<MarkingRecord | null>(null);
   const [parentMarkingError, setParentMarkingError] = useState<string | null>(null);
@@ -351,6 +360,47 @@ export default function CoverContributionDetail({ initialContribution = null }: 
     navigate("/dashboard");
   };
 
+  useEffect(() => {
+    if (!contribution || contribution.status !== "pending" || !isStateEditor || !user) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getContributionCatalogCodeSuggestion(contribution.id)
+      .then((suggestion) => {
+        if (!cancelled) setCatalogCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contribution?.id, contribution?.status, isStateEditor, user]);
+
+  const ensureCatalogCode = async (): Promise<string> => {
+    if (!contribution) return "";
+    const current = catalogCode.trim();
+    if (current) return current;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    try {
+      const suggestion = await getContributionCatalogCodeSuggestion(contribution.id, { force: true });
+      setCatalogCode(suggestion.catalogCode);
+      return suggestion.catalogCode;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not generate catalog code.";
+      setCatalogCodeError(message);
+      throw err;
+    } finally {
+      setCatalogCodeLoading(false);
+    }
+  };
+
   const submitDecision = async (kind: "approve" | "reject" | "revision") => {
     if (!contribution) return;
     if (kind !== "approve" && !comment.trim()) {
@@ -361,8 +411,10 @@ export default function CoverContributionDetail({ initialContribution = null }: 
 
     setSubmitting(true);
     try {
+      const finalCatalogCode = kind === "approve" ? await ensureCatalogCode() : "";
       const result = await decideContribution(contribution.id, kind, {
         reviewNotes: comment.trim() || undefined,
+        ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
@@ -489,6 +541,23 @@ export default function CoverContributionDetail({ initialContribution = null }: 
                 </p>
               </CardHeader>
               <CardContent className="space-y-4">
+                <div className="space-y-2">
+                  <Label htmlFor="cover-contribution-catalog-code">Catalog code</Label>
+                  <Input
+                    id="cover-contribution-catalog-code"
+                    value={catalogCode}
+                    onChange={(e) => {
+                      setCatalogCode(e.target.value);
+                      if (catalogCodeError) setCatalogCodeError(null);
+                    }}
+                    onBlur={() => {
+                      if (!catalogCode.trim()) void ensureCatalogCode();
+                    }}
+                    placeholder={catalogCodeLoading ? "Generating..." : "Catalog code"}
+                    disabled={submitting || catalogCodeLoading}
+                  />
+                  {catalogCodeError ? <p className="text-sm text-destructive">{catalogCodeError}</p> : null}
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor="cover-contribution-comment">Comment</Label>
                   <Textarea
