@@ -1,12 +1,12 @@
 """ascc_page_extract.py -- single-pass ASCC chunk extraction.
 
-Reads chunk PNGs at tools/wip/in/<basename>/page-NNNN-MMMM.png, sends each to
+Reads chunk PNGs at tools/wip/cache/<basename>/page-NNNN-MMMM.png, sends each to
 Claude Sonnet through the selected provider, and writes a 4-column CSV
-(Listing, Page, Images Above, Type) to tools/wip/out/<basename>.csv for
-apmc_data_munger.ipynb to consume downstream.
+(Listing, Page, Images Above, Type) to tools/wip/cache/<basename>.csv for
+ascc_data_munger.py to consume downstream.
 
 Pipeline position: downstream of tools/ascc_page_processor.py (which
-produces the chunk PNGs); upstream of tools/apmc_data_munger.ipynb.
+produces the chunk PNGs); upstream of tools/ascc_data_munger.py.
 
 Usage:
 
@@ -240,8 +240,8 @@ class Paths:
     """Per-run filesystem layout, derived from the basename."""
     def __init__(self, basename):
         self.basename   = basename
-        self.images_dir = WIP_DIR / "in" / basename
-        self.output_csv = WIP_DIR / "out" / f"{basename}.csv"
+        self.images_dir = WIP_DIR / "cache" / basename
+        self.output_csv = WIP_DIR / "cache" / f"{basename}.csv"
         self.cache_file = WIP_DIR / "cache" / f"{basename}_extract.json"
         self.run_log    = WIP_DIR / "cache" / f"{basename}_extract.log"
 
@@ -722,15 +722,15 @@ def _print_summary(rows):
 def main(argv=None):
     parser = argparse.ArgumentParser(
         description=("Single-pass ASCC chunk extraction. Reads chunk PNGs "
-                     "from tools/wip/in/<basename>/page-NNNN-MMMM.png, sends each "
+                     "from tools/wip/cache/<basename>/page-NNNN-MMMM.png, sends each "
                      "to Claude Sonnet through the selected provider, and writes "
-                     "tools/wip/out/<basename>.csv."),
+                     "tools/wip/cache/<basename>.csv."),
     )
     parser.add_argument(
         "basename",
         help=("base name of the catalog (e.g. VA_ASCC_CTLG). Drives the "
-              "input dir tools/wip/in/<basename>/, output CSV "
-              "tools/wip/out/<basename>.csv, and cache "
+              "input dir tools/wip/cache/<basename>/, output CSV "
+              "tools/wip/cache/<basename>.csv, and cache "
               "tools/wip/cache/<basename>_extract.json."),
     )
     parser.add_argument(
