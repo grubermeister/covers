@@ -1,7 +1,7 @@
 import hashlib
 import uuid
 from django.db import models
-from django.db.models import Q, Min, Max, OuterRef, Subquery, F
+from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField
 from django.db.models.functions import Coalesce, Least, Greatest
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
@@ -60,7 +60,9 @@ class MarkingQuerySet(models.QuerySet):
              (subject_type='MARKING', subject_id=marking.id)
           2. DateSeen rows attached to covers that bear the marking via
              cover_markings (subject_type='COVER', subject_id=cover.id)
-        Exposed to serializers as `earliest_seen` / `latest_seen`.
+        Exposed to serializers as `earliest_seen` / `latest_seen`, plus
+        matching granularity annotations from the row that supplied each
+        boundary date.
 
         Uses subqueries against DateSeen so the two sources can be unioned
         without producing a Cartesian explosion between cover_markings and
@@ -86,10 +88,22 @@ class MarkingQuerySet(models.QuerySet):
             ).values('cover_id'),
         )
         return self.annotate(
-            earliest_seen_direct=Subquery(direct_qs.order_by('date').values('date')[:1]),
-            latest_seen_direct=Subquery(direct_qs.order_by('-date').values('date')[:1]),
-            earliest_seen_via_cover=Subquery(cover_qs.order_by('date').values('date')[:1]),
-            latest_seen_via_cover=Subquery(cover_qs.order_by('-date').values('date')[:1]),
+            earliest_seen_direct=Subquery(direct_qs.order_by('date', 'pk').values('date')[:1]),
+            latest_seen_direct=Subquery(direct_qs.order_by('-date', '-pk').values('date')[:1]),
+            earliest_seen_via_cover=Subquery(cover_qs.order_by('date', 'pk').values('date')[:1]),
+            latest_seen_via_cover=Subquery(cover_qs.order_by('-date', '-pk').values('date')[:1]),
+            earliest_seen_direct_granularity=Subquery(
+                direct_qs.order_by('date', 'pk').values('granularity')[:1],
+            ),
+            latest_seen_direct_granularity=Subquery(
+                direct_qs.order_by('-date', '-pk').values('granularity')[:1],
+            ),
+            earliest_seen_via_cover_granularity=Subquery(
+                cover_qs.order_by('date', 'pk').values('granularity')[:1],
+            ),
+            latest_seen_via_cover_granularity=Subquery(
+                cover_qs.order_by('-date', '-pk').values('granularity')[:1],
+            ),
         ).annotate(
             # MySQL's GREATEST/LEAST return NULL if any argument is NULL, so we
             # wrap in Coalesce to fall back to whichever source has a value when
@@ -104,6 +118,41 @@ class MarkingQuerySet(models.QuerySet):
                 Greatest('latest_seen_direct', 'latest_seen_via_cover'),
                 F('latest_seen_direct'),
                 F('latest_seen_via_cover'),
+            ),
+        ).annotate(
+            # Tie policy: prefer direct MARKING DateSeen rows over cover-derived
+            # rows when both sources share the same boundary date.
+            earliest_seen_granularity=Case(
+                When(
+                    earliest_seen_direct__isnull=True,
+                    then=F('earliest_seen_via_cover_granularity'),
+                ),
+                When(
+                    earliest_seen_via_cover__isnull=True,
+                    then=F('earliest_seen_direct_granularity'),
+                ),
+                When(
+                    earliest_seen_direct__lte=F('earliest_seen_via_cover'),
+                    then=F('earliest_seen_direct_granularity'),
+                ),
+                default=F('earliest_seen_via_cover_granularity'),
+                output_field=CharField(),
+            ),
+            latest_seen_granularity=Case(
+                When(
+                    latest_seen_direct__isnull=True,
+                    then=F('latest_seen_via_cover_granularity'),
+                ),
+                When(
+                    latest_seen_via_cover__isnull=True,
+                    then=F('latest_seen_direct_granularity'),
+                ),
+                When(
+                    latest_seen_direct__gte=F('latest_seen_via_cover'),
+                    then=F('latest_seen_direct_granularity'),
+                ),
+                default=F('latest_seen_via_cover_granularity'),
+                output_field=CharField(),
             ),
         )
 

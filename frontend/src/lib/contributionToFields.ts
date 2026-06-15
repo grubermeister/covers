@@ -9,6 +9,7 @@
 // when the backend payload grows.
 
 import type { MarkingFieldInput } from "@/lib/markingFields";
+import { formatRateValue } from "@/lib/rateDisplay";
 import type { MarkingTypeValue } from "@/services/markings";
 
 export interface ContributionLookups {
@@ -103,14 +104,6 @@ function normalizeMarkingType(raw: string): MarkingTypeValue | null {
 
 function isManuscriptValue(sd: Record<string, unknown>): boolean {
   return sd.is_manuscript === true || sd.isManuscript === true;
-}
-
-function formatRateValue(raw: unknown): string {
-  const s = toStr(raw);
-  if (!s) return "";
-  const n = parseFloat(s);
-  if (!Number.isFinite(n)) return "";
-  return (n / 100).toFixed(2);
 }
 
 function yearOnly(value: unknown): string {

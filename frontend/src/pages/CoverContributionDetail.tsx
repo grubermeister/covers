@@ -16,7 +16,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
-import { formatCatalogDate } from "@/lib/catalogRecordDisplay";
+import { formatDateSeen } from "@/lib/catalogRecordDisplay";
 import {
   coverContributionDisplayName,
   isCoverContributionData,
@@ -54,7 +54,8 @@ function coverTypeLabel(typeCode: string): string {
 function formatCoverDate(sd: Record<string, unknown>): string {
   const raw = String(sd.cover_date ?? sd.coverDate ?? "").trim();
   if (!raw) return "—";
-  return formatCatalogDate(raw) || raw;
+  const granularity = String(sd.cover_granularity ?? sd.coverGranularity ?? "DAY").trim();
+  return formatDateSeen(raw, granularity) || raw;
 }
 
 function tracingFlagsFromSubmittedData(sd: Record<string, unknown>, imageCount: number): boolean[] {

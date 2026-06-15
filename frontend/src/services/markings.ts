@@ -273,7 +273,9 @@ export interface MarkingRecord {
   postOfficeName: string;
   regionName: string;
   earliestSeen: string | null;
+  earliestSeenGranularity: string | null;
   latestSeen: string | null;
+  latestSeenGranularity: string | null;
   mainImage: MarkingImage | null;
   secondImage: MarkingImage | null;
   images: MarkingImage[];
@@ -511,7 +513,15 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     postOfficeName: toStr(o.post_office_name),
     regionName: toStr(o.region_name),
     earliestSeen: typeof o.earliest_seen === "string" && o.earliest_seen ? o.earliest_seen : null,
+    earliestSeenGranularity:
+      typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
+        ? o.earliest_seen_granularity
+        : null,
     latestSeen: typeof o.latest_seen === "string" && o.latest_seen ? o.latest_seen : null,
+    latestSeenGranularity:
+      typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
+        ? o.latest_seen_granularity
+        : null,
     mainImage,
     secondImage,
     images,
@@ -1075,7 +1085,9 @@ function datesSeenFromCoverSubmission(sd: Record<string, unknown>): AssociatedDa
   const raw = sd.cover_date ?? sd.coverDate;
   if (raw == null || String(raw).trim() === "") return [];
   const date = String(raw).trim();
-  const gRaw = String(sd.date_granularity ?? sd.dateGranularity ?? "DAY").toUpperCase();
+  const gRaw = String(
+    sd.cover_granularity ?? sd.coverGranularity ?? sd.date_granularity ?? sd.dateGranularity ?? "DAY",
+  ).toUpperCase();
   const granularity: AssociatedDateSeen["granularity"] =
     gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
   return [{ id: 0, date, granularity }];
