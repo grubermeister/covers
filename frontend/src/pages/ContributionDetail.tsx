@@ -61,6 +61,7 @@ function buildContributionCatalogFields(input: MarkingFieldInput): CatalogFieldV
     lettering: displayCatalogField(input.letteringName),
     dimensions: displayCatalogField(input.dimensions),
     color: displayCatalogField(input.colorName),
+    rateValue: displayCatalogField(input.rateValFormatted),
     earliestSeen: displayCatalogField(input.earliestSeen),
     latestSeen: displayCatalogField(input.latestSeen),
   };

@@ -558,7 +558,9 @@ class MarkingListSerializer(serializers.ModelSerializer):
     color_name = serializers.CharField(source="color.name", read_only=True, default="")
     post_office_name = serializers.CharField(source="post_office.name", read_only=True, default="")
     earliest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     main_image = serializers.SerializerMethodField()
     second_image = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
@@ -593,7 +595,9 @@ class MarkingListSerializer(serializers.ModelSerializer):
             "post_office_name",
             "region_name",
             "earliest_seen",
+            "earliest_seen_granularity",
             "latest_seen",
+            "latest_seen_granularity",
             "main_image",
             "second_image",
         ]
@@ -657,7 +661,9 @@ class MarkingSerializer(serializers.ModelSerializer):
     color_name = serializers.CharField(source="color.name", read_only=True, default="")
     post_office_name = serializers.CharField(source="post_office.name", read_only=True, default="")
     earliest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     images = serializers.SerializerMethodField()
     citations = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
@@ -698,7 +704,9 @@ class MarkingSerializer(serializers.ModelSerializer):
             "post_office_name",
             "region_name",
             "earliest_seen",
+            "earliest_seen_granularity",
             "latest_seen",
+            "latest_seen_granularity",
             "images",
             "citations",
             "created_date",

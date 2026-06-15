@@ -16,8 +16,9 @@ import {
 } from "@/components/ui/carousel";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
-import { formatCatalogDate, markingTypeLabel } from "@/lib/catalogRecordDisplay";
+import { formatDateSeen, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { buildMarkingFields } from "@/lib/markingFields";
+import { formatRateValue } from "@/lib/rateDisplay";
 import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
 import {
   getMarkingById,
@@ -128,17 +129,7 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: AssociatedDateSeen): string {
-  // Honor the dates_seen granularity: YEAR -> "1980", MONTH -> "01/1980",
-  // DAY -> "01/01/1980". Truncating the ISO string before formatting lets
-  // formatCatalogDate pick the matching display shape.
-  const raw = d.date || "";
-  const truncated =
-    d.granularity === "YEAR"
-      ? raw.slice(0, 4)
-      : d.granularity === "MONTH"
-        ? raw.slice(0, 7)
-        : raw.slice(0, 10);
-  return formatCatalogDate(truncated) || truncated;
+  return formatDateSeen(d.date, d.granularity) || d.date || "";
 }
 
 function associatedCoverDatesDisplay(
@@ -178,20 +169,6 @@ function AssociatedCoverPreviewFields({ cover }: { cover: AssociatedCover }) {
       )}
     </dl>
   );
-}
-
-function yearOnly(value: string | null | undefined): string {
-  const s = value != null ? String(value).trim() : "";
-  if (!s) return "";
-  const m = /^(\d{4})/.exec(s);
-  return m ? m[1] : s;
-}
-
-function formatRateValue(cents: string | null | undefined): string {
-  if (cents == null || String(cents).trim() === "") return "";
-  const n = parseFloat(String(cents));
-  if (!Number.isFinite(n)) return "";
-  return (n / 100).toFixed(2);
 }
 
 /**
@@ -608,8 +585,8 @@ const RecordDetail = () => {
   };
 
   const dimensionsValue = dimensionsDisplay(record) || EMPTY;
-  const earliestValue = yearOnly(record.earliestSeen);
-  const latestValue = yearOnly(record.latestSeen);
+  const earliestValue = formatDateSeen(record.earliestSeen, record.earliestSeenGranularity);
+  const latestValue = formatDateSeen(record.latestSeen, record.latestSeenGranularity);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression

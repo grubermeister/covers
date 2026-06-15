@@ -852,6 +852,7 @@ const Contribute = () => {
         setImpression(normalizedImpression ?? "Normal");
         setInscriptionText(typeof data.inscription_txt === "string" ? data.inscription_txt : "");
         setDescription(typeof data.desc === "string" ? data.desc : "");
+        setRateValue(String(data.rate_val ?? "").trim());
 
         setLetteringId(data.lettering != null ? String(data.lettering) : "");
         const dateFmt = String(data.date_fmt ?? "").trim();
@@ -1116,6 +1117,7 @@ const Contribute = () => {
       (c) => c.name.trim().toLowerCase() === colorVal.toLowerCase()
     )?.id;
     const isCircular = isCircularType(shapeVal);
+    const rateValueToSend = rateValue.trim();
 
     const errors: typeof fieldErrors = {};
     if (!saveAsDraft) {
@@ -1138,6 +1140,8 @@ const Contribute = () => {
       }
       if (isRatemark && !rateValue.trim()) {
         errors.rateValue = "Rate Value is required for Ratemarks";
+      } else if (showRateValueField && rateValueToSend && !/^\d+(?:\.\d{1,2})?$/.test(rateValueToSend)) {
+        errors.rateValue = "Rate Value must be cents, like 3 or 3.5";
       }
 
       // At least one image must accompany every entry. The combined gallery
@@ -1302,7 +1306,7 @@ const Contribute = () => {
           form.append("is_irreg", String(isIrregular));
           if (impression.trim()) form.append("impression", impression.trim());
         }
-        if (showRateValueField && rateValue.trim()) form.append("rate_val", rateValue.trim());
+        if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
         if (description.trim()) {
           form.append("desc", description.trim());
         }
@@ -1360,7 +1364,7 @@ const Contribute = () => {
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
-          rate_val: showRateValueField ? rateValue.trim() || undefined : undefined,
+          rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
           inscription_txt: inscriptionToSend || undefined,
           reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
@@ -2072,12 +2076,12 @@ const Contribute = () => {
 
                     {showRateValueField && <div className="space-y-2">
                       <Label htmlFor="rate-value">
-                        Rate Value <span className="text-destructive" aria-hidden="true">*</span>
+                        Rate Value (cents) <span className="text-destructive" aria-hidden="true">*</span>
                       </Label>
                       <Input
                         id="rate-value"
                         type="text"
-                        placeholder="e.g. 5"
+                        placeholder="e.g. 3 or 3.5"
                         value={rateValue}
                         onChange={(e) => {
                           setRateValue(e.target.value);
