@@ -22,6 +22,11 @@ from import_export.widgets import CharWidget, ForeignKeyWidget, Widget
 from django.db.models import CharField as DjangoCharField, TextField as DjangoTextField
 from django.utils.dateparse import parse_datetime
 
+from common.auth_resources import (
+    CollectionAssignmentResource as AuthCollectionAssignmentResource,
+    CollectionResource as AuthCollectionResource,
+)
+
 
 class IsoDateTimeWidget(Widget):
     """Accepts ISO 8601 datetimes (with or without microseconds / tz offset) on import,
@@ -844,7 +849,7 @@ class ReferenceWorkAdmin(TimestampedModelAdmin):
 
 @admin.register(Collection)
 class CollectionAdmin(ReversionImportExportAdmin):
-    resource_class = CollectionResource
+    resource_class = AuthCollectionResource
     list_display = ['name', 'region', 'is_active', 'created_date']
     list_filter = ['is_active']
     search_fields = ['name', 'description', 'region__name', 'region__abbrev']
@@ -859,7 +864,7 @@ class CollectionAdmin(ReversionImportExportAdmin):
 
 @admin.register(CollectionAssignment)
 class CollectionAssignmentAdmin(ReversionImportExportAdmin):
-    resource_class = CollectionAssignmentResource
+    resource_class = AuthCollectionAssignmentResource
     list_display = ['user', 'collection', 'created_date']
     search_fields = ['user__username', 'collection__name', 'collection__region__name']
     raw_id_fields = ['user', 'collection']
