@@ -18,6 +18,7 @@ import {
   type MarkingRecord,
   type MarkingTypeValue,
 } from "@/services/markings";
+import { getReferenceWorkOptions } from "@/services/referenceWorks";
 import { buildCatalogSearchRow } from "@/lib/catalogRecordDisplay";
 import { CatalogRecordFields } from "@/components/CatalogRecordFields";
 import { useToast } from "@/hooks/use-toast";
@@ -259,6 +260,9 @@ const Search = () => {
   const [keywordSearch, setKeywordSearch] = useState(() => getSearchParam(searchParams, "q", ""));
   const [stateFilter, setStateFilter] = useState(() => getSearchParam(searchParams, "state", "all"));
   const [townFilter, setTownFilter] = useState(() => getSearchParam(searchParams, "town", ""));
+  const [referenceWorkFilter, setReferenceWorkFilter] = useState(() =>
+    getSearchParam(searchParams, "referenceWork", "all"),
+  );
   const [beginYear, setBeginYear] = useState(() => getSearchParam(searchParams, "from", ""));
   const [endYear, setEndYear] = useState(() => getSearchParam(searchParams, "to", ""));
   const [heightFilter, setHeightFilter] = useState(() => getSearchParam(searchParams, "height", ""));
@@ -325,6 +329,7 @@ const Search = () => {
   const prevColorFilterRef = useRef(colorFilter);
   const prevStateFilterRef = useRef(stateFilter);
   const prevTownFilterRef = useRef(debouncedTownFilter);
+  const prevReferenceWorkFilterRef = useRef(referenceWorkFilter);
   const prevBeginYearRef = useRef(debouncedBeginYear.trim().length === 4 ? debouncedBeginYear.trim() : "");
   const prevEndYearRef = useRef(debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : "");
   const prevHeightFilterRef = useRef("");
@@ -391,6 +396,7 @@ const Search = () => {
     const colorFilterJustChanged = prevColorFilterRef.current !== colorFilter;
     const stateFilterJustChanged = prevStateFilterRef.current !== stateFilter;
     const townFilterJustChanged = prevTownFilterRef.current !== debouncedTownFilter;
+    const referenceWorkFilterJustChanged = prevReferenceWorkFilterRef.current !== referenceWorkFilter;
     const beginYearJustChanged = prevBeginYearRef.current !== currentNormalizedBegin;
     const endYearJustChanged = prevEndYearRef.current !== currentNormalizedEnd;
     // Inline normalization to avoid forward-referencing normalizedHeight /
@@ -416,6 +422,7 @@ const Search = () => {
     if (colorFilterJustChanged) prevColorFilterRef.current = colorFilter;
     if (stateFilterJustChanged) prevStateFilterRef.current = stateFilter;
     if (townFilterJustChanged) prevTownFilterRef.current = debouncedTownFilter;
+    if (referenceWorkFilterJustChanged) prevReferenceWorkFilterRef.current = referenceWorkFilter;
     if (beginYearJustChanged) prevBeginYearRef.current = currentNormalizedBegin;
     if (endYearJustChanged) prevEndYearRef.current = currentNormalizedEnd;
     if (heightFilterJustChanged) prevHeightFilterRef.current = currentNormalizedHeight;
@@ -432,6 +439,7 @@ const Search = () => {
       colorFilterJustChanged ||
       stateFilterJustChanged ||
       townFilterJustChanged ||
+      referenceWorkFilterJustChanged ||
       beginYearJustChanged ||
       endYearJustChanged ||
       heightFilterJustChanged ||
@@ -444,7 +452,7 @@ const Search = () => {
     if (anyFilterChanged) {
       setCurrentPage(1);
     }
-  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, typeFilter, submissionQueueSort, catalogSortKey]);
+  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, referenceWorkFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, typeFilter, submissionQueueSort, catalogSortKey]);
 
   // Treat years as active filters only when they are valid and 4 digits.
   const normalizedBeginYear = useMemo(() => {
@@ -484,6 +492,25 @@ const Search = () => {
           ? "AUXMARK"
           : "all";
 
+  const {
+    data: referenceWorkOptionsRaw = [],
+    isLoading: referenceWorkOptionsLoading,
+    error: referenceWorkOptionsError,
+  } = useQuery({
+    queryKey: ["reference-work-options"],
+    queryFn: getReferenceWorkOptions,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const referenceWorkOptions = useMemo(
+    () =>
+      referenceWorkOptionsRaw.map((option) => ({
+        value: option.code,
+        label: option.label,
+      })),
+    [referenceWorkOptionsRaw],
+  );
+
   // Fetch markings with React Query - cached so Back shows previous results immediately.
   // The unified /markings/ endpoint already returns one row per marking with its
   // own type discriminator, so no client-side fan-out is needed.
@@ -500,6 +527,7 @@ const Search = () => {
       shapeFilter,
       stateFilter,
       debouncedTownFilter,
+      referenceWorkFilter,
       normalizedBeginYear,
       normalizedEndYear,
       normalizedHeight,
@@ -528,6 +556,7 @@ const Search = () => {
           color: colorFilter !== "all" ? colorFilter : undefined,
           state: stateFilter !== "all" ? stateFilter : undefined,
           town: debouncedTownFilter.trim() || undefined,
+          referenceWorkCode: referenceWorkFilter !== "all" ? referenceWorkFilter : undefined,
           beginYear: normalizedFrom,
           endYear: normalizedTo,
           height: normalizedHeight || undefined,
@@ -573,6 +602,7 @@ const Search = () => {
     if (debouncedKeywordSearch.trim()) params.set("q", debouncedKeywordSearch.trim());
     if (stateFilter !== "all") params.set("state", stateFilter);
     if (debouncedTownFilter.trim()) params.set("town", debouncedTownFilter.trim());
+    if (referenceWorkFilter !== "all") params.set("referenceWork", referenceWorkFilter);
     // Only persist valid years (normalized values) to the URL
     if (normalizedBeginYear) params.set("from", normalizedBeginYear);
     if (normalizedEndYear) params.set("to", normalizedEndYear);
@@ -594,7 +624,7 @@ const Search = () => {
     if (next !== current) {
       setSearchParams(next ? params : {}, { replace: true });
     }
-  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
+  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, referenceWorkFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
 
   const totalPages = Math.ceil(totalCount / itemsPerPage) || 1;
   const pageStart = (currentPage - 1) * itemsPerPage;
@@ -610,6 +640,7 @@ const Search = () => {
     setKeywordSearch("");
     setStateFilter("all");
     setTownFilter("");
+    setReferenceWorkFilter("all");
     setBeginYear("");
     setEndYear("");
     setHeightFilter("");
@@ -667,11 +698,11 @@ const Search = () => {
                       <Input
                         id="keyword-search"
                         type="search"
-                        placeholder="Search across fields..."
+                        placeholder="Search records, citations..."
                         value={keywordSearch}
                         onChange={(e) => setKeywordSearch(e.target.value)}
                         className="pl-9"
-                        aria-label="Search records by code, catalog text, town, state, shape, lettering, or color"
+                        aria-label="Search records by code, catalog text, town, state, shape, lettering, color, or reference work code or name"
                         disabled={filtersDisabled}
                       />
                     </div>
@@ -715,6 +746,25 @@ const Search = () => {
                       placeholder="Enter town name..."
                       value={townFilter}
                       onChange={(e) => setTownFilter(e.target.value)}
+                      disabled={filtersDisabled}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="citation-reference">Citation</Label>
+                    <SearchableSelect
+                      id="citation-reference"
+                      value={referenceWorkFilter}
+                      onValueChange={setReferenceWorkFilter}
+                      placeholder="All References"
+                      allOption={{ value: "all", label: "All References" }}
+                      options={referenceWorkOptions}
+                      loading={referenceWorkOptionsLoading}
+                      error={!!referenceWorkOptionsError}
+                      errorMessage="Failed to load references"
+                      searchPlaceholder="Search reference code or name..."
+                      emptyMessage="No reference found."
+                      aria-label="Filter by citation reference work"
                       disabled={filtersDisabled}
                     />
                   </div>

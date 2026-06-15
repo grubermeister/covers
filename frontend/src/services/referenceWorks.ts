@@ -54,6 +54,13 @@ export interface ReferenceWorkRecord {
   modifiedDate: string;
 }
 
+/** One item from GET /reference-works/options/ for citation filters. */
+export interface ReferenceWorkOption {
+  code: string;
+  title: string;
+  label: string;
+}
+
 function mapApiResultToRecord(item: ReferenceWorkApiResultItem): ReferenceWorkRecord {
   return {
     id: item.reference_work_id,
@@ -126,4 +133,22 @@ export async function getReferenceWorks(): Promise<ReferenceWorkRecord[]> {
     throw new Error("Reference works API: invalid response (missing results array)");
   }
   return data.results.map(mapApiResultToRecord);
+}
+
+/**
+ * Fetch coded reference-work options for the catalog Citation filter.
+ * The option value is the public reference-work code, never the database id.
+ */
+export async function getReferenceWorkOptions(): Promise<ReferenceWorkOption[]> {
+  const res = await apiClient.get<ReferenceWorkOption[]>("/reference-works/options/");
+  if (!Array.isArray(res.data)) {
+    throw new Error("Reference work options API: invalid response");
+  }
+  return res.data
+    .filter((item) => typeof item.code === "string" && item.code.trim())
+    .map((item) => ({
+      code: item.code.trim(),
+      title: typeof item.title === "string" ? item.title : "",
+      label: typeof item.label === "string" && item.label.trim() ? item.label.trim() : item.code.trim(),
+    }));
 }

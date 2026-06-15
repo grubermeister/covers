@@ -550,6 +550,7 @@ export async function getMarkingsPage(
     height?: string;
     width?: string;
     hasImages?: boolean;
+    referenceWorkCode?: string;
     deferCount?: boolean;
     ordering?: string;
   }
@@ -571,6 +572,7 @@ export async function getMarkingsPage(
   if (opt.height?.trim()) params.height = opt.height.trim();
   if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
+  if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();
 

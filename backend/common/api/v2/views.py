@@ -59,7 +59,11 @@ from common.audit import (
     restore_cover_from_snapshot,
     restore_marking_from_snapshot,
 )
-from common.filters import CoverMarkingFilter, MarkingListFilter
+from common.filters import (
+    CitationAwareMarkingSearchFilter,
+    CoverMarkingFilter,
+    MarkingListFilter,
+)
 from common.models import (
     Citation,
     Collection,
@@ -347,6 +351,53 @@ class ReferenceWorkViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         serializer.save(modified_by=self.request.user)
+
+    @staticmethod
+    def _ordinal_suffix(raw):
+        text = str(raw or "").strip()
+        if not text.isdigit():
+            return text
+        n = int(text)
+        mod100 = n % 100
+        if 11 <= mod100 <= 13:
+            return f"{n}th"
+        mod10 = n % 10
+        if mod10 == 1:
+            return f"{n}st"
+        if mod10 == 2:
+            return f"{n}nd"
+        if mod10 == 3:
+            return f"{n}rd"
+        return f"{n}th"
+
+    @classmethod
+    def _option_label(cls, work):
+        code = (work.code or "").strip()
+        title = (work.title or "").strip()
+        edition = (work.edition or "").strip()
+        head = f"{code} - {title}" if code and title else code or title
+        label = head or f"Reference work {work.pk}"
+        if edition:
+            label = f"{label} ({cls._ordinal_suffix(edition)} Ed.)"
+        return label
+
+    @action(detail=False, methods=["get"], url_path="options", permission_classes=[AllowAny])
+    def options(self, request):
+        """Lightweight coded reference-work payload for catalog citation filters."""
+        rows = (
+            ReferenceWork.objects.exclude(code__isnull=True)
+            .exclude(code__exact="")
+            .order_by("title", "code")
+        )
+        out = [
+            {
+                "code": (work.code or "").strip(),
+                "title": (work.title or "").strip(),
+                "label": self._option_label(work),
+            }
+            for work in rows
+        ]
+        return Response(out, status=status.HTTP_200_OK)
 
 
 class FAQEntryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1130,7 +1181,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
     pagination_class = MarkingListPagination
     queryset = Marking.objects.all()
     permission_classes = [IsEditorOrAdminWrite, IsResponsibleForRegion]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, filters.OrderingFilter]
     filterset_class = MarkingListFilter
     # No raw DELETE: removing a marking goes through the audited, reversible
     # POST /markings/<pk>/remove/ (recycle bin) action instead. Custom POST

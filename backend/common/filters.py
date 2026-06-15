@@ -4,8 +4,48 @@
 ###################################################################################################
 import django_filters
 from django.db.models import Q
+from rest_framework import filters
 
-from .models import CoverMarking, Marking, MarkingType
+from .models import Citation, CoverMarking, Marking, MarkingType
+
+
+def marking_ids_cited_by_reference_work_query(value):
+    text = str(value or "").strip()
+    if not text:
+        return Citation.objects.none().values_list("subject_id", flat=True)
+    return Citation.objects.filter(
+        subject_type="MARKING",
+    ).filter(
+        Q(reference_work__code__icontains=text)
+        | Q(reference_work__title__icontains=text)
+    ).values_list("subject_id", flat=True)
+
+
+class CitationAwareMarkingSearchFilter(filters.SearchFilter):
+    """
+    Extend DRF's normal marking search with citation reference-work matches.
+
+    The normal search still uses MarkingViewSet.search_fields. This class adds
+    an OR branch for markings cited to any ReferenceWork whose public code or
+    title contains the user's top Search text. Citation is polymorphic, so the
+    match must go through Citation.subject_type/subject_id rather than a Django
+    FK from Citation to Marking.
+    """
+
+    def filter_queryset(self, request, queryset, view):
+        searched = super().filter_queryset(request, queryset, view)
+        terms = self.get_search_terms(request)
+        if not terms:
+            return searched
+
+        citation_query = Q()
+        for term in terms:
+            citation_query &= Q(
+                pk__in=marking_ids_cited_by_reference_work_query(term),
+            )
+        if not citation_query:
+            return searched
+        return (searched | queryset.filter(citation_query)).distinct()
 
 
 class MarkingListFilter(django_filters.FilterSet):
@@ -35,6 +75,10 @@ class MarkingListFilter(django_filters.FilterSet):
         label='Shape id',
     )
     has_images = django_filters.CharFilter(method='filter_has_images', label='Has images')
+    reference_work_code = django_filters.CharFilter(
+        method='filter_by_reference_work_code',
+        label='Reference work code',
+    )
     earliest_use_year_min = django_filters.NumberFilter(
         method='filter_earliest_use_year_min',
         label='Earliest observed year is at least',
@@ -113,6 +157,17 @@ class MarkingListFilter(django_filters.FilterSet):
             subject_type=Image.SUBJECT_MARKING,
         ).values_list('subject_id', flat=True)
         return queryset.filter(pk__in=marking_ids_with_images)
+
+    @staticmethod
+    def filter_by_reference_work_code(queryset, name, value):
+        code = str(value or "").strip()
+        if not code:
+            return queryset
+        cited_marking_ids = Citation.objects.filter(
+            subject_type="MARKING",
+            reference_work__code__iexact=code,
+        ).values_list("subject_id", flat=True)
+        return queryset.filter(pk__in=cited_marking_ids)
 
 
 class MarkingFilter(django_filters.FilterSet):
