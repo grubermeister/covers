@@ -17,6 +17,7 @@ from common.marking_resources import (
     marking_dataset_specs,
 )
 from common.models import (
+    Collection,
     Contribution,
     Cover,
     CoverRecycleBin,
@@ -49,6 +50,13 @@ def _dataset_from_payload(name, payload):
             raise CommandError(f"Dataset {name} row {index} must be an object.")
         dataset.append([row.get(header) for header in headers])
     return dataset
+
+
+def _replace_dataset_rows(dataset, rows):
+    replacement = Dataset(headers=list(dataset.headers or []))
+    for row in rows:
+        replacement.append([row.get(header) for header in replacement.headers])
+    return replacement
 
 
 def _format_import_errors(result):
@@ -104,19 +112,22 @@ class Command(BaseCommand):
             help="Run import validation without committing changes.",
         )
 
-    @transaction.atomic
     def handle(self, *args, **options):
         path = Path(options["path"])
         dry_run = bool(options["dry_run"])
         root_code, datasets = self._load_backup(path)
 
         self._validate_required_users(datasets)
-        self._import_datasets(datasets)
-        self._restore_saved_timestamps(datasets)
-        self._warn_missing_media(datasets)
+
+        with transaction.atomic():
+            self._import_datasets(datasets)
+            self._restore_saved_timestamps(datasets)
+            self._verify_restored_graph(root_code, datasets)
+
+            if dry_run:
+                transaction.set_rollback(True)
 
         if dry_run:
-            transaction.set_rollback(True)
             self.stdout.write(
                 self.style.SUCCESS("Dry run completed; no data committed.")
             )
@@ -126,6 +137,7 @@ class Command(BaseCommand):
                     f"Marking restore completed successfully: {root_code}"
                 )
             )
+        self._warn_missing_media(datasets)
 
     def _load_backup(self, path):
         if not path.exists():
@@ -202,6 +214,10 @@ class Command(BaseCommand):
                 self.stdout.write(f"{spec.label} import skipped.")
                 continue
 
+            if spec.name == "contributions":
+                dataset = self._normalize_contribution_collections(dataset, datasets)
+                datasets[spec.name] = dataset
+
             resource_kwargs = {}
             if spec.polymorphic:
                 resource_kwargs["resolver"] = build_polymorphic_resolver()
@@ -212,6 +228,44 @@ class Command(BaseCommand):
                     f"Imported {spec.label} ({result.total_rows} rows)."
                 )
             )
+
+    def _normalize_contribution_collections(self, dataset, datasets):
+        collection_dataset = datasets.get("collections")
+        if collection_dataset is None:
+            return dataset
+
+        region_name_by_collection_name = {}
+        for row in collection_dataset.dict:
+            name = (row.get("name") or "").strip()
+            region_name = (row.get("region") or "").strip()
+            if name and region_name:
+                region_name_by_collection_name[name] = region_name
+
+        if not region_name_by_collection_name:
+            return dataset
+
+        rows = []
+        changed = False
+        for row in dataset.dict:
+            next_row = dict(row)
+            collection_name = (next_row.get("collection") or "").strip()
+            region_name = region_name_by_collection_name.get(collection_name)
+            if region_name:
+                local_collection = (
+                    Collection.objects.filter(region__name=region_name)
+                    .order_by("pk")
+                    .first()
+                )
+                if local_collection is not None:
+                    local_name = local_collection.name
+                    if local_name != collection_name:
+                        next_row["collection"] = local_name
+                        changed = True
+            rows.append(next_row)
+
+        if not changed:
+            return dataset
+        return _replace_dataset_rows(dataset, rows)
 
     def _restore_saved_timestamps(self, datasets):
         self._restore_contribution_timestamps(datasets.get("contributions"))
@@ -311,16 +365,65 @@ class Command(BaseCommand):
                     removed_at=removed_at,
                 )
 
+    def _verify_restored_graph(self, root_code, datasets):
+        marking = Marking.all_objects.filter(code=root_code).first()
+        if marking is None:
+            raise CommandError(
+                f"Restore did not create or update root marking: {root_code}"
+            )
+
+        contribution_dataset = datasets.get("contributions")
+        if contribution_dataset is None:
+            return
+
+        missing_links = []
+        for row in contribution_dataset.dict:
+            code = (row.get("marking_code") or "").strip()
+            username = (row.get("contributor") or "").strip()
+            if not code or not username:
+                continue
+            exists = Contribution.objects.filter(
+                marking__code=code,
+                contributor__username=username,
+            ).exists()
+            if not exists:
+                missing_links.append(f"{code} -> {username}")
+
+        if missing_links:
+            raise CommandError(
+                "Restore did not create expected contribution link(s): "
+                + ", ".join(missing_links)
+            )
+
     def _warn_missing_media(self, datasets):
         image_dataset = datasets.get("images")
         if image_dataset is None:
+            return
+        try:
+            media_root = Path(settings.MEDIA_ROOT)
+        except TypeError:
+            self.stdout.write(
+                self.style.WARNING(
+                    f"Could not verify restored image files under MEDIA_ROOT: "
+                    f"{settings.MEDIA_ROOT!r}"
+                )
+            )
             return
         missing = []
         for row in image_dataset.dict:
             storage = (row.get("storage_filename") or "").strip().lstrip("/")
             if not storage:
                 continue
-            if not (settings.MEDIA_ROOT / storage).is_file():
+            try:
+                image_path = media_root / storage
+            except TypeError:
+                self.stdout.write(
+                    self.style.WARNING(
+                        f"Could not verify restored image file path: {storage}"
+                    )
+                )
+                continue
+            if not image_path.is_file():
                 missing.append(storage)
         if not missing:
             return

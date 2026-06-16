@@ -75,7 +75,14 @@ def classify_paren_field(field_text):
 def classify_all_fields(paren_fields):
     """Classify each field in the list. Returns parallel list of type labels."""
     types = [classify_paren_field(f) for f in paren_fields]
-    
+
+    # Positional disambiguation: in semicolon parentheticals, the first field
+    # is the date slot. A bare "--" there means "unknown date", not unknown
+    # size. Later dash fields still use the size parser so forms like "--,YD"
+    # keep their existing unknown-dimension meaning.
+    if paren_fields and paren_fields[0].strip() == '--':
+        types[0] = 'date'
+
     # Positional disambiguation: ASCC entries have at most one size field.
     # If a second 'size' appears and it's a bare number (no shape code, no
     # dateformat, no dimension separator), reclassify it as 'rate'.
