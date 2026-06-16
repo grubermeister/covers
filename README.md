@@ -47,6 +47,8 @@ cd frontend && npm ci && npm run build && cd ..
 `uv run woco`, which calls `woco_cli.py` and then Django's
 `execute_from_command_line`.
 
+On Windows, use `.\woco.bat` in place of `./woco`.
+
 For full setup details, see [docs/devel/BUILD.md](./docs/devel/BUILD.md).
 
 ## Development
