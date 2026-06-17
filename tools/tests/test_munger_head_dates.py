@@ -16,10 +16,11 @@ from pathlib import Path
 
 import pandas as pd
 
-TOOLS_DIR = Path(__file__).resolve().parent
+TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
+from ascc_data_munger import format_dates_seen_desc
 from munger.head import MS_DATE_AT_END, parse_head
 
 
@@ -29,6 +30,10 @@ def _head_row(seg_head):
 
 def _parsed_name(seg_head):
     return parse_head(_head_row(seg_head))['head_name_body']
+
+
+def _parsed_head_date(seg_head):
+    return parse_head(_head_row(seg_head))['head_date_text']
 
 
 class TestMsDateAtEnd(unittest.TestCase):
@@ -68,6 +73,13 @@ class TestParseHeadPeel(unittest.TestCase):
 
     def test_plain_heading_unchanged(self):
         self.assertEqual(_parsed_name("Accomack C.H 1835"), "Accomack C.H")
+
+    def test_preserves_peeled_date_text_for_description(self):
+        self.assertEqual(_parsed_name("Aquia(s) 1811,1849-55"), "Aquia")
+        self.assertEqual(_parsed_head_date("Aquia(s) 1811,1849-55"),
+                         "1811,1849-55")
+        self.assertEqual(format_dates_seen_desc("1811,1849-55"),
+                         "Dates Seen 1811, 1849-55")
 
 
 if __name__ == '__main__':

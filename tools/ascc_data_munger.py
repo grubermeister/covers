@@ -48,6 +48,17 @@ from munger.text_utils import strip_dot_leaders
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
 
+def format_dates_seen_desc(raw_text):
+    """Return the desc line for a source Dates Seen column value.
+
+    Example output shape:
+    Dates Seen 1811, 1849-55
+    """
+    tokens = _split_ms_date_token(raw_text)
+    if not tokens:
+        return None
+    return "Dates Seen " + ", ".join(tokens)
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--input", default=WIP_DIR / "cache" / "VA_ASCC_CTLG.csv")
@@ -905,9 +916,12 @@ def main(argv=None):
     print(f'  Other fields reclassified: {total_reclassified}')
     remaining_other = listings['other_fields'].apply(len).sum()
     print(f'  Remaining unresolved other fields: {remaining_other}')
-    _ms_dates_added = 0
-    for idx in listings.index[listings['is_manuscript_section'].fillna(False)]:
-        raw = listings.at[idx, 'ms_date_text']
+    _head_dates_added = 0
+    for idx in listings.index:
+        if listings.at[idx, 'is_manuscript_section']:
+            raw = listings.at[idx, 'ms_date_text']
+        else:
+            raw = listings.at[idx, 'head_date_text']
         sub_tokens = _split_ms_date_token(raw)
         if not sub_tokens:
             continue
@@ -923,9 +937,9 @@ def main(argv=None):
                 print(f'  WARN: parse_date_field({tok!r}) failed for listing idx={idx}: {exc}')
                 continue
             new_dates.append(parsed)
-            _ms_dates_added += 1
+            _head_dates_added += 1
         listings.at[idx, 'parsed_dates'] = new_dates
-    print(f'Step 6.6b: folded {_ms_dates_added} manuscript-row dates into parsed_dates.')
+    print(f'Step 6.6b: folded {_head_dates_added} head/manuscript dates into parsed_dates.')
     date_errors = []
     for idx, row in listings.iterrows():
         for d in row['parsed_dates']:
@@ -2776,6 +2790,13 @@ def main(argv=None):
         _see = _lrow.get('see_clause')
         if _see and isinstance(_see, str) and _see.strip():
             _lines.append(_see.strip())
+        if _lrow.get('is_manuscript_section'):
+            _date_raw = _lrow.get('ms_date_text')
+        else:
+            _date_raw = _lrow.get('head_date_text')
+        _date_desc = format_dates_seen_desc(_date_raw)
+        if _date_desc:
+            _lines.append(_date_desc)
         if _lines:
             desc_by_listing[_lidx] = "\n".join(_lines)
     marking_rows = []

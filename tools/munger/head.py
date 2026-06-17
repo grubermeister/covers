@@ -123,10 +123,15 @@ def parse_head(row):
     #     No-op for rows whose dates were parenthesized annotations (those
     #     were removed in step 5), so manuscript-section parsing is
     #     unchanged.
+    head_date_text = None
     if name_body:
+        dates = []
         while True:
             m_date = MS_DATE_AT_END.search(name_body)
             if m_date:
+                raw = m_date.group(1).strip()
+                if raw and raw != '--':
+                    dates.insert(0, raw)
                 name_body = name_body[:m_date.start()].rstrip()
                 continue
             m_dash = MS_DASH_AT_END.search(name_body)
@@ -138,6 +143,8 @@ def parse_head(row):
                 name_body = name_body[:m_sep.start()].rstrip()
                 continue
             break
+        if dates:
+            head_date_text = ','.join(dates)
 
     # 5c. Drop residues with no real town text (e.g. a row that was just a
     #     bare year like "1849"): they would otherwise become a PostOffice
@@ -153,4 +160,5 @@ def parse_head(row):
         'head_rel_type': rel_type,
         'head_name_body': name_body,
         'head_annotations': annotations,
+        'head_date_text': head_date_text,
     })

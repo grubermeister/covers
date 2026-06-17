@@ -702,7 +702,7 @@ const Search = () => {
                         value={keywordSearch}
                         onChange={(e) => setKeywordSearch(e.target.value)}
                         className="pl-9"
-                        aria-label="Search records by code, catalog text, town, state, shape, lettering, color, or reference work code or name"
+                        aria-label="Search records by code, inscription text, town, state, shape, lettering, color, or reference work code or name"
                         disabled={filtersDisabled}
                       />
                     </div>

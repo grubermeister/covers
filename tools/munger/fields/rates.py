@@ -3,6 +3,7 @@ import re
 
 BRACKET_OPENERS = '[{|'
 BRACKET_CLOSERS = ']}|'
+BRACKET_DELIMS = BRACKET_OPENERS + BRACKET_CLOSERS
 
 
 def _is_bracket_opener(ch):
@@ -10,7 +11,8 @@ def _is_bracket_opener(ch):
 
 
 def _is_bracket_closer(ch, depth):
-    return depth > 0 and ch in BRACKET_CLOSERS
+    # ASCC OCR sometimes closes a hint with another opener, as in "[C[".
+    return depth > 0 and ch in BRACKET_DELIMS
 
 
 def split_rate_tokens(field_text):
@@ -39,7 +41,9 @@ RATE_AMOUNT_RE = re.compile(
     r'(\d+(?:[/-]\d+(?:/\d+)?)?)'  # amount: "3", "12-1/2", "3/CENTS"
 )
 
-RATE_BRACKET_RE = re.compile(r'[\[\{\|]([^\]\}\|]+)[\]\}\|]')
+RATE_BRACKET_RE = re.compile(
+    r'[\[\{\|]([^\[\{\|\]\}]+)[\[\{\|\]\}]'
+)
 
 RATE_KEYWORD_RE = re.compile(
     r'\b(PAID|FREE|STEAM|DUE)\b', re.IGNORECASE

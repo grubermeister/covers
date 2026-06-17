@@ -1189,7 +1189,6 @@ class MarkingViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options", "trace"]
     search_fields = [
         "code",
-        "catalog_txt",
         "inscription_txt",
         "desc",
         "post_office__post_office_regions__region__name",

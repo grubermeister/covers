@@ -14,7 +14,8 @@ RATE_FIELD_RE = re.compile(
     r'\bPAID\b|\bFREE\b|\bSTEAM\b|\bDUE\b'
     r'|\bP\.?M\.?'
     r'|\bfrank\b'
-    r'|\[[^\]]*\]'         # brackets: [ms], [C], [hdstp rate], [cogged circle]
+    # Bracketed rate hints: [ms], [C], and OCR close variants like [C[.
+    r'|[\[\{\|][^\[\{\|\]\}]*[\[\{\|\]\}]'
     r'|\bwith\s+\d'        # "with 24" = with adhesive
     r')',
     re.IGNORECASE

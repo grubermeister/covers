@@ -34,6 +34,20 @@ def _make_marking(user, color, post_office, text):
     )
 
 
+def _make_marking_with_text(user, color, post_office, catalog_txt, inscription_txt):
+    return Marking.objects.create(
+        type="TOWNMARK",
+        catalog_txt=catalog_txt,
+        inscription_txt=inscription_txt,
+        desc="",
+        is_manuscript=True,
+        color=color,
+        post_office=post_office,
+        created_by=user,
+        modified_by=user,
+    )
+
+
 def _result_ids(response):
     return {row["id"] for row in response.data["results"]}
 
@@ -173,6 +187,38 @@ class MarkingCitationSearchTests(TestCase):
 
         self.assertEqual(response.status_code, 200, response.data)
         self.assertEqual(_result_ids(response), set())
+
+    def test_top_search_ignores_catalog_text(self):
+        catalog_only = _make_marking_with_text(
+            self.user,
+            self.color,
+            self.post_office,
+            "CATALOGONLYTOKEN",
+            "Visible inscription",
+        )
+        response = self.client.get(
+            "/api/v2/markings/",
+            {"search": "CATALOGONLYTOKEN", "page_size": "50"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertNotIn(catalog_only.pk, _result_ids(response))
+
+    def test_top_search_still_matches_inscription_text(self):
+        inscription_match = _make_marking_with_text(
+            self.user,
+            self.color,
+            self.post_office,
+            "Catalog text",
+            "INSCRIPTIONONLYTOKEN",
+        )
+        response = self.client.get(
+            "/api/v2/markings/",
+            {"search": "INSCRIPTIONONLYTOKEN", "page_size": "50"},
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertIn(inscription_match.pk, _result_ids(response))
 
     def test_reference_work_options_excludes_uncoded_works(self):
         response = self.client.get("/api/v2/reference-works/options/")
