@@ -11,7 +11,7 @@ export const SUBMISSION_LABELS = {
   action: {
     submitMarking: "Submit Marking",
     submitNewMarking: "Submit New Marking",
-    submitEditToMarking: "Submit Edit to Marking",
+    submitEditToMarking: "Submit Edit to Existing Marking",
     submitCover: "Submit Cover",
     submitNewCover: "Submit New Cover",
     submitEditToCover: "Submit Edit to Cover",

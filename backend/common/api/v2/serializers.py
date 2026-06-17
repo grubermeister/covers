@@ -404,6 +404,10 @@ class CoverSerializer(serializers.ModelSerializer):
     dates_seen = serializers.SerializerMethodField()
     is_removed = serializers.SerializerMethodField()
     can_remove = serializers.SerializerMethodField()
+    # Derived display name of the submitter (the cover's created_by, i.e. the
+    # contributor). Returned ONLY when the submitter opted in — privacy is
+    # enforced here at the API boundary, not just hidden in the UI.
+    submitter_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Cover
@@ -417,6 +421,8 @@ class CoverSerializer(serializers.ModelSerializer):
             "height",
             "is_institutional",
             "width",
+            "display_submitter_name",
+            "submitter_name",
             "dates_seen",
             "is_removed",
             "can_remove",
@@ -446,6 +452,16 @@ class CoverSerializer(serializers.ModelSerializer):
             )
         except CatalogCodeError as exc:
             raise serializers.ValidationError(str(exc))
+
+    def get_submitter_name(self, obj):
+        # Opt-out (the default) must never leak the name.
+        if not obj.display_submitter_name:
+            return None
+        user = obj.created_by
+        if user is None:
+            return None
+        full = (user.get_full_name() or "").strip()
+        return full or user.get_username()
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(

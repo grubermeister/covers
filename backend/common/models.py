@@ -902,6 +902,7 @@ class Cover(TimestampedModel):
     height = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
     is_institutional = models.BooleanField(null=True, blank=True, help_text='Institutionally owned (museum, society, etc.)')
     width = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public cover detail page")
 
     # objects: default manager, EXCLUDES recycle-binned covers.
     # all_objects: unfiltered, INCLUDES recycle-binned covers.

@@ -185,6 +185,7 @@ def apply_contribution_to_catalog(contrib):
         tags_key="marking_image_tags",
     )
     _sync_citations("MARKING", marking.pk, payload, actor)
+    _sync_marking_dates_seen(marking.pk, payload, actor)
 
     return marking
 
@@ -281,6 +282,7 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
         tags_key="marking_image_tags",
     )
     _sync_citations("MARKING", marking.pk, payload, actor)
+    _sync_marking_dates_seen(marking.pk, payload, actor)
 
     return marking
 
@@ -355,6 +357,7 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
     color = _resolve_fk(Color, payload, "color_id", "color")
     has_adhesive = _coerce_optional_bool(payload, "has_adhesive", False)
     is_institutional = _coerce_optional_bool(payload, "is_institutional", None)
+    display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
 
@@ -364,6 +367,7 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
         color=color,
         has_adhesive=bool(has_adhesive),
         is_institutional=is_institutional,
+        display_submitter_name=bool(display_submitter_name),
         width=width,
         height=height,
         created_by=actor,
@@ -473,6 +477,12 @@ def _apply_cover_edit(
     if "is_institutional" in payload:
         cover.is_institutional = _coerce_optional_bool(
             payload, "is_institutional", cover.is_institutional
+        )
+    if "display_submitter_name" in payload:
+        cover.display_submitter_name = bool(
+            _coerce_optional_bool(
+                payload, "display_submitter_name", cover.display_submitter_name
+            )
         )
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     if width is not None:
@@ -1057,6 +1067,53 @@ def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
         created_by=actor,
         modified_by=actor,
     )
+
+
+def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
+    """
+    Record manually-entered ERD/LRD as MARKING-subject DateSeen rows from
+    marking_erd / marking_lrd (+ *_granularity). Used when a marking is added
+    or edited from another catalog and has no covers to derive dates from.
+
+    ADDITIVE and NON-DESTRUCTIVE -- unlike the cover flow, this never deletes.
+    A catalog-imported marking carries one MARKING DateSeen row per observed
+    date (see tools/ascc_data_munger.py), and a delete-then-recreate would
+    collapse that history to two boundary rows; cover-derived dates live under
+    subject_type=COVER and are out of scope here. Each non-blank boundary is
+    get_or_create'd at its (subject, date), so a same-date row is reused rather
+    than duplicated. `MarkingQuerySet.with_date_range` takes min/max across all
+    rows, so adding a boundary widens the displayed range. The form prefills
+    these from the current earliest/latest and only sends a boundary the user
+    changed, so a no-touch edit is a no-op (narrowing a range is an admin/data
+    operation, intentionally not exposed through this form).
+    """
+    for date_key, gran_key in (
+        ("marking_erd", "marking_erd_granularity"),
+        ("marking_lrd", "marking_lrd_granularity"),
+    ):
+        raw = payload.get(date_key)
+        if raw in (None, ""):
+            continue
+        parsed = parse_date(str(raw)[:10])
+        if parsed is None:
+            raise ContributionApplyError("Invalid {}: {!r}".format(date_key, raw))
+        granularity = payload.get(gran_key) or "DAY"
+        if isinstance(granularity, str):
+            granularity = granularity.strip().upper() or "DAY"
+        if granularity not in ("DAY", "MONTH", "YEAR"):
+            raise ContributionApplyError(
+                "Invalid {}: {!r}".format(gran_key, granularity)
+            )
+        DateSeen.objects.get_or_create(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking_id,
+            date=parsed,
+            defaults={
+                "granularity": granularity,
+                "created_by": actor,
+                "modified_by": actor,
+            },
+        )
 
 
 def _sync_cover_valuation(cover_id, payload: dict, actor) -> None:

@@ -24,6 +24,7 @@ import { getShapes, type ShapeOption } from "@/services/shapes";
 import { getPostOffices, type PostOfficeOption } from "@/services/postOffices";
 import { getRegions } from "@/services/regions";
 import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
+import { deriveGranularityFromIso } from "@/lib/dateGranularity";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
 import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
@@ -36,6 +37,11 @@ import {
 } from "@/services/contributions";
 import { ENTRY_LABELS } from "@/labels/entry";
 import { SUBMISSION_LABELS } from "@/labels/submission";
+import {
+  MARKING_SUBMISSION_GUIDELINES,
+  INSCRIPTION_TEXT_HELP,
+  DATE_FORMAT_HELP,
+} from "@/labels/guidelines";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -412,6 +418,15 @@ const Contribute = () => {
   // New-upload files/previews/tags now live as "new" items inside `gallery`.
   const [letteringId, setLetteringId] = useState("");
   const [dateFormatIds, setDateFormatIds] = useState<string[]>([]);
+  // ERD/LRD (earliest/latest recorded date) for markings sourced from another
+  // catalog. Stored as MARKING DateSeen rows server-side and merged with
+  // cover-derived dates at read time. *Baseline holds the value prefilled on
+  // edit so we send a boundary only when the user changed it (a no-touch edit
+  // must not re-write the catalog's date history).
+  const [erd, setErd] = useState("");
+  const [lrd, setLrd] = useState("");
+  const [erdBaseline, setErdBaseline] = useState("");
+  const [lrdBaseline, setLrdBaseline] = useState("");
   const [fieldErrors, setFieldErrors] = useState<{
     markingType?: string;
     state?: string;
@@ -426,6 +441,8 @@ const Contribute = () => {
     dateFormat?: string;
     inscriptionText?: string;
     rateValue?: string;
+    erd?: string;
+    lrd?: string;
   }>({});
 
   // Contributor: lettering, framing, date format (loaded for all)
@@ -749,6 +766,13 @@ const Contribute = () => {
         } else {
           setDateFormatIds([]);
         }
+        // Restore any ERD/LRD the contributor typed before saving the draft.
+        // These ride submitted_data verbatim; no baseline (a draft has not
+        // touched the catalog), so resubmitting sends them as a fresh boundary.
+        setErd(getStr(sd.marking_erd));
+        setLrd(getStr(sd.marking_lrd));
+        setErdBaseline("");
+        setLrdBaseline("");
         // Load prior images as "existing" gallery items (same path used by the
         // edit-marking flow) so the remove button records removals in
         // `removedExistingImageKeys` and the contributor can reorder / set the
@@ -959,6 +983,16 @@ const Contribute = () => {
         } else {
           setDateFormatIds([]);
         }
+
+        // Prefill ERD/LRD from the marking's current earliest/latest. Baselines
+        // let submit send a boundary only when the user actually changes it, so
+        // a no-touch edit never re-writes the catalog's MARKING date rows.
+        const erdRaw = typeof data.earliest_seen === "string" ? data.earliest_seen : "";
+        const lrdRaw = typeof data.latest_seen === "string" ? data.latest_seen : "";
+        setErd(erdRaw);
+        setLrd(lrdRaw);
+        setErdBaseline(erdRaw);
+        setLrdBaseline(lrdRaw);
       })
       .catch(() => {
         if (!cancelled) setRecordError("Failed to load record");
@@ -1260,6 +1294,15 @@ const Contribute = () => {
       }
     }
 
+    // ERD/LRD are optional, but if both are given the earliest must not be
+    // after the latest. (A type="date" input only yields a full ISO date or
+    // empty, so format validity is otherwise guaranteed.)
+    const erdForValidation = erd.trim();
+    const lrdForValidation = lrd.trim();
+    if (erdForValidation && lrdForValidation && erdForValidation > lrdForValidation) {
+      errors.lrd = "Latest date must be on or after the earliest date";
+    }
+
     const referenceDetailErrors: Record<number, ReferenceDetailFieldErrors> = {};
     for (const work of selectedReferenceWorks) {
       const detail = referenceDetailsById[work.id];
@@ -1377,6 +1420,23 @@ const Contribute = () => {
         }
       }
 
+      // ERD/LRD: send a boundary only when it is non-empty, parses to a date,
+      // and differs from the value prefilled on edit. The backend sync is
+      // additive (never deletes), so an unchanged or cleared field is a no-op
+      // and the marking's existing catalog dates are preserved.
+      const markingDateToSend = (
+        value: string,
+        baseline: string,
+      ): { date: string; granularity: string } | null => {
+        const trimmed = value.trim();
+        if (!trimmed || trimmed === baseline.trim()) return null;
+        const derived = deriveGranularityFromIso(trimmed);
+        if (!derived) return null;
+        return { date: derived.normalizedDate, granularity: derived.granularity };
+      };
+      const erdToSend = markingDateToSend(erd, erdBaseline);
+      const lrdToSend = markingDateToSend(lrd, lrdBaseline);
+
       if (allImageFiles.length > 0 || isEditMarking) {
         const form = new FormData();
         if (isEditContribution && editContributionId != null) {
@@ -1421,6 +1481,14 @@ const Contribute = () => {
         if (!isManuscriptSelected && letteringId) form.append("lettering_style_id", letteringId);
         if (!isManuscriptSelected && letteringId) form.append("lettering_id", letteringId);
         if (showDateFormatField && dateFmtCode) form.append("date_fmt", dateFmtCode);
+        if (erdToSend) {
+          form.append("marking_erd", erdToSend.date);
+          form.append("marking_erd_granularity", erdToSend.granularity);
+        }
+        if (lrdToSend) {
+          form.append("marking_lrd", lrdToSend.date);
+          form.append("marking_lrd_granularity", lrdToSend.granularity);
+        }
         for (const file of allImageFiles) {
           form.append("marking_image", file, file.name);
         }
@@ -1478,6 +1546,12 @@ const Contribute = () => {
           lettering_style_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
+          ...(erdToSend
+            ? { marking_erd: erdToSend.date, marking_erd_granularity: erdToSend.granularity }
+            : {}),
+          ...(lrdToSend
+            ? { marking_lrd: lrdToSend.date, marking_lrd_granularity: lrdToSend.granularity }
+            : {}),
           marking_image_tags: orderedNewTags,
           ...(imageOrder.length > 0 ? { image_order: imageOrder } : {}),
           ...(trimmedComment
@@ -2061,6 +2135,7 @@ const Contribute = () => {
                         rows={3}
                         className={fieldErrors.inscriptionText ? "border-destructive" : ""}
                       />
+                      <p className="text-sm text-muted-foreground">{INSCRIPTION_TEXT_HELP}</p>
                       {fieldErrors.inscriptionText && (
                         <p className="text-sm text-destructive">{fieldErrors.inscriptionText}</p>
                       )}
@@ -2126,14 +2201,8 @@ const Contribute = () => {
                       )}
                     </div>
                     {showDateFormatField && <div className="space-y-2">
-                      <Label>
-                        <span
-                          className="cursor-help border-b border-dotted border-muted-foreground/40"
-                          title="Date format is how the date appears in the marking (e.g. month/day order, abbreviations)."
-                        >
-                          Date format
-                        </span>
-                      </Label>
+                      <Label>Date format</Label>
+                      <p className="text-sm text-muted-foreground">{DATE_FORMAT_HELP}</p>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -2155,9 +2224,15 @@ const Contribute = () => {
                           >
                             {dateFormatOptions.map((opt) => {
                               const value = String(opt.id);
+                              // opt.description is the code (e.g. "MD"); opt.name
+                              // is its meaning (e.g. "Month / Day"). Show both so
+                              // MD/MDD/YMDD are self-explanatory at the point of choice.
+                              const code = opt.description || opt.name;
+                              const meaning =
+                                opt.name && opt.name !== opt.description ? opt.name : "";
                               return (
                                 <DropdownMenuRadioItem key={opt.id} value={value}>
-                                  {opt.description || opt.name}
+                                  {meaning ? `${code} — ${meaning}` : code}
                                 </DropdownMenuRadioItem>
                               );
                             })}
@@ -2166,6 +2241,45 @@ const Contribute = () => {
                       </DropdownMenu>
                       {fieldErrors.dateFormat && <p className="text-sm text-destructive">{fieldErrors.dateFormat}</p>}
                     </div>}
+                    <div className="space-y-2">
+                      <Label>Recorded date range</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Optional. Earliest (ERD) and latest (LRD) recorded dates for a
+                        marking added from another catalog. Leave blank to let the dates
+                        come from uploaded covers. Enter a year (e.g. 1845) for a year-only date.
+                      </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <Label htmlFor="marking-erd" className="text-sm font-normal">Earliest (ERD)</Label>
+                          <Input
+                            id="marking-erd"
+                            type="date"
+                            value={erd}
+                            onChange={(e) => {
+                              setErd(e.target.value);
+                              setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+                            }}
+                            disabled={submitting}
+                            className={fieldErrors.erd ? "border-destructive" : ""}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label htmlFor="marking-lrd" className="text-sm font-normal">Latest (LRD)</Label>
+                          <Input
+                            id="marking-lrd"
+                            type="date"
+                            value={lrd}
+                            onChange={(e) => {
+                              setLrd(e.target.value);
+                              setFieldErrors((prev) => ({ ...prev, lrd: undefined }));
+                            }}
+                            disabled={submitting}
+                            className={fieldErrors.lrd ? "border-destructive" : ""}
+                          />
+                        </div>
+                      </div>
+                      {fieldErrors.lrd && <p className="text-sm text-destructive">{fieldErrors.lrd}</p>}
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="description">Description</Label>
                       <Textarea
@@ -2637,18 +2751,11 @@ const Contribute = () => {
                   <CardTitle className="font-heading text-lg">Submission Guidelines</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs of markings.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Accuracy:</strong> Verify all dates, locations, and details before submission.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Reference works:</strong> Include references when available to help verification.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Review Time:</strong> Most submissions are reviewed within 1-3 business days.
-                  </p>
+                  {MARKING_SUBMISSION_GUIDELINES.map((g) => (
+                    <p key={g.label} className="leading-relaxed">
+                      <strong className="text-foreground">{g.label}:</strong> {g.body}
+                    </p>
+                  ))}
                 </CardContent>
               </Card>
 

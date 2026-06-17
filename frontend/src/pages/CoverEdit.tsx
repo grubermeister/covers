@@ -30,13 +30,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { COVER_SUBMISSION_GUIDELINES } from "@/labels/guidelines";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import {
   contributionImageMetasFromSubmittedData,
   markingImagesFromContributionMetas,
 } from "@/lib/contributionImages";
 
-import { type CoverDateGranularity } from "@/services/covers";
+import { deriveGranularityFromIso } from "@/lib/dateGranularity";
 import { listCitationsForSubject } from "@/services/citations";
 import {
   getImagesForSubject,
@@ -105,26 +106,6 @@ function formatAxiosError(err: unknown): string {
   return err.message || "Request failed.";
 }
 
-function deriveGranularityFromIso(iso: string): { granularity: CoverDateGranularity; normalizedDate: string } | null {
-  const trimmed = iso.trim();
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (!Number.isFinite(y) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-
-  const normalizedDate = `${m[1]}-${m[2]}-${m[3]}`;
-  if (month === 1 && day === 1) {
-    return { granularity: "YEAR", normalizedDate: `${y}-01-01` };
-  }
-  if (day === 1) {
-    return { granularity: "MONTH", normalizedDate: `${y}-${String(month).padStart(2, "0")}-01` };
-  }
-  return { granularity: "DAY", normalizedDate };
-}
-
 function normalizeCoverType(raw: string | null | undefined): string {
   return raw === "FC" || raw === "FL" ? raw : DEFAULT_COVER_TYPE;
 }
@@ -141,6 +122,7 @@ function buildEditState(cover: AssociatedCover | null | undefined) {
     type: normalizeCoverType(c?.type ?? null),
     isInstitutional: c?.isInstitutional === true,
     isBackstamp: cover?.isBackstamp === true,
+    displaySubmitterName: c?.displaySubmitterName === true,
     coverDate,
   };
 }
@@ -223,6 +205,7 @@ export default function CoverEdit() {
   const [type, setType] = useState(mode === "create" ? "" : DEFAULT_COVER_TYPE);
   const [isInstitutional, setIsInstitutional] = useState(false);
   const [isBackstamp, setIsBackstamp] = useState(false);
+  const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [coverDate, setCoverDate] = useState<CoverDateField>({ date: "" });
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrorsShape>({});
@@ -288,6 +271,7 @@ export default function CoverEdit() {
         if (rawDate) setCoverDate({ date: rawDate.slice(0, 10) });
         setIsInstitutional(String(sd.is_institutional ?? sd.isInstitutional) === "true");
         setIsBackstamp(String(sd.is_backstamp ?? sd.isBackstamp) === "true");
+        setDisplaySubmitterName(String(sd.display_submitter_name ?? sd.displaySubmitterName) === "true");
         const comment = String(sd.contributor_comment ?? sd.comment_for_editor ?? "").trim();
         if (comment) setContributorComment(comment);
 
@@ -342,6 +326,7 @@ export default function CoverEdit() {
     setType(initial.type);
     setIsInstitutional(initial.isInstitutional);
     setIsBackstamp(initial.isBackstamp);
+    setDisplaySubmitterName(initial.displaySubmitterName);
     setCoverDate(initial.coverDate);
   }, [mode, initial]);
 
@@ -713,6 +698,7 @@ export default function CoverEdit() {
       }
       form.append("is_institutional", String(isInstitutional));
       form.append("is_backstamp", String(isBackstamp));
+      form.append("display_submitter_name", String(displaySubmitterName));
       const trimmedComment = contributorComment.trim();
       if (trimmedComment) {
         form.append("contributor_comment", trimmedComment);
@@ -1117,6 +1103,14 @@ export default function CoverEdit() {
                         <Checkbox checked={isBackstamp} onCheckedChange={(v) => setIsBackstamp(v === true)} disabled={submitting} />
                         Backstamp
                       </label>
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={displaySubmitterName}
+                          onCheckedChange={(v) => setDisplaySubmitterName(v === true)}
+                          disabled={submitting}
+                        />
+                        Would you like your name to display as the submitter?
+                      </label>
                     </div>
 
                     <div className="space-y-3" id="cover-reference-works">
@@ -1290,18 +1284,11 @@ export default function CoverEdit() {
                   <CardTitle className="font-heading text-lg">Submission Guidelines</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Accuracy:</strong> Verify all dates and details before submission.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Reference works:</strong> Include references when available to help verification.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Review Time:</strong> Most submissions are reviewed within 1-3 business days.
-                  </p>
+                  {COVER_SUBMISSION_GUIDELINES.map((g) => (
+                    <p key={g.label} className="leading-relaxed">
+                      <strong className="text-foreground">{g.label}:</strong> {g.body}
+                    </p>
+                  ))}
                 </CardContent>
               </Card>
             </div>
