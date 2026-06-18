@@ -32,7 +32,7 @@ import {
   getContribution,
   listContributions,
   createContribution,
-  deleteDraftContribution,
+  deleteOwnContribution,
   getDirectCatalogCodeSuggestion,
 } from "@/services/contributions";
 import { ENTRY_LABELS } from "@/labels/entry";
@@ -2718,7 +2718,7 @@ const Contribute = () => {
                             if (!ok) return;
                             setDeletingDraft(true);
                             try {
-                              await deleteDraftContribution(editContributionId);
+                              await deleteOwnContribution(editContributionId);
                               toast({ title: "Draft deleted" });
                               navigate("/dashboard");
                             } catch (err: unknown) {

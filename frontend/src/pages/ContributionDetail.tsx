@@ -41,7 +41,7 @@ import {
   type Contribution,
   getContribution,
   decideContribution,
-  deleteDraftContribution,
+  deleteOwnContribution,
   getContributionCatalogCodeSuggestion,
 } from "@/services/contributions";
 
@@ -91,8 +91,9 @@ const ContributionDetail = () => {
   const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
   const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Draft delete (recycle) -- only a draft the contributor owns can be deleted;
-  // the backend enforces IsDraftOwner on DELETE /contributions/{id}/.
+  // Withdraw/delete -- the contributor may delete any of their own UNapproved
+  // submissions; the backend enforces IsOwnDeletableContribution on
+  // DELETE /contributions/{id}/ (status must not be "approved").
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   // Options to display names for lettering/framing/date format in Submitted data
@@ -277,7 +278,7 @@ const ContributionDetail = () => {
     if (!contribution) return;
     setDeleting(true);
     try {
-      await deleteDraftContribution(contribution.id);
+      await deleteOwnContribution(contribution.id);
       toast({ title: "Draft deleted" });
       setDeleteOpen(false);
       navigate("/dashboard");
@@ -456,14 +457,16 @@ const ContributionDetail = () => {
   const showEditorFeedbackCard =
     contribution.status !== "pending" || !!(contribution.reviewNotes && contribution.reviewNotes.trim());
   // Unified edit/remove buttons (mirror the entry detail page). Edit is offered
-  // for any still-editable status; Delete only for a draft the contributor owns
-  // (the only thing the backend permits removing).
+  // for any still-editable status; Delete (withdraw) is offered to the
+  // contributor for any of their own UNAPPROVED submissions -- the backend
+  // (IsOwnDeletableContribution) permits removing draft/pending/needs_revision/
+  // rejected, but never an approved contribution.
   const canContributorEdit =
     isContributor &&
     (contribution.status === "draft" ||
       contribution.status === "needs_revision" ||
       contribution.status === "rejected");
-  const canDeleteDraft = isContributor && contribution.status === "draft";
+  const canDeleteOwn = isContributor && contribution.status !== "approved";
   const markingId = contribution.markingId;
 
   return (
@@ -497,7 +500,7 @@ const ContributionDetail = () => {
                   Edit
                 </Button>
               )}
-              {canDeleteDraft && (
+              {canDeleteOwn && (
                 <Button
                   variant="destructive"
                   size="sm"
@@ -742,9 +745,13 @@ const ContributionDetail = () => {
       <AlertDialog open={deleteOpen} onOpenChange={(open) => !deleting && setDeleteOpen(open)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete draft</AlertDialogTitle>
+            <AlertDialogTitle>
+              {contribution.status === "draft" ? "Delete draft" : "Delete submission"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes this draft submission. This cannot be undone.
+              {contribution.status === "pending"
+                ? "This withdraws your submission and permanently deletes it before it is reviewed. This cannot be undone."
+                : "This permanently deletes this submission. This cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -757,7 +764,7 @@ const ContributionDetail = () => {
               disabled={deleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleting ? "Deleting..." : "Delete draft"}
+              {deleting ? "Deleting..." : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
