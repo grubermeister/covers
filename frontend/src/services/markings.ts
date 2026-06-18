@@ -244,6 +244,14 @@ export interface MarkingCitation {
   referenceWork: MarkingCitationReferenceWork | null;
 }
 
+/** One territory/state a town belonged to (multi-territory support, #24). */
+export interface MarkingRegion {
+  id: number;
+  name: string;
+  abbrev: string;
+  regionTier: string;
+}
+
 /** Canonical UI shape for a marking row (list or detail). */
 export interface MarkingRecord {
   id: number;
@@ -272,6 +280,9 @@ export interface MarkingRecord {
   colorName: string;
   postOfficeName: string;
   regionName: string;
+  // All territories/states this town belonged to over time (current-first).
+  // regionName/state remain the single primary region for back-compat.
+  regions: MarkingRegion[];
   earliestSeen: string | null;
   earliestSeenGranularity: string | null;
   latestSeen: string | null;
@@ -471,6 +482,32 @@ function mapCitationList(raw: unknown): MarkingCitation[] {
 }
 
 /**
+ * Display string for the "State/Territory" row: every territory a town belonged
+ * to, current-first, comma-separated (multi-territory support, #24). Falls back
+ * to the single primary region (`state`) when the regions list is absent (e.g.
+ * search-list payloads that don't include it). Exported for unit testing.
+ */
+export function regionsDisplay(
+  record: Pick<MarkingRecord, "regions" | "state">,
+): string {
+  const names = record.regions.map((r) => r.name.trim()).filter((n) => n !== "");
+  return names.length > 0 ? names.join(", ") : record.state;
+}
+
+function mapRegionList(raw: unknown): MarkingRegion[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((r): MarkingRegion | null => {
+      const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+      const id = toIdOrNull(o.id);
+      const name = toStr(o.name);
+      if (id == null || !name) return null;
+      return { id, name, abbrev: toStr(o.abbrev), regionTier: toStr(o.region_tier) };
+    })
+    .filter((x): x is MarkingRegion => x !== null);
+}
+
+/**
  * Convert a /markings/ list or detail payload into MarkingRecord.
  * Single-pass mapper: snake_case in, camelCase out, no fallbacks. The API
  * is now the canonical shape; if a field is missing, the empty default is
@@ -512,6 +549,7 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     colorName: toStr(o.color_name),
     postOfficeName: toStr(o.post_office_name),
     regionName: toStr(o.region_name),
+    regions: mapRegionList(o.regions),
     earliestSeen: typeof o.earliest_seen === "string" && o.earliest_seen ? o.earliest_seen : null,
     earliestSeenGranularity:
       typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity

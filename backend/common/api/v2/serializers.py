@@ -571,6 +571,21 @@ def _marking_state_abbrev(marking) -> str:
     return (region.abbrev or "") if region else ""
 
 
+def _marking_regions(marking):
+    """All Regions for a marking's PostOffice (current-first), as serializable
+    dicts. Empty list when there is no post office. Mirrors the single-region
+    helpers above but exposes the town's full multi-territory history."""
+    if not getattr(marking, "post_office_id", None):
+        return []
+    post_office = getattr(marking, "post_office", None)
+    if post_office is None:
+        return []
+    return [
+        {"id": r.id, "name": r.name, "abbrev": r.abbrev, "region_tier": r.region_tier}
+        for r in post_office.regions
+    ]
+
+
 def _viewer_may_see_contribution_notes(user, contribution) -> bool:
     # contribution: Contribution | None. Returns True for any editor/admin/superuser
     # or the contributor who made it. False for anon and unrelated users. This is
@@ -715,6 +730,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     state = serializers.SerializerMethodField()
     state_abbrev = serializers.SerializerMethodField()
     region_name = serializers.SerializerMethodField()
+    regions = serializers.SerializerMethodField()
     town = serializers.CharField(source="post_office.name", read_only=True, default="")
     shape_name = serializers.CharField(source="shape.name", read_only=True, default="")
     lettering_name = serializers.CharField(source="lettering.name", read_only=True, default="")
@@ -763,6 +779,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "regions",
             "earliest_seen",
             "earliest_seen_granularity",
             "latest_seen",
@@ -831,6 +848,9 @@ class MarkingSerializer(serializers.ModelSerializer):
 
     def get_region_name(self, obj):
         return _marking_state_name(obj)
+
+    def get_regions(self, obj):
+        return _marking_regions(obj)
 
     def get_images(self, obj):
         rows = Image.objects.filter(

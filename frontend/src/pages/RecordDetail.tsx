@@ -25,6 +25,7 @@ import {
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
   normalizeImageUrl,
+  regionsDisplay,
   removeMarking,
   reorderImages,
   restoreMarking,
@@ -618,7 +619,7 @@ const RecordDetail = () => {
     {
       type: record.type,
       isManuscript: record.isManuscript,
-      state: record.state,
+      state: regionsDisplay(record),
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
