@@ -5,6 +5,7 @@ import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Carousel,
@@ -25,9 +26,11 @@ import {
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
   normalizeImageUrl,
+  regionsDisplay,
   removeMarking,
   reorderImages,
   restoreMarking,
+  updateMarkingReviewed,
   type AssociatedCover,
   type AssociatedDateSeen,
   type MarkingChangelogEvent,
@@ -298,6 +301,7 @@ const RecordDetail = () => {
   const [removing, setRemoving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [savingReviewed, setSavingReviewed] = useState(false);
 
   const markingId = id ? parseInt(String(id).replace(/^api-/, ""), 10) : null;
 
@@ -549,6 +553,27 @@ const RecordDetail = () => {
     if (refreshed) setRecord(refreshed);
   };
 
+  // State-editor "reviewed/confirmed" toggle (Issue #22). Optimistically reflect
+  // the new value, persist, then re-pull so the displayed state matches the
+  // server (and reverts if the editor wasn't authorized for this region).
+  const handleReviewedToggle = async (next: boolean) => {
+    if (!record || savingReviewed) return;
+    setSavingReviewed(true);
+    const ok = await updateMarkingReviewed(record.id, next);
+    if (ok) {
+      setRecord({ ...record, isReviewed: next });
+      toast({ title: next ? "Marked as reviewed" : "Marked as not reviewed" });
+    } else {
+      toast({
+        title: "Could not update review status",
+        description: "You may not be the state editor for this record.",
+        variant: "destructive",
+      });
+      await refetchRecord();
+    }
+    setSavingReviewed(false);
+  };
+
   const handleRemoveConfirm = async () => {
     if (!record) return;
     setRemoving(true);
@@ -619,7 +644,7 @@ const RecordDetail = () => {
     {
       type: record.type,
       isManuscript: record.isManuscript,
-      state: record.state,
+      state: regionsDisplay(record),
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
@@ -934,6 +959,25 @@ const RecordDetail = () => {
                 </CardHeader>
                 <CardContent>
                   <MarkingFieldsDisplay rows={detailRows} mode="record" />
+                  {/* State-editor review toggle (Issue #22): only shown to
+                      editors/admins. The backend independently enforces that
+                      the editor is responsible for this record's region. */}
+                  {isStaff && !record.isRemoved && (
+                    <div className="mt-4 flex items-center gap-2 border-t pt-4">
+                      <Checkbox
+                        id="marking-reviewed"
+                        checked={record.isReviewed}
+                        disabled={savingReviewed}
+                        onCheckedChange={(value) => handleReviewedToggle(value === true)}
+                      />
+                      <label
+                        htmlFor="marking-reviewed"
+                        className="text-sm font-medium leading-none"
+                      >
+                        Reviewed / confirmed
+                      </label>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 

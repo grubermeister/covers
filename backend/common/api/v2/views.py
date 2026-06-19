@@ -94,7 +94,7 @@ from .permissions import (
     REVIEW_CONTRIBUTION_PERM,
     CanManageReferenceWorks,
     CanReviewContribution,
-    IsDraftOwner,
+    IsOwnDeletableContribution,
     IsEditorOrAdminWrite,
     _get_user_assigned_regions,
     _user_is_responsible_for_cover,
@@ -1678,8 +1678,9 @@ class ContributionViewSet(
     POST /contributions/ delegates to ContributionSubmitView so authenticated
     contributors can submit new entries here. Approve / reject actions live on
     detail routes.
-    DELETE /contributions/<pk>/ hard-deletes a DRAFT owned by the requester
-    (true DELETE); see IsDraftOwner. Non-draft contributions cannot be
+    DELETE /contributions/<pk>/ hard-deletes (withdraws) an UNAPPROVED
+    contribution owned by the requester -- draft, pending, needs_revision or
+    rejected -- see IsOwnDeletableContribution. Approved contributions cannot be
     hard-deleted -- removing a promoted marking goes through the recycle bin.
     """
     permission_classes = [IsAuthenticated, CanReviewContribution]
@@ -1695,16 +1696,20 @@ class ContributionViewSet(
         # GET (list/detail) and on the approve/reject detail actions.
         if self.action == "create":
             return [IsAuthenticated()]
-        # DELETE is the true-delete-for-drafts path: gated by IsDraftOwner,
-        # not the editor-review permission.
+        # DELETE is the contributor withdraw path: an owner may remove their own
+        # unapproved contribution (draft/pending/needs_revision/rejected). Gated
+        # by IsOwnDeletableContribution, not the editor-review permission.
         if self.action == "destroy":
-            return [IsAuthenticated(), IsDraftOwner()]
+            return [IsAuthenticated(), IsOwnDeletableContribution()]
         return super().get_permissions()
 
     def perform_destroy(self, instance):
-        # Reachable only for a draft owned by the requester (IsDraftOwner).
-        # A draft has no Marking yet, so this hard-delete has no downstream
-        # catalog impact. Record a tombstone transaction before deleting; the
+        # Reachable only for an UNAPPROVED contribution owned by the requester
+        # (IsOwnDeletableContribution): draft, pending, needs_revision or
+        # rejected. None of these has a published Marking of its own yet, so this
+        # hard-delete (withdrawal) has no downstream catalog impact. Record a
+        # tombstone transaction before deleting -- before_payload.status carries
+        # the real status so a withdrawn pending submission is auditable -- the
         # contribution FK is left null because the row is about to vanish
         # (SubmissionTransaction.contribution is SET_NULL anyway).
         log_submission_transaction(

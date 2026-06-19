@@ -112,6 +112,15 @@ jobs:
             # is needed here.
             git -C /srv/woco fetch origin
             git -C /srv/woco reset --hard origin/staging
+            # `reset --hard` updates tracked files but leaves UNTRACKED files in
+            # place. A stray migration generated directly on the box (e.g. from
+            # someone running `makemigrations` there) survives every deploy and
+            # collides with the committed graph ("multiple leaf nodes in the
+            # migration graph"), which aborts `migrate` before anything ships.
+            # Drop untracked files under the migrations dir so the box's
+            # migration set is exactly what staging tracks. -fd only (no -x) so
+            # gitignored files like __pycache__ and .env are left untouched.
+            git -C /srv/woco clean -fd backend/common/migrations
             # Re-install the systemd unit file only when it has changed.
             # The install path is pinned in sudoers so the exact source
             # and destination must match the sudoers entry verbatim.

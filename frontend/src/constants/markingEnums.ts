@@ -9,12 +9,15 @@
 export const DATE_FMT_VALUES = ["MD", "MDD", "YD", "YMD", "YMDD"] as const;
 export type DateFmt = (typeof DATE_FMT_VALUES)[number];
 
+// Meanings are the authoritative definitions from docs/glossary.md
+// ("Date Format Codes"): they describe which date components appear on the
+// marking, not a digit-width. Keep these in sync with the glossary.
 export const DATE_FMT_LABELS: Record<DateFmt, string> = {
-  MD: "Month / Day",
-  MDD: "Month / Day (two-digit)",
-  YD: "Year / Day-of-year",
-  YMD: "Year / Month / Day",
-  YMDD: "Year / Month / Day (two-digit)",
+  MD: "Month date only",
+  MDD: "Month and day date",
+  YD: "Year date only",
+  YMD: "Year, month, date",
+  YMDD: "Year, month and day date",
 };
 
 /** v2 Marking.date_type values */
