@@ -9,10 +9,17 @@ list so there is exactly one place to look.
 | `06-09-emails.md` (Ian Gibson-Smith, Greg Stone) | Raw beta feedback + change requests | Issues **1-27** |
 | Reese's working queue (`docs/issues.md`) | Pipeline milestones M1-M3 | Tagged **[R1]-[R8]** inline |
 | `docs/DECISIONS.md`, `docs/mi-edge-cases.md`, `docs/michigan-report-for-michael.md` | Michigan E2E status + open calls | Status + Issues **28-34** |
+| Ian email, **18 Jun 2026 12:54** (Reese's `docs/issues.md` queue) | MD/MI editor-review feature + catalog-fix asks | **Top-priority block below**, own **#22-#38** namespace |
 
 Issues are numbered **1-34**, no prefixes. The earlier `ISSUES.md` /
 `trello_cards_based_on_issues.md` pass and the Trello board are being retired in
 favor of this file.
+
+**Plus the MD/MI editor-review batch** from Ian's 18 Jun 2026 email is tracked at
+the **top** of this file under its **own #22-#38 numbering** (Reese's working
+`docs/issues.md` scheme). **Those #22-#38 are a separate namespace -- they are NOT
+the Issues 22-34 further down.** Self-contained here because `docs/issues.md` is
+Reese's workspace-local queue, not part of this repo.
 
 **Scope:** WorldCovers / APMC only. IanThom.org and ChinaOverprints (and the
 Bluehost/Porkbun account admin) are a separate, lower-precedence track and are
@@ -25,6 +32,91 @@ deliberately omitted here.
 ASCC = the first catalog being digitized into APMC. USPCS = U.S. Philatelic
 Classics Society (sponsor). VPHC = Virginia Postal History Society catalog.
 v1 = the legacy ColdFusion/MSSQL system behind worldcovers.org (`worldcovers-v1/`).
+
+---
+
+# TOP PRIORITY -- MD/MI editor-review batch (Ian email, 18 Jun 2026)
+
+**Source:** Ian's email of **18 Jun 2026, 12:54 PM** -- 17 feature + catalog-fix
+asks, tracked as **#22-#38** in Reese's `docs/issues.md`. Per Reese (18 Jun 2026)
+this batch **supersedes all other open work**, including the state-expansion
+pipeline queue and the M2/M3 items in "Issues 1-34" below.
+
+**WARNING -- numbering:** these **#22-#38** are this batch's **own namespace**.
+They are **not** the "Issue 22-34" entries further down (different content, older
+email source). Read them as "**batch #NN**".
+
+**Near-term goal (gated by batch #31):** land these fixes, **re-run Maryland and
+Michigan** with them applied, then **invite the state editors to review the dev
+site** (`woco.dev`).
+
+## Crosswalk -- Ian's email asks -> batch issue -> status
+
+| Ian's ask (18 Jun email) | Batch # | Status |
+|---|---|---|
+| State-editor approval workflow (reviewed/confirmed flag + filter) | #22 | **done** (draft PR #60) |
+| Rate-vs-Aux rule (number->Rate else Aux) + description + lettering field | #23 | **done** (draft PR #61) |
+| Multi-territory support (town in MI **+** MI Territory; scale to Vol 2/3) | #24 | **display half done** (draft PR #59); import half -> #36 |
+| Date parser: "Dates Seen" label; Amelia no-date; VA `(1)` -> apply to WV | #25 | open *(data side re-run-gated by #31)* |
+| Decade-level date ("1850s") -> leave date blank, put in note | #26 | open |
+| Date field on new markings, **state editors only** | #27 | open *(reconcile w/ existing ERD/LRD entry)* |
+| Territory/state tags -- display on detail **and searchable** | #28 | open *(extends #24)* |
+| Ensure "Institutional" designation appears properly | #29 | open *(same mechanism as #37)* |
+| Move "Clear Filter" button to top of UI | #30 | open *(quick UX win)* |
+| Notify Ian before each new state; invite editors after MD/MI re-run | #31 | open *(standing process gate)* |
+| **MD:** Anna/Polis backstamp not caught by Town Marks parser | #32 | open *(MD re-run)* |
+| **MD:** capture catalog "S"/"D" notation in notes (Annaps.md) | #33 | open *(MD re-run)* |
+| **MD:** Barry/md not manuscript; "congressional frank" -> notes | #34 | open *(MD re-run)* |
+| **MD:** Ann.MD and B M House not in catalog (remove/flag?) | #35 | open *(MD re-run)* |
+| **MI:** Adamsville is two listings -> merge to one (ERD 2/14/1834, LRD 12/11/1834) | #36 | open *(MI re-run)* |
+| **MI:** listings with `*` should be flagged Institutional but aren't | #37 | open *(MI re-run; relates #29)* |
+| **MI:** ADA.MI townmark shows as SL, should be circular | #38 | open *(MI re-run)* |
+
+*Email item "implement changes from last week's list" = the prior UI/feature batch,
+already shipped (see Issue 21-family work / `docs/DECISIONS.md`).*
+
+## Open items -- detail (self-contained; full bodies in Reese's `docs/issues.md`)
+
+**General feature asks (un-gated unless noted):**
+- **#25 -- Date parser.** When multiple dates exist, label the description field
+  **"Dates Seen"** + the dates. Handle Amelia-style **no-date** rows (parser
+  currently mistakes circle size for a rate). VA condition `(1)` rule -> apply to
+  **WV** too. *Touches the munger/parser, so the data side is **re-run-gated by
+  #31**; a frontend-only "Dates Seen" label half may be do-able first.*
+- **#26 -- Decade dates.** Decade-level ("1850s") -> leave the date field **blank**,
+  move the value to the **note**.
+- **#27 -- Editor-only date field** on new markings. Likely a **role-gate** on the
+  existing ERD/LRD entry rather than net-new; reconcile before building.
+- **#28 -- Territory/state tags** on the detail screen + **searchable**. Extends
+  #24's multi-territory display (badges + filter).
+- **#29 -- "Institutional" designation** displays/applies correctly. Likely the
+  same underlying mechanism as MI #37.
+- **#30 -- Move "Clear Filter" to top** of the UI. Low-risk UX, fully un-gated --
+  good momentum item while re-run items wait on #31.
+
+**Process gate:**
+- **#31 -- Per-state notification + editor review.** Notify **Ian before running
+  any new state** so he documents that state's quirks/notation first. Once **MD and
+  MI are re-run** with this batch applied, invite the **state editors** to review
+  `woco.dev`. *Gates the MD/MI catalog fixes (#32-#38) and the data side of #25;
+  also re-prioritizes the state-expansion queue (no IA/CT/AL/TN/DC until documented).*
+
+**Maryland catalog fixes (do during the MD re-run -- need Michael/Ian per-state notes):**
+- **#32** Anna/Polis backstamp missed by the Town Marks parser.
+- **#33** Capture catalog "S" / "D" notation into notes (Annaps.md).
+- **#34** Barry/md not flagged manuscript; "congressional frank" should appear in notes.
+- **#35** Ann.MD and B M House not found in catalog -- investigate, remove or flag.
+
+**Michigan catalog fixes (do during the MI re-run):**
+- **#36** Adamsville -- two separate listings -> **one** (ERD **2/14/1834**, LRD
+  **12/11/1834**). This is the import-fragmentation half of #24.
+- **#37** Listings with `*` should be flagged **Institutional** but aren't (see #29).
+- **#38** ADA.MI townmark shows as **SL**, should be **circular**.
+
+**Done in this batch (verified locally; draft PRs open against `staging`):**
+- **#22** state-editor `is_reviewed` flag + filter (PR #60), **#23** Rate-vs-Aux
+  copy + lettering help (PR #61), **#24** multi-territory display (PR #59). None
+  merged -- merges to `staging` deploy prod and are Michael's call.
 
 ---
 
