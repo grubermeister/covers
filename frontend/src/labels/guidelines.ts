@@ -43,11 +43,12 @@ export const SHARED_GUIDELINES: Guideline[] = [
 export const MARKING_TYPE_GUIDELINE: Guideline = {
   label: "Rate vs. Auxiliary markings",
   body:
-    'A Rate Mark indicates the postage rate or payment status — for example ' +
-    '"Paid", "Free", "3", or "Due 3". An Auxiliary marking is any other ' +
-    'handstamp that is neither a town/postmark nor a rate — for example ' +
-    '"Advertised" or "Missent". If unsure, pick the closest type and add a ' +
-    'note for the editor.',
+    'A Rate Mark shows the postage rate paid or due (often a numeral, e.g. "3", ' +
+    '"5", or "PAID 3"). An Auxiliary marking is any other handstamp that is ' +
+    'neither a town/postmark nor a rate — e.g. "FORWARDED", "MISSENT", or ' +
+    '"DUE". As a rule of thumb, a marking bearing a number is a Rate Mark, ' +
+    'while one with only words is usually Auxiliary. If unsure, pick the ' +
+    'closest type and add a note for the editor.',
 };
 
 /** Cover-only: request date verification when the date is not on the exterior. */
@@ -78,4 +79,7 @@ export const INSCRIPTION_TEXT_HELP =
   "Enter the exact text as it appears on the marking, including abbreviations and punctuation.";
 
 export const DATE_FORMAT_HELP =
-  "How the date appears on the marking. Each option shows its code and meaning — e.g. MD = Month date only.";
+  "How the date appears on the marking. Each option shows its code and meaning — e.g. MD = Month / Day.";
+
+export const LETTERING_HELP =
+  "The shape and style of the letters in the marking (for example, serif vs. sans-serif). Leave blank for manuscript (handwritten) markings.";
