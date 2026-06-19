@@ -742,6 +742,12 @@ class MarkingSerializer(serializers.ModelSerializer):
     earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
     latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    # Full list of MARKING-scoped DateSeen rows (one per observed date the catalog
+    # records), not just the earliest/latest boundary. Exposed only on the detail
+    # serializer so the UI can show a "Dates Seen" listing when a marking has
+    # multiple dates (issue #25); kept off MarkingListSerializer to avoid an
+    # N+1 query on search. Mirrors CoverSerializer.get_dates_seen.
+    dates_seen = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     citations = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
@@ -786,6 +792,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "earliest_seen_granularity",
             "latest_seen",
             "latest_seen_granularity",
+            "dates_seen",
             "images",
             "citations",
             "created_date",
@@ -851,8 +858,12 @@ class MarkingSerializer(serializers.ModelSerializer):
     def get_region_name(self, obj):
         return _marking_state_name(obj)
 
-    def get_regions(self, obj):
-        return _marking_regions(obj)
+    def get_dates_seen(self, obj):
+        qs = DateSeen.objects.filter(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=obj.pk,
+        ).order_by("date")
+        return DateSeenSerializer(qs, many=True).data
 
     def get_images(self, obj):
         rows = Image.objects.filter(

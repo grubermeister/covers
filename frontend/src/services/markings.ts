@@ -305,6 +305,10 @@ export interface MarkingRecord {
   earliestSeenGranularity: string | null;
   latestSeen: string | null;
   latestSeenGranularity: string | null;
+  // All MARKING-scoped DateSeen rows the catalog records for this marking (one
+  // per observed date), ordered by date. Detail view only; used to render a
+  // "Dates Seen" listing when there are multiple dates (issue #25).
+  datesSeen: AssociatedDateSeen[];
   mainImage: MarkingImage | null;
   secondImage: MarkingImage | null;
   images: MarkingImage[];
@@ -580,6 +584,9 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
       typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
         ? o.latest_seen_granularity
         : null,
+    datesSeen: (Array.isArray(o.dates_seen) ? o.dates_seen : [])
+      .map(mapAssociatedDateSeen)
+      .filter((x): x is AssociatedDateSeen => x !== null),
     mainImage,
     secondImage,
     images,
