@@ -30,8 +30,12 @@ describe("submission guidelines copy", () => {
     const marking = bodyFor(MARKING_SUBMISSION_GUIDELINES, "Rate vs. Auxiliary markings");
     expect(marking).toMatch(/rate mark/i);
     expect(marking).toMatch(/auxiliary/i);
-    // Issue #23: the copy must state the number-present heuristic explicitly.
-    expect(marking).toMatch(/number/i);
+    // Ian's canonical examples (2026-06): Rate = Paid/Free/3/Due 3,
+    // Auxiliary = Advertised/Missent.
+    expect(marking).toMatch(/"Paid".*"Free"/);
+    expect(marking).toMatch(/"Due 3"/);
+    expect(marking).toMatch(/"Advertised"/);
+    expect(marking).toMatch(/"Missent"/);
     // Cover form must NOT carry the marking-type explanation.
     expect(
       COVER_SUBMISSION_GUIDELINES.some((g) => g.label === "Rate vs. Auxiliary markings"),
