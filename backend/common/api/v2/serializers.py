@@ -636,6 +636,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
     main_image = serializers.SerializerMethodField()
     second_image = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
+    is_reviewed = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Marking
@@ -666,6 +667,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "is_reviewed",
             "earliest_seen",
             "earliest_seen_granularity",
             "latest_seen",
@@ -779,7 +781,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
-            "regions",
+            "is_reviewed",
             "earliest_seen",
             "earliest_seen_granularity",
             "latest_seen",

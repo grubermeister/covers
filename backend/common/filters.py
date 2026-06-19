@@ -62,6 +62,7 @@ class MarkingListFilter(django_filters.FilterSet):
         label='Marking type',
     )
     is_manuscript = django_filters.CharFilter(method='filter_is_manuscript', label='Is manuscript')
+    reviewed = django_filters.CharFilter(method='filter_reviewed', label='Reviewed/confirmed by a state editor')
     color = django_filters.CharFilter(method='filter_by_color', label='Color (name)')
     state = django_filters.CharFilter(method='filter_by_state_name', label='State (name or abbreviation)')
     town = django_filters.CharFilter(
@@ -130,6 +131,17 @@ class MarkingListFilter(django_filters.FilterSet):
             return queryset.filter(is_manuscript=True)
         if raw == 'false':
             return queryset.exclude(is_manuscript=True)
+        return queryset
+
+    @staticmethod
+    def filter_reviewed(queryset, name, value):
+        if not value or not str(value).strip():
+            return queryset
+        raw = str(value).strip().lower()
+        if raw == 'true':
+            return queryset.filter(is_reviewed=True)
+        if raw == 'false':
+            return queryset.exclude(is_reviewed=True)
         return queryset
 
     @staticmethod
