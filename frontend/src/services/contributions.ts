@@ -313,9 +313,10 @@ export async function getDirectCatalogCodeSuggestion(payload: {
   return mapCatalogCodeSuggestion(res.data);
 }
 
-// DELETE /contributions/{id}/  -- hard-deletes a draft; backend enforces IsDraftOwner
-// (status must be "draft" and requester must be owner or superuser). No response body.
-export async function deleteDraftContribution(contributionId: number): Promise<void> {
+// DELETE /contributions/{id}/  -- hard-deletes (withdraws) an unapproved
+// contribution; backend enforces IsOwnDeletableContribution (status must NOT be
+// "approved" and requester must be the owner or a superuser). No response body.
+export async function deleteOwnContribution(contributionId: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/contributions/${contributionId}/`);
 }
