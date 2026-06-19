@@ -41,6 +41,7 @@ import {
   MARKING_SUBMISSION_GUIDELINES,
   INSCRIPTION_TEXT_HELP,
   DATE_FORMAT_HELP,
+  LETTERING_HELP,
 } from "@/labels/guidelines";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
@@ -2636,6 +2637,7 @@ const Contribute = () => {
                             })()}
                           </SelectContent>
                         </Select>
+                        <p className="text-sm text-muted-foreground">{LETTERING_HELP}</p>
                         {fieldErrors.lettering && <p className="text-sm text-destructive">{fieldErrors.lettering}</p>}
                       </div>
 
