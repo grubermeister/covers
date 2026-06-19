@@ -9,6 +9,7 @@ import {
   COVER_SUBMISSION_GUIDELINES,
   INSCRIPTION_TEXT_HELP,
   DATE_FORMAT_HELP,
+  LETTERING_HELP,
 } from "./guidelines";
 
 const bodyFor = (list: { label: string; body: string }[], label: string) =>
@@ -29,6 +30,12 @@ describe("submission guidelines copy", () => {
     const marking = bodyFor(MARKING_SUBMISSION_GUIDELINES, "Rate vs. Auxiliary markings");
     expect(marking).toMatch(/rate mark/i);
     expect(marking).toMatch(/auxiliary/i);
+    // Ian's canonical examples (2026-06): Rate = Paid/Free/3/Due 3,
+    // Auxiliary = Advertised/Missent.
+    expect(marking).toMatch(/"Paid".*"Free"/);
+    expect(marking).toMatch(/"Due 3"/);
+    expect(marking).toMatch(/"Advertised"/);
+    expect(marking).toMatch(/"Missent"/);
     // Cover form must NOT carry the marking-type explanation.
     expect(
       COVER_SUBMISSION_GUIDELINES.some((g) => g.label === "Rate vs. Auxiliary markings"),
@@ -59,5 +66,10 @@ describe("field help copy", () => {
 
   it("explains the date-format codes by example", () => {
     expect(DATE_FORMAT_HELP).toMatch(/MD/);
+  });
+
+  it("explains the lettering field and its manuscript exception", () => {
+    expect(LETTERING_HELP).toMatch(/letter/i);
+    expect(LETTERING_HELP).toMatch(/manuscript/i);
   });
 });

@@ -810,6 +810,26 @@ class PostOffice(TimestampedModel):
         )
         return link.region if link is not None else None
 
+    @property
+    def regions(self):
+        # All Regions this PostOffice is linked to via the post_office_regions
+        # junction, ordered the same way as .region: current/active first
+        # (defunct_date NULL via NULLS-FIRST), then most-recently established.
+        # Unlike .region (which collapses to one), this exposes a town's full
+        # multi-territory history -- e.g. Michigan Territory + Michigan -- so a
+        # town spanning several jurisdictions over time shows all of them.
+        return [
+            link.region
+            for link in (
+                self.post_office_regions
+                .select_related('region')
+                .order_by(
+                    F('region__defunct_date').desc(nulls_first=True),
+                    F('region__established_date').desc(nulls_last=True),
+                )
+            )
+        ]
+
 class PostOfficeRegion(TimestampedModel):
     """
     Association linking a PostOffice to a Region under whose jurisdiction
