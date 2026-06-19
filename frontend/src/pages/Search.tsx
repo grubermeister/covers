@@ -44,7 +44,7 @@ type SortDir = "asc" | "desc";
 type SortEntry = { field: SortField; dir: SortDir };
 
 const SORT_FIELD_COLUMN: Record<SortField, string> = {
-  state: "post_office__region__name",
+  state: "post_office__post_office_regions__region__name",
   town: "post_office__name",
   type: "type",
   shape: "shape__name",
@@ -98,7 +98,7 @@ function orderingParamForSort(entries: SortEntry[]): string {
     cols.push((e.dir === "desc" ? "-" : "") + col);
     used.add(col);
   }
-  for (const tb of ["post_office__region__name", "post_office__name"]) {
+  for (const tb of ["post_office__post_office_regions__region__name", "post_office__name"]) {
     if (!used.has(tb)) {
       cols.push(tb);
       used.add(tb);

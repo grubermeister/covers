@@ -787,6 +787,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "regions",
             "is_reviewed",
             "earliest_seen",
             "earliest_seen_granularity",
@@ -857,6 +858,9 @@ class MarkingSerializer(serializers.ModelSerializer):
 
     def get_region_name(self, obj):
         return _marking_state_name(obj)
+
+    def get_regions(self, obj):
+        return _marking_regions(obj)
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(
