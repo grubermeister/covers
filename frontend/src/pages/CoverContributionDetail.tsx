@@ -1,6 +1,16 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { CheckCircle, Loader2, MessageSquare, Pencil, XCircle } from "lucide-react";
+import { CheckCircle, Loader2, MessageSquare, Pencil, Trash2, XCircle } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { AssociatedMarkingPreviewCard } from "@/components/entry-detail/AssociatedMarkingPreviewCard";
 import { EntryAssociatedThumbnailsCard } from "@/components/entry-detail/EntryAssociatedThumbnailsCard";
 import { EntryCitationsCard, type EntryCitationItem } from "@/components/entry-detail/EntryCitationsCard";
@@ -30,6 +40,7 @@ import {
 import {
   type Contribution,
   decideContribution,
+  deleteOwnContribution,
   getContribution,
   getContributionCatalogCodeSuggestion,
 } from "@/services/contributions";
@@ -183,6 +194,10 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
   const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  // Withdraw/delete: the contributor may delete any of their own UNapproved
+  // cover submissions (backend IsOwnDeletableContribution on DELETE).
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [parentMarking, setParentMarking] = useState<MarkingRecord | null>(null);
   const [parentMarkingError, setParentMarkingError] = useState<string | null>(null);
   const [referenceWorks, setReferenceWorks] = useState<ReferenceWorkRecord[]>([]);
@@ -494,6 +509,30 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   const canReview = isStateEditor && isPending && !!user;
   const canContributorResubmit =
     isContributor && (normalizedStatus === "rejected" || normalizedStatus === "needs_revision");
+  const canDeleteOwn = isContributor && normalizedStatus !== "approved";
+
+  const handleDeleteConfirm = async () => {
+    if (!contribution) return;
+    setDeleting(true);
+    try {
+      await deleteOwnContribution(contribution.id);
+      toast({
+        title: "Submission deleted",
+        description: "Your cover submission has been removed.",
+      });
+      navigate("/dashboard", {
+        state: { tab: dashboardTab ?? (isStateEditor ? "editor" : "submissions") },
+      });
+    } catch (err) {
+      toast({
+        title: "Could not delete submission",
+        description: err instanceof Error ? err.message : "Please try again.",
+        variant: "destructive",
+      });
+      setDeleting(false);
+      setDeleteOpen(false);
+    }
+  };
   const contributorComment = String(
     sd.contributor_comment ??
       sd.contributorComment ??
@@ -515,6 +554,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   };
 
   return (
+    <>
     <EntryDetailLayout
       onBack={handleBack}
       leftColumn={(
@@ -640,21 +680,34 @@ export default function CoverContributionDetail({ initialContribution = null }: 
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="font-heading text-lg">Cover Details</CardTitle>
-                {canContributorResubmit && parentMarkingId != null && (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() =>
-                      navigate(`/record/${parentMarkingId}/cover/new?edit=${contribution.id}`, {
-                        state: { from: location.pathname + location.search },
-                      })
-                    }
-                    disabled={submitting}
-                  >
-                    <Pencil className="mr-2 h-4 w-4" />
-                    Edit before resubmitting
-                  </Button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {canContributorResubmit && parentMarkingId != null && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() =>
+                        navigate(`/record/${parentMarkingId}/cover/new?edit=${contribution.id}`, {
+                          state: { from: location.pathname + location.search },
+                        })
+                      }
+                      disabled={submitting || deleting}
+                    >
+                      <Pencil className="mr-2 h-4 w-4" />
+                      Edit before resubmitting
+                    </Button>
+                  )}
+                  {canDeleteOwn && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => setDeleteOpen(true)}
+                      disabled={submitting || deleting}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Delete
+                    </Button>
+                  )}
+                </div>
               </div>
               <p className="text-sm text-muted-foreground">{displayName}</p>
             </CardHeader>
@@ -719,5 +772,33 @@ export default function CoverContributionDetail({ initialContribution = null }: 
         </>
       )}
     />
+    <AlertDialog open={deleteOpen} onOpenChange={(open) => !deleting && setDeleteOpen(open)}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {normalizedStatus === "draft" ? "Delete draft" : "Delete submission"}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {normalizedStatus === "pending"
+              ? "This withdraws your cover submission and permanently deletes it before it is reviewed. This cannot be undone."
+              : "This permanently deletes this cover submission. This cannot be undone."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={(e) => {
+              e.preventDefault();
+              handleDeleteConfirm();
+            }}
+            disabled={deleting}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            {deleting ? "Deleting..." : "Delete"}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+    </>
   );
 }

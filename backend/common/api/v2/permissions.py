@@ -197,6 +197,35 @@ class IsDraftOwner(BasePermission):
         return getattr(obj, "contributor_id", None) == user.id
 
 
+class IsOwnDeletableContribution(BasePermission):
+    """
+    Object-level: a user may hard-DELETE (withdraw) a Contribution they own as
+    long as it has NOT been approved. Draft, pending, needs_revision and
+    rejected contributions have no published Marking of their own yet -- the
+    catalog row is only created/updated on approval -- so deleting them has no
+    downstream catalog impact, the same rationale that made draft delete safe.
+    An approved contribution can never be hard-deleted through this path (not
+    even by a superuser); removing the resulting published marking goes through
+    the marking REMOVE / recycle-bin flow instead. The owner (contributor) may
+    delete their own; superusers may delete any non-approved contribution.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        # Approved contributions are off-limits to this true-delete path.
+        if getattr(obj, "status", None) == Contribution.STATUS_APPROVED:
+            return False
+        if user.is_superuser:
+            return True
+        return getattr(obj, "contributor_id", None) == user.id
+
+
 class CanManageReferenceWorks(BasePermission):
     """
     Reads: anyone authenticated.

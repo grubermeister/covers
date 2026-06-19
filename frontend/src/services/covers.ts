@@ -299,6 +299,10 @@ export interface CoverDetail {
   type: string | null;
   hasAdhesive: boolean;
   isInstitutional: boolean | null;
+  /** Submitter opted in to show their name on the public detail page. */
+  displaySubmitterName: boolean;
+  /** Submitter display name; null unless they opted in (server-gated). */
+  submitterName: string | null;
   width: string | null;
   height: string | null;
   datesSeen: CoverDateSeenItem[];
@@ -331,6 +335,11 @@ function mapCoverDetail(data: unknown): CoverDetail | null {
     hasAdhesive,
     isInstitutional:
       o.is_institutional == null ? null : Boolean(o.is_institutional),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    submitterName:
+      typeof o.submitter_name === "string" && o.submitter_name
+        ? o.submitter_name
+        : null,
     width: decimalToString(o.width),
     height: decimalToString(o.height),
     datesSeen,

@@ -203,6 +203,7 @@ class Marking(TimestampedModel):
     impression = models.CharField(max_length=10, choices=MARKING_IMPRESSION_CHOICES, null=True, blank=True)
     rate_val = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Non-negative rate amount; most common on RATEMARK and integrated-rate TOWNMARK rows')
     post_office = models.ForeignKey('PostOffice', on_delete=models.PROTECT, related_name='markings')
+    is_reviewed = models.BooleanField(default=False, help_text='A state editor has personally vetted this record (Issue #22).')
 
     # objects: default manager, EXCLUDES recycle-binned markings.
     # all_objects: unfiltered, INCLUDES recycle-binned markings.
@@ -809,6 +810,26 @@ class PostOffice(TimestampedModel):
         )
         return link.region if link is not None else None
 
+    @property
+    def regions(self):
+        # All Regions this PostOffice is linked to via the post_office_regions
+        # junction, ordered the same way as .region: current/active first
+        # (defunct_date NULL via NULLS-FIRST), then most-recently established.
+        # Unlike .region (which collapses to one), this exposes a town's full
+        # multi-territory history -- e.g. Michigan Territory + Michigan -- so a
+        # town spanning several jurisdictions over time shows all of them.
+        return [
+            link.region
+            for link in (
+                self.post_office_regions
+                .select_related('region')
+                .order_by(
+                    F('region__defunct_date').desc(nulls_first=True),
+                    F('region__established_date').desc(nulls_last=True),
+                )
+            )
+        ]
+
 class PostOfficeRegion(TimestampedModel):
     """
     Association linking a PostOffice to a Region under whose jurisdiction
@@ -902,6 +923,7 @@ class Cover(TimestampedModel):
     height = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
     is_institutional = models.BooleanField(null=True, blank=True, help_text='Institutionally owned (museum, society, etc.)')
     width = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public cover detail page")
 
     # objects: default manager, EXCLUDES recycle-binned covers.
     # all_objects: unfiltered, INCLUDES recycle-binned covers.

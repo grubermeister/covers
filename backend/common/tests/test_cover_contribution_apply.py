@@ -13,6 +13,8 @@ approve workflow as a marking: a draft cover lives only as a Contribution, and
 on editor approval a Cover + CoverMarking (and child rows) are materialized --
 mirroring how a marking Contribution materializes a Marking.
 """
+from datetime import date
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from rest_framework.test import APITestCase
@@ -205,6 +207,21 @@ class CoverContributionApplyFunctionTests(TestCase):
             Citation.objects.filter(subject_type="COVER", subject_id=cover.pk).count(),
             1,
         )
+
+    def test_display_submitter_name_opt_in_flows_to_cover(self):
+        # The submitter's opt-in choice rides submitted_data and must land on
+        # the materialized Cover so the public detail page can honor it.
+        sd = _cover_submitted_data(self.parent, display_submitter_name="true")
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+        self.assertTrue(cover.display_submitter_name)
+
+    def test_display_submitter_name_defaults_false_when_absent(self):
+        # Privacy by default: no opt-in key -> name stays hidden.
+        sd = _cover_submitted_data(self.parent)
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+        self.assertFalse(cover.display_submitter_name)
 
     def test_cover_code_increments_for_same_reference_region_prefix(self):
         first = _make_cover_contribution(
@@ -546,3 +563,188 @@ class CoverContributionApproveEndpointTests(APITestCase):
 
         self.assertEqual(resp.status_code, 200, resp.data)
         self.assertEqual(resp.data["catalog_code"], "ASCC1-VA-C0001")
+
+
+class CoverSubmitterNameSerializerTests(TestCase):
+    """CoverSerializer exposes the submitter name ONLY when opted in.
+
+    This is the privacy boundary: opting out (the default) must never leak the
+    name through the API, regardless of what the UI does.
+    """
+
+    def _cover(self, user, display):
+        return Cover.objects.create(
+            type="FC",
+            display_submitter_name=display,
+            created_by=user,
+            modified_by=user,
+        )
+
+    def test_name_returned_when_opted_in(self):
+        from common.api.v2.serializers import CoverSerializer
+
+        user = User.objects.create_user(
+            username="jsmith", password="pw", first_name="Jane", last_name="Smith"
+        )
+        data = CoverSerializer(self._cover(user, True)).data
+        self.assertTrue(data["display_submitter_name"])
+        self.assertEqual(data["submitter_name"], "Jane Smith")
+
+    def test_name_hidden_when_opted_out(self):
+        from common.api.v2.serializers import CoverSerializer
+
+        user = User.objects.create_user(
+            username="hidden", password="pw", first_name="Jane", last_name="Smith"
+        )
+        data = CoverSerializer(self._cover(user, False)).data
+        self.assertFalse(data["display_submitter_name"])
+        self.assertIsNone(data["submitter_name"])
+
+    def test_falls_back_to_username_without_full_name(self):
+        from common.api.v2.serializers import CoverSerializer
+
+        user = User.objects.create_user(username="nameless", password="pw")
+        data = CoverSerializer(self._cover(user, True)).data
+        self.assertEqual(data["submitter_name"], "nameless")
+
+
+class MarkingErdLrdApplyTests(TestCase):
+    """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking.
+
+    The boundaries land as MARKING-subject DateSeen rows; the apply path must be
+    additive so editing a catalog marking never destroys its imported dates.
+    """
+
+    def setUp(self):
+        self.user = _make_user("erd-contributor")
+        self.collection = _make_collection(self.user)  # Region "Virginia"/"VA"
+        self.color = Color.objects.create(
+            name="Black", created_by=self.user, modified_by=self.user
+        )
+
+    def _marking_sd(self, **overrides):
+        sd = {
+            "submission_kind": "marking",
+            "type": "TOWNMARK",
+            "state": "VA",
+            "town": "Norfolk",
+            "inscription_txt": "NORFOLK VA",
+            "is_manuscript": "true",
+            "color_id": self.color.pk,
+            "marking_image_metas": [{"storage_filename": "va/x.jpg"}],
+        }
+        sd.update(overrides)
+        return sd
+
+    def _direct_dates(self, marking_id):
+        return sorted(
+            DateSeen.objects.filter(
+                subject_type=DateSeen.SUBJECT_MARKING, subject_id=marking_id
+            ).values_list("date", "granularity")
+        )
+
+    def test_new_marking_records_erd_and_lrd(self):
+        sd = self._marking_sd(
+            marking_erd="1845-01-01",
+            marking_erd_granularity="YEAR",
+            marking_lrd="1851-01-01",
+            marking_lrd_granularity="YEAR",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertEqual(
+            self._direct_dates(marking.pk),
+            [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR")],
+        )
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        self.assertEqual(annotated.earliest_seen, date(1845, 1, 1))
+        self.assertEqual(annotated.latest_seen, date(1851, 1, 1))
+
+    def test_invalid_erd_raises(self):
+        sd = self._marking_sd(marking_erd="not-a-date")
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        with self.assertRaises(ContributionApplyError):
+            apply_contribution_to_catalog(contrib)
+
+    def test_edit_without_dates_preserves_imported_history(self):
+        # A bulk-imported marking carries several MARKING DateSeen rows. Editing
+        # an unrelated field with no date fields must leave all of them intact.
+        marking = apply_contribution_to_catalog(
+            _make_cover_contribution(self.user, self._marking_sd(), self.collection)
+        )
+        for yr in (1845, 1848, 1851):
+            DateSeen.objects.create(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking.pk,
+                date=date(yr, 1, 1),
+                granularity="YEAR",
+                created_by=self.user,
+                modified_by=self.user,
+            )
+        before = self._direct_dates(marking.pk)
+
+        edit_sd = self._marking_sd(
+            edit_marking_id=marking.pk, inscription_txt="NORFOLK VA (corrected)"
+        )
+        apply_contribution_to_catalog(
+            _make_cover_contribution(self.user, edit_sd, self.collection)
+        )
+
+        self.assertEqual(self._direct_dates(marking.pk), before)
+
+    def test_edit_extends_range_additively(self):
+        marking = apply_contribution_to_catalog(
+            _make_cover_contribution(
+                self.user,
+                self._marking_sd(
+                    marking_erd="1845-01-01",
+                    marking_erd_granularity="YEAR",
+                    marking_lrd="1851-01-01",
+                    marking_lrd_granularity="YEAR",
+                ),
+                self.collection,
+            )
+        )
+        edit_sd = self._marking_sd(
+            edit_marking_id=marking.pk,
+            marking_lrd="1860-01-01",
+            marking_lrd_granularity="YEAR",
+        )
+        apply_contribution_to_catalog(
+            _make_cover_contribution(self.user, edit_sd, self.collection)
+        )
+
+        # The 1860 boundary is added; 1845 and 1851 remain (non-destructive).
+        self.assertEqual(
+            self._direct_dates(marking.pk),
+            [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR"), (date(1860, 1, 1), "YEAR")],
+        )
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        self.assertEqual(annotated.latest_seen, date(1860, 1, 1))
+
+    def test_manual_erd_merges_with_earlier_cover_date(self):
+        # Michael's model: a catalog ERD is later corrected by real covers. A
+        # cover dated before the manual ERD must pull the displayed earliest down.
+        marking = apply_contribution_to_catalog(
+            _make_cover_contribution(
+                self.user, self._marking_sd(marking_erd="1850-01-01"), self.collection
+            )
+        )
+        cover = Cover.objects.create(
+            code="C-erd", created_by=self.user, modified_by=self.user
+        )
+        CoverMarking.objects.create(
+            cover=cover, marking=marking, created_by=self.user, modified_by=self.user
+        )
+        DateSeen.objects.create(
+            subject_type=DateSeen.SUBJECT_COVER,
+            subject_id=cover.pk,
+            date=date(1845, 6, 14),
+            granularity="DAY",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        self.assertEqual(annotated.earliest_seen, date(1845, 6, 14))

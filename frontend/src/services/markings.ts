@@ -214,6 +214,24 @@ export async function updateImage(
 }
 
 /**
+ * Toggle the state-editor "reviewed/confirmed" flag on a marking (Issue #22).
+ * Persisted via the same editor-gated PATCH path as other catalog edits; the
+ * backend rejects the write unless the caller is the state editor responsible
+ * for the marking's region (or an admin). Returns false on any error.
+ */
+export async function updateMarkingReviewed(
+  markingId: number,
+  reviewed: boolean,
+): Promise<boolean> {
+  try {
+    await apiClient.patch(`/markings/${markingId}/`, { is_reviewed: reviewed });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Subset of ReferenceWork fields embedded in a Citation row, sufficient
  * to render a citation entry without a second /reference-works/ call.
  * Mirrors the read-only `reference_work_details` field on the v2
@@ -244,6 +262,14 @@ export interface MarkingCitation {
   referenceWork: MarkingCitationReferenceWork | null;
 }
 
+/** One territory/state a town belonged to (multi-territory support, #24). */
+export interface MarkingRegion {
+  id: number;
+  name: string;
+  abbrev: string;
+  regionTier: string;
+}
+
 /** Canonical UI shape for a marking row (list or detail). */
 export interface MarkingRecord {
   id: number;
@@ -272,16 +298,25 @@ export interface MarkingRecord {
   colorName: string;
   postOfficeName: string;
   regionName: string;
+  // All territories/states this town belonged to over time (current-first).
+  // regionName/state remain the single primary region for back-compat.
+  regions: MarkingRegion[];
   earliestSeen: string | null;
   earliestSeenGranularity: string | null;
   latestSeen: string | null;
   latestSeenGranularity: string | null;
+  // All MARKING-scoped DateSeen rows the catalog records for this marking (one
+  // per observed date), ordered by date. Detail view only; used to render a
+  // "Dates Seen" listing when there are multiple dates (issue #25).
+  datesSeen: AssociatedDateSeen[];
   mainImage: MarkingImage | null;
   secondImage: MarkingImage | null;
   images: MarkingImage[];
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
+  // Whether a state editor has personally vetted this record (Issue #22).
+  isReviewed: boolean;
   // Contributor's "comment for editor" and the editor's review feedback, sourced
   // from the marking's approved Contribution. The backend returns "" to anyone
   // who is not that contributor or an editor, so a non-empty value is safe to show.
@@ -471,6 +506,32 @@ function mapCitationList(raw: unknown): MarkingCitation[] {
 }
 
 /**
+ * Display string for the "State/Territory" row: every territory a town belonged
+ * to, current-first, comma-separated (multi-territory support, #24). Falls back
+ * to the single primary region (`state`) when the regions list is absent (e.g.
+ * search-list payloads that don't include it). Exported for unit testing.
+ */
+export function regionsDisplay(
+  record: Pick<MarkingRecord, "regions" | "state">,
+): string {
+  const names = record.regions.map((r) => r.name.trim()).filter((n) => n !== "");
+  return names.length > 0 ? names.join(", ") : record.state;
+}
+
+function mapRegionList(raw: unknown): MarkingRegion[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((r): MarkingRegion | null => {
+      const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+      const id = toIdOrNull(o.id);
+      const name = toStr(o.name);
+      if (id == null || !name) return null;
+      return { id, name, abbrev: toStr(o.abbrev), regionTier: toStr(o.region_tier) };
+    })
+    .filter((x): x is MarkingRegion => x !== null);
+}
+
+/**
  * Convert a /markings/ list or detail payload into MarkingRecord.
  * Single-pass mapper: snake_case in, camelCase out, no fallbacks. The API
  * is now the canonical shape; if a field is missing, the empty default is
@@ -512,6 +573,7 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     colorName: toStr(o.color_name),
     postOfficeName: toStr(o.post_office_name),
     regionName: toStr(o.region_name),
+    regions: mapRegionList(o.regions),
     earliestSeen: typeof o.earliest_seen === "string" && o.earliest_seen ? o.earliest_seen : null,
     earliestSeenGranularity:
       typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
@@ -522,12 +584,16 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
       typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
         ? o.latest_seen_granularity
         : null,
+    datesSeen: (Array.isArray(o.dates_seen) ? o.dates_seen : [])
+      .map(mapAssociatedDateSeen)
+      .filter((x): x is AssociatedDateSeen => x !== null),
     mainImage,
     secondImage,
     images,
     citations: mapCitationList(o.citations),
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
+    isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
   };
@@ -551,6 +617,7 @@ export async function getMarkingsPage(
     width?: string;
     hasImages?: boolean;
     referenceWorkCode?: string;
+    reviewed?: "reviewed" | "unreviewed";
     deferCount?: boolean;
     ordering?: string;
   }
@@ -573,6 +640,8 @@ export async function getMarkingsPage(
   if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
   if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
+  if (opt.reviewed === "reviewed") params.reviewed = "true";
+  else if (opt.reviewed === "unreviewed") params.reviewed = "false";
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();
 

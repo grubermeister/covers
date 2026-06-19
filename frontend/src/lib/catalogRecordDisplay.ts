@@ -94,6 +94,29 @@ export function formatDateSeen(
   return formatCatalogDate(s) || s;
 }
 
+/**
+ * Format a marking's full set of observed dates into a single "Dates Seen"
+ * string (issue #25). Each row is formatted via formatDateSeen, then de-duped
+ * preserving order. Returns "" unless there are at least TWO distinct dates —
+ * a single date is already conveyed by the Earliest/Latest Seen rows, so the
+ * listing only earns its row when it adds information. The caller (RecordDetail)
+ * decides where to render it; this helper is pure so it can be unit-tested.
+ */
+export function formatDatesSeenList(
+  rows: ReadonlyArray<{ date: string | null; granularity: string | null }>,
+): string {
+  const seen = new Set<string>();
+  const formatted: string[] = [];
+  for (const row of rows) {
+    const label = formatDateSeen(row.date, row.granularity);
+    if (label && !seen.has(label)) {
+      seen.add(label);
+      formatted.push(label);
+    }
+  }
+  return formatted.length >= 2 ? formatted.join(", ") : "";
+}
+
 /** Extract the leading 4-digit year from a partial-or-full ISO date. */
 export function yearFromCatalogDate(value: string | null | undefined): string {
   const s = value != null ? String(value).trim() : "";

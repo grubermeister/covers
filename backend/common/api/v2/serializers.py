@@ -404,6 +404,10 @@ class CoverSerializer(serializers.ModelSerializer):
     dates_seen = serializers.SerializerMethodField()
     is_removed = serializers.SerializerMethodField()
     can_remove = serializers.SerializerMethodField()
+    # Derived display name of the submitter (the cover's created_by, i.e. the
+    # contributor). Returned ONLY when the submitter opted in — privacy is
+    # enforced here at the API boundary, not just hidden in the UI.
+    submitter_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Cover
@@ -417,6 +421,8 @@ class CoverSerializer(serializers.ModelSerializer):
             "height",
             "is_institutional",
             "width",
+            "display_submitter_name",
+            "submitter_name",
             "dates_seen",
             "is_removed",
             "can_remove",
@@ -446,6 +452,16 @@ class CoverSerializer(serializers.ModelSerializer):
             )
         except CatalogCodeError as exc:
             raise serializers.ValidationError(str(exc))
+
+    def get_submitter_name(self, obj):
+        # Opt-out (the default) must never leak the name.
+        if not obj.display_submitter_name:
+            return None
+        user = obj.created_by
+        if user is None:
+            return None
+        full = (user.get_full_name() or "").strip()
+        return full or user.get_username()
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(
@@ -555,6 +571,21 @@ def _marking_state_abbrev(marking) -> str:
     return (region.abbrev or "") if region else ""
 
 
+def _marking_regions(marking):
+    """All Regions for a marking's PostOffice (current-first), as serializable
+    dicts. Empty list when there is no post office. Mirrors the single-region
+    helpers above but exposes the town's full multi-territory history."""
+    if not getattr(marking, "post_office_id", None):
+        return []
+    post_office = getattr(marking, "post_office", None)
+    if post_office is None:
+        return []
+    return [
+        {"id": r.id, "name": r.name, "abbrev": r.abbrev, "region_tier": r.region_tier}
+        for r in post_office.regions
+    ]
+
+
 def _viewer_may_see_contribution_notes(user, contribution) -> bool:
     # contribution: Contribution | None. Returns True for any editor/admin/superuser
     # or the contributor who made it. False for anon and unrelated users. This is
@@ -605,6 +636,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
     main_image = serializers.SerializerMethodField()
     second_image = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
+    is_reviewed = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Marking
@@ -635,6 +667,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "is_reviewed",
             "earliest_seen",
             "earliest_seen_granularity",
             "latest_seen",
@@ -699,6 +732,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     state = serializers.SerializerMethodField()
     state_abbrev = serializers.SerializerMethodField()
     region_name = serializers.SerializerMethodField()
+    regions = serializers.SerializerMethodField()
     town = serializers.CharField(source="post_office.name", read_only=True, default="")
     shape_name = serializers.CharField(source="shape.name", read_only=True, default="")
     lettering_name = serializers.CharField(source="lettering.name", read_only=True, default="")
@@ -708,6 +742,12 @@ class MarkingSerializer(serializers.ModelSerializer):
     earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
     latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    # Full list of MARKING-scoped DateSeen rows (one per observed date the catalog
+    # records), not just the earliest/latest boundary. Exposed only on the detail
+    # serializer so the UI can show a "Dates Seen" listing when a marking has
+    # multiple dates (issue #25); kept off MarkingListSerializer to avoid an
+    # N+1 query on search. Mirrors CoverSerializer.get_dates_seen.
+    dates_seen = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     citations = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
@@ -747,10 +787,13 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "regions",
+            "is_reviewed",
             "earliest_seen",
             "earliest_seen_granularity",
             "latest_seen",
             "latest_seen_granularity",
+            "dates_seen",
             "images",
             "citations",
             "created_date",
@@ -815,6 +858,16 @@ class MarkingSerializer(serializers.ModelSerializer):
 
     def get_region_name(self, obj):
         return _marking_state_name(obj)
+
+    def get_regions(self, obj):
+        return _marking_regions(obj)
+
+    def get_dates_seen(self, obj):
+        qs = DateSeen.objects.filter(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=obj.pk,
+        ).order_by("date")
+        return DateSeenSerializer(qs, many=True).data
 
     def get_images(self, obj):
         rows = Image.objects.filter(

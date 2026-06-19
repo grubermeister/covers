@@ -66,6 +66,10 @@ def build_marking_snapshot(marking: Marking | None) -> dict[str, Any]:
         "reference_work_id",
         "citation_detail",
     )
+    dates_seen = DateSeen.objects.filter(
+        subject_type=DateSeen.SUBJECT_MARKING,
+        subject_id=marking.pk,
+    ).order_by("date", "granularity").values("date", "granularity")
 
     return _json_safe(
         {
@@ -91,6 +95,7 @@ def build_marking_snapshot(marking: Marking | None) -> dict[str, Any]:
             "rate_val": marking.rate_val,
             "images": list(images),
             "citations": list(citations),
+            "dates_seen": list(dates_seen),
             "captured_at": timezone.now(),
         }
     )
