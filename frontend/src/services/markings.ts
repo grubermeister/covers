@@ -214,6 +214,24 @@ export async function updateImage(
 }
 
 /**
+ * Toggle the state-editor "reviewed/confirmed" flag on a marking (Issue #22).
+ * Persisted via the same editor-gated PATCH path as other catalog edits; the
+ * backend rejects the write unless the caller is the state editor responsible
+ * for the marking's region (or an admin). Returns false on any error.
+ */
+export async function updateMarkingReviewed(
+  markingId: number,
+  reviewed: boolean,
+): Promise<boolean> {
+  try {
+    await apiClient.patch(`/markings/${markingId}/`, { is_reviewed: reviewed });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Subset of ReferenceWork fields embedded in a Citation row, sufficient
  * to render a citation entry without a second /reference-works/ call.
  * Mirrors the read-only `reference_work_details` field on the v2
@@ -282,6 +300,8 @@ export interface MarkingRecord {
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
+  // Whether a state editor has personally vetted this record (Issue #22).
+  isReviewed: boolean;
   // Contributor's "comment for editor" and the editor's review feedback, sourced
   // from the marking's approved Contribution. The backend returns "" to anyone
   // who is not that contributor or an editor, so a non-empty value is safe to show.
@@ -528,6 +548,7 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     citations: mapCitationList(o.citations),
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
+    isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
   };
@@ -551,6 +572,7 @@ export async function getMarkingsPage(
     width?: string;
     hasImages?: boolean;
     referenceWorkCode?: string;
+    reviewed?: "reviewed" | "unreviewed";
     deferCount?: boolean;
     ordering?: string;
   }
@@ -573,6 +595,8 @@ export async function getMarkingsPage(
   if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
   if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
+  if (opt.reviewed === "reviewed") params.reviewed = "true";
+  else if (opt.reviewed === "unreviewed") params.reviewed = "false";
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();
 

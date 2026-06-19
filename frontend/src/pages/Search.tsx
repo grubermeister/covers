@@ -25,6 +25,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useFilterOptions } from "@/hooks/useFilterOptions";
 import { useDebounce } from "@/hooks/useDebounce";
 import { useMarkingYearRange } from "@/hooks/useMarkingYearRange";
+import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -248,6 +249,7 @@ const Search = () => {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
+  const authUser = useAuth();
 
   // Fetch filter options from API (colors, marking shapes, states)
   const { colorOptions, shapeOptions, stateOptions, isLoading: isLoadingFilters, error: filterError } =
@@ -280,6 +282,10 @@ const Search = () => {
     return "both";
   });
   const [imagesOnly, setImagesOnly] = useState(() => getSearchParam(searchParams, "images", "") === "true");
+  const [reviewedFilter, setReviewedFilter] = useState<"all" | "reviewed" | "unreviewed">(() => {
+    const raw = getSearchParam(searchParams, "reviewed", "");
+    return raw === "reviewed" || raw === "unreviewed" ? raw : "all";
+  });
   const [submissionQueueSort, setSubmissionQueueSort] = useState<SubmissionQueueSortOption>(
     () => (getSearchParam(searchParams, "sort", "newest") === "oldest" ? "oldest" : "newest"),
   );
@@ -336,6 +342,7 @@ const Search = () => {
   const prevWidthFilterRef = useRef("");
   const prevImagesOnlyRef = useRef(imagesOnly);
   const prevManuscriptFilterRef = useRef(manuscriptFilter);
+  const prevReviewedFilterRef = useRef(reviewedFilter);
   const prevTypeFilterRef = useRef(typeFilter);
   const prevSortRef = useRef(submissionQueueSort);
   const prevCatalogSortRef = useRef(catalogSortKey);
@@ -414,6 +421,7 @@ const Search = () => {
     const widthFilterJustChanged = prevWidthFilterRef.current !== currentNormalizedWidth;
     const imagesOnlyJustChanged = prevImagesOnlyRef.current !== imagesOnly;
     const manuscriptFilterJustChanged = prevManuscriptFilterRef.current !== manuscriptFilter;
+    const reviewedFilterJustChanged = prevReviewedFilterRef.current !== reviewedFilter;
     const typeFilterJustChanged = prevTypeFilterRef.current !== typeFilter;
     const sortJustChanged = prevSortRef.current !== submissionQueueSort;
     const catalogSortJustChanged = prevCatalogSortRef.current !== catalogSortKey;
@@ -429,6 +437,7 @@ const Search = () => {
     if (widthFilterJustChanged) prevWidthFilterRef.current = currentNormalizedWidth;
     if (imagesOnlyJustChanged) prevImagesOnlyRef.current = imagesOnly;
     if (manuscriptFilterJustChanged) prevManuscriptFilterRef.current = manuscriptFilter;
+    if (reviewedFilterJustChanged) prevReviewedFilterRef.current = reviewedFilter;
     if (typeFilterJustChanged) prevTypeFilterRef.current = typeFilter;
     if (sortJustChanged) prevSortRef.current = submissionQueueSort;
     if (catalogSortJustChanged) prevCatalogSortRef.current = catalogSortKey;
@@ -446,13 +455,14 @@ const Search = () => {
       widthFilterJustChanged ||
       imagesOnlyJustChanged ||
       manuscriptFilterJustChanged ||
+      reviewedFilterJustChanged ||
       typeFilterJustChanged ||
       sortJustChanged ||
       catalogSortJustChanged;
     if (anyFilterChanged) {
       setCurrentPage(1);
     }
-  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, referenceWorkFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, typeFilter, submissionQueueSort, catalogSortKey]);
+  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, referenceWorkFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, reviewedFilter, typeFilter, submissionQueueSort, catalogSortKey]);
 
   // Treat years as active filters only when they are valid and 4 digits.
   const normalizedBeginYear = useMemo(() => {
@@ -535,6 +545,7 @@ const Search = () => {
       imagesOnly,
       colorFilter,
       manuscriptFilter,
+      reviewedFilter,
       typeFilterApi,
       itemsPerPage,
       catalogSortKey,
@@ -562,6 +573,7 @@ const Search = () => {
           height: normalizedHeight || undefined,
           width: normalizedWidth || undefined,
           hasImages: imagesOnly,
+          reviewed: reviewedFilter !== "all" ? reviewedFilter : undefined,
           ordering: orderingParamForSort(catalogSort),
         }
       );
@@ -585,6 +597,14 @@ const Search = () => {
   const loading = queryLoading || (queryFetching && catalogRecords.length === 0);
   const refreshing = queryFetching && !loading;
   const filtersDisabled = loading;
+  // The reviewed/confirmed filter is a state-editor workflow tool (Issue #22);
+  // only surface it to editors/admins. (The flag itself is in the public
+  // serializer, so this is a UI affordance, not a security boundary.)
+  const isEditor =
+    !!authUser &&
+    (authUser.role === "editor" ||
+      authUser.role === "administrator" ||
+      authUser.is_superuser === true);
 
   useEffect(() => {
     if (queryError) {
@@ -613,6 +633,7 @@ const Search = () => {
     if (colorFilter !== "all") params.set("color", colorFilter);
     if (manuscriptFilter !== "both") params.set("manuscripts", manuscriptFilter);
     if (imagesOnly) params.set("images", "true");
+    if (reviewedFilter !== "all") params.set("reviewed", reviewedFilter);
     if (submissionQueueSort !== "newest") params.set("sort", submissionQueueSort);
     // Empty list (user toggled off all sorts) -> persist as the sentinel
     // "none" so a page reload distinguishes that intent from "no param".
@@ -624,7 +645,7 @@ const Search = () => {
     if (next !== current) {
       setSearchParams(next ? params : {}, { replace: true });
     }
-  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, referenceWorkFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
+  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, referenceWorkFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, reviewedFilter, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
 
   const totalPages = Math.ceil(totalCount / itemsPerPage) || 1;
   const pageStart = (currentPage - 1) * itemsPerPage;
@@ -651,6 +672,7 @@ const Search = () => {
     setValuationFilter("all");
     setManuscriptFilter("both");
     setImagesOnly(false);
+    setReviewedFilter("all");
     setSubmissionQueueSort("newest");
     setCatalogSort([...DEFAULT_SORT]);
     setCurrentPage(1);
@@ -988,6 +1010,28 @@ const Search = () => {
                       </SelectContent>
                     </Select>
                   </div>
+
+                  {isEditor && (
+                    <div className="space-y-2">
+                      <Label htmlFor="reviewed">Review Status</Label>
+                      <Select
+                        value={reviewedFilter}
+                        onValueChange={(v) =>
+                          setReviewedFilter(v as "all" | "reviewed" | "unreviewed")
+                        }
+                        disabled={filtersDisabled}
+                      >
+                        <SelectTrigger id="reviewed" aria-label="Filter by review status">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All (Default)</SelectItem>
+                          <SelectItem value="reviewed">Reviewed</SelectItem>
+                          <SelectItem value="unreviewed">Unreviewed</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
 
                   <div className="space-y-3 pt-2">
                     <div className="flex items-center space-x-2">
