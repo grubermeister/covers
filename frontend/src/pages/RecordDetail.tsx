@@ -16,7 +16,7 @@ import {
 } from "@/components/ui/carousel";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
-import { formatDateSeen, markingTypeLabel } from "@/lib/catalogRecordDisplay";
+import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { buildMarkingFields } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
 import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
@@ -587,6 +587,7 @@ const RecordDetail = () => {
   const dimensionsValue = dimensionsDisplay(record) || EMPTY;
   const earliestValue = formatDateSeen(record.earliestSeen, record.earliestSeenGranularity);
   const latestValue = formatDateSeen(record.latestSeen, record.latestSeenGranularity);
+  const datesSeenValue = formatDatesSeenList(record.datesSeen);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression
@@ -623,6 +624,7 @@ const RecordDetail = () => {
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
       latestSeen: latestValue,
+      datesSeen: datesSeenValue,
       shapeName: record.shapeName,
       rateValFormatted: formatRateValue(record.rateVal),
       dateFmt: record.dateFmt,

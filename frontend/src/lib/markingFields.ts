@@ -25,6 +25,11 @@ export interface MarkingFieldInput {
   // Already formatted according to DateSeen granularity.
   earliestSeen: string;
   latestSeen: string;
+  // Pre-formatted comma-joined list of all observed dates (via
+  // formatDatesSeenList), populated only when a marking has multiple distinct
+  // dates; "" otherwise. Optional so the contribution path (a single
+  // submission) need not supply it. (issue #25)
+  datesSeen?: string;
   shapeName: string;
   // Pre-formatted via formatRateValue (e.g. "3 cents" or "").
   rateValFormatted: string;
@@ -71,6 +76,9 @@ export function buildMarkingFields(
     { label: inscriptionLabel(i.type), value: i.inscriptionTxt, alwaysShow: false },
     { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true },
     { label: "Latest Seen", value: i.latestSeen, alwaysShow: true },
+    // Only populated (and only shown) when the marking has multiple distinct
+    // dates; the helper returns "" otherwise so this row collapses. (issue #25)
+    { label: "Dates Seen", value: i.datesSeen ?? "", alwaysShow: false },
   ];
   if (showPhysical) {
     rows.push({ label: "Shape", value: i.shapeName, alwaysShow: false });
