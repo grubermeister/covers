@@ -5,6 +5,13 @@
 
 import type { MarkingTypeValue } from "@/services/markings";
 
+// A chip rendered in place of a row's plain-text value. `to`, when set, makes
+// the chip a router Link (e.g. a territory tag that runs a filtered search).
+export interface MarkingFieldTag {
+  label: string;
+  to?: string;
+}
+
 export interface MarkingFieldRow {
   label: string;
   // Pre-formatted display string. "" means blank; the renderer decides
@@ -14,12 +21,21 @@ export interface MarkingFieldRow {
   // hasDisplayValue filter even when blank). ContributionDetail ignores it
   // and shows every row.
   alwaysShow: boolean;
+  // When non-empty, the renderer shows these chips instead of `value`. `value`
+  // is still the visibility key (hasDisplayValue) and the fallback when no tags
+  // are supplied (e.g. ContributionDetail). (issue #28)
+  tags?: MarkingFieldTag[];
 }
 
 export interface MarkingFieldInput {
   type: MarkingTypeValue | null;
   isManuscript: boolean;
   state: string;
+  // All territory/state affiliations as chips for the State/Territory row,
+  // current-first. Optional: only RecordDetail supplies them (from
+  // record.regions); ContributionDetail omits them and the comma-joined
+  // `state` string renders instead. (issue #28)
+  regionTags?: MarkingFieldTag[];
   town: string;
   inscriptionTxt: string;
   // Already formatted according to DateSeen granularity.
@@ -71,7 +87,12 @@ export function buildMarkingFields(
   const rows: MarkingFieldRow[] = [
     { label: "Type", value: typeLabel(i.type), alwaysShow: false },
     { label: "Manuscript", value: i.isManuscript ? "Yes" : "No", alwaysShow: false },
-    { label: "State/Territory", value: i.state, alwaysShow: false },
+    {
+      label: "State/Territory",
+      value: i.state,
+      alwaysShow: false,
+      tags: i.regionTags && i.regionTags.length > 0 ? i.regionTags : undefined,
+    },
     { label: "Town", value: i.town, alwaysShow: false },
     { label: inscriptionLabel(i.type), value: i.inscriptionTxt, alwaysShow: false },
     { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true },
