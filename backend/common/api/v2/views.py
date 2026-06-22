@@ -45,7 +45,12 @@ from common.catalog_codes import (
     suggest_direct_catalog_code,
     suggest_for_contribution,
 )
-from common.contribution_apply import ContributionApplyError, _parse_int
+from common.contribution_apply import (
+    ContributionApplyError,
+    MARKING_DATE_SUBMIT_KEYS,
+    _parse_int,
+    strip_marking_date_keys,
+)
 from common.audit import (
     build_cover_snapshot,
     build_marking_snapshot,
@@ -2339,6 +2344,10 @@ class ContributionSubmitView(APIView):
         )
         if not user_can_submit_catalog_code:
             skip_keys.update(CATALOG_CODE_KEYS)
+            # ERD/LRD on Submit New Marking are editor-only (issue #27); the
+            # same editor role gates both. Drop them from a non-editor's
+            # submission so only an editor can set a marking's date.
+            skip_keys.update(MARKING_DATE_SUBMIT_KEYS)
         for key in data:
             if key in skip_keys:
                 continue
@@ -2440,6 +2449,7 @@ class ContributionSubmitView(APIView):
             submitted_data.update(image_updates)
             if not user_can_submit_catalog_code:
                 existing_sd = strip_catalog_code_keys(existing_sd)
+                existing_sd = strip_marking_date_keys(existing_sd)
             existing_sd.update(submitted_data)
             contrib.submitted_data = existing_sd
             contrib.collection = collection
