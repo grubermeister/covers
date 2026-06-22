@@ -223,6 +223,22 @@ class CoverContributionApplyFunctionTests(TestCase):
         cover = apply_cover_contribution_to_catalog(contrib)["cover"]
         self.assertFalse(cover.display_submitter_name)
 
+    def test_description_flows_to_cover(self):
+        # #39: the submitter's free-text description rides submitted_data and
+        # must land on the materialized Cover for the public detail page.
+        sd = _cover_submitted_data(
+            self.parent, description="  Blue CDS, light cover toning.  "
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+        self.assertEqual(cover.description, "Blue CDS, light cover toning.")
+
+    def test_description_defaults_empty_when_absent(self):
+        sd = _cover_submitted_data(self.parent)
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+        self.assertEqual(cover.description, "")
+
     def test_cover_code_increments_for_same_reference_region_prefix(self):
         first = _make_cover_contribution(
             self.user,

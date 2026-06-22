@@ -123,6 +123,7 @@ function buildEditState(cover: AssociatedCover | null | undefined) {
     isInstitutional: c?.isInstitutional === true,
     isBackstamp: cover?.isBackstamp === true,
     displaySubmitterName: c?.displaySubmitterName === true,
+    description: c?.description ?? "",
     coverDate,
   };
 }
@@ -206,6 +207,7 @@ export default function CoverEdit() {
   const [isInstitutional, setIsInstitutional] = useState(false);
   const [isBackstamp, setIsBackstamp] = useState(false);
   const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
+  const [description, setDescription] = useState("");
   const [coverDate, setCoverDate] = useState<CoverDateField>({ date: "" });
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrorsShape>({});
@@ -272,6 +274,7 @@ export default function CoverEdit() {
         setIsInstitutional(String(sd.is_institutional ?? sd.isInstitutional) === "true");
         setIsBackstamp(String(sd.is_backstamp ?? sd.isBackstamp) === "true");
         setDisplaySubmitterName(String(sd.display_submitter_name ?? sd.displaySubmitterName) === "true");
+        setDescription(String(sd.description ?? ""));
         const comment = String(sd.contributor_comment ?? sd.comment_for_editor ?? "").trim();
         if (comment) setContributorComment(comment);
 
@@ -327,6 +330,7 @@ export default function CoverEdit() {
     setIsInstitutional(initial.isInstitutional);
     setIsBackstamp(initial.isBackstamp);
     setDisplaySubmitterName(initial.displaySubmitterName);
+    setDescription(initial.description);
     setCoverDate(initial.coverDate);
   }, [mode, initial]);
 
@@ -699,6 +703,7 @@ export default function CoverEdit() {
       form.append("is_institutional", String(isInstitutional));
       form.append("is_backstamp", String(isBackstamp));
       form.append("display_submitter_name", String(displaySubmitterName));
+      form.append("description", description.trim());
       const trimmedComment = contributorComment.trim();
       if (trimmedComment) {
         form.append("contributor_comment", trimmedComment);
@@ -1111,6 +1116,18 @@ export default function CoverEdit() {
                         />
                         Would you like your name to display as the submitter?
                       </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="cover-description">Description</Label>
+                      <Textarea
+                        id="cover-description"
+                        rows={3}
+                        placeholder="Optional description / notes about this cover (shown on the cover's detail page)."
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        disabled={submitting}
+                      />
                     </div>
 
                     <div className="space-y-3" id="cover-reference-works">
