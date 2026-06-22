@@ -19,6 +19,9 @@ For state `VA`, the wrapper writes `tools/wip/in/VA.pdf`,
 `tools/wip/out/va/`, `tools/wip/cache/compare/VA/review_ledger_VA.csv`, and
 `tools/wip/cache/VA_run.json`.
 
+For an explanation of every file produced in `compare/VA/` and what each compare
+stage is checking, see `docs/devel/COMPARE.md`.
+
 `./woco ascc run VA` resumes by default. Existing `VA_catalog_rows.csv` skips
 OCR and image-count verification; existing `VA_ocr_rows.csv` skips page
 processing and OCR extraction. Use `--force` to rebuild those files from the

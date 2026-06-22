@@ -59,6 +59,22 @@ class TestUnknownDateFields(unittest.TestCase):
             'date_error': None,
         })
 
+    def test_decade_with_apostrophe(self):
+        # Catalog OCR form: "1860's"
+        parsed = parse_date_field("1860's")
+        self.assertEqual(parsed['date_granularity'], 'DECADE')
+        self.assertEqual(parsed['date_year_start'], 1860)
+        self.assertEqual(parsed['date_year_end'], 1869)
+        self.assertIsNone(parsed['date_error'])
+
+    def test_decade_without_apostrophe(self):
+        # DB listing text form: "1860s" (no apostrophe)
+        parsed = parse_date_field('1860s')
+        self.assertEqual(parsed['date_granularity'], 'DECADE')
+        self.assertEqual(parsed['date_year_start'], 1860)
+        self.assertEqual(parsed['date_year_end'], 1869)
+        self.assertIsNone(parsed['date_error'])
+
 
 if __name__ == '__main__':
     unittest.main()

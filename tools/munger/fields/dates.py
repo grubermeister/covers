@@ -44,7 +44,7 @@ YEAR_RANGE_RE = re.compile(
     r'c?(\d{4})\s*[-]\s*(\d{2,4})'
 )
 
-DECADE_RE = re.compile(r"c?(\d{4})'s", re.IGNORECASE)
+DECADE_RE = re.compile(r"c?(\d{4})'?s", re.IGNORECASE)
 
 BARE_YEAR_RE = re.compile(r'c?(\d{4})$')
 
@@ -92,7 +92,7 @@ def parse_date_field(text):
             'date_error': None,
         }
 
-    # 2. Decade: 1850's
+    # 2. Decade: 1850's or 1850s (apostrophe optional)
     m = DECADE_RE.search(t)
     if m:
         base = int(m.group(1))
