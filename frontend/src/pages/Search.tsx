@@ -703,14 +703,25 @@ const Search = () => {
                 <CardContent className="pt-6 space-y-4">
                   <div className="flex items-center justify-between mb-4">
                     <h2 className="font-heading text-lg font-semibold">Filters</h2>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="lg:hidden"
-                      onClick={() => setFiltersOpen(false)}
-                    >
-                      Close
-                    </Button>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="h-auto p-0 text-sm font-normal text-muted-foreground hover:text-foreground"
+                        onClick={handleClearAllFilters}
+                        disabled={filtersDisabled}
+                      >
+                        Clear filters
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="lg:hidden"
+                        onClick={() => setFiltersOpen(false)}
+                      >
+                        Close
+                      </Button>
+                    </div>
                   </div>
 
                   <div className="space-y-2">
@@ -1049,15 +1060,6 @@ const Search = () => {
                       </label>
                     </div>
                   </div>
-
-                  <Button
-                    variant="outline"
-                    className="w-full"
-                    onClick={handleClearAllFilters}
-                    disabled={filtersDisabled}
-                  >
-                    Clear Filters
-                  </Button>
                 </CardContent>
               </Card>
             </aside>
