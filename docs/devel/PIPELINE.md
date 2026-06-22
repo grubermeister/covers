@@ -19,6 +19,23 @@ For state `VA`, the wrapper writes `tools/wip/in/VA.pdf`,
 `tools/wip/out/va/`, `tools/wip/cache/compare/VA/review_ledger_VA.csv`, and
 `tools/wip/cache/VA_run.json`.
 
+`./woco ascc run VA` resumes by default. Existing `VA_catalog_rows.csv` skips
+OCR and image-count verification; existing `VA_ocr_rows.csv` skips page
+processing and OCR extraction. Use `--force` to rebuild those files from the
+PDF.
+
+To remove generated files before a fresh run:
+
+```bash
+./woco ascc clean VA
+./woco ascc clean
+```
+
+The state form cleans that state's generated cache/output artifacts. The
+no-state form clears generated contents under `tools/wip/cache/` and
+`tools/wip/out/` for all states. Neither form deletes files under
+`tools/wip/in/`.
+
 ---
 
 ## 0. Prerequisites

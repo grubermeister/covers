@@ -150,6 +150,14 @@ def build_parser() -> argparse.ArgumentParser:
     run = sub.add_parser("run", help="run PDF to catalog rows, bundle, and compare ledger")
     run.add_argument("state")
     run.add_argument("--pdf", type=Path, default=None)
+    run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "rebuild OCR and catalog rows even when VA_ocr_rows.csv or "
+            "VA_catalog_rows.csv already exists"
+        ),
+    )
     add_shared_options(run, include_import_check=True)
 
     munge = sub.add_parser("munge", help="build the import bundle from catalog rows")
@@ -159,6 +167,9 @@ def build_parser() -> argparse.ArgumentParser:
     compare = sub.add_parser("compare", help="run the compare ledger from catalog rows and bundle")
     compare.add_argument("state")
     add_shared_options(compare, include_import_check=False)
+
+    clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
+    clean.add_argument("state", nargs="?")
 
     return parser
 
@@ -190,6 +201,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_munge(args)
         if args.command == "compare":
             return command_compare(args)
+        if args.command == "clean":
+            return command_clean(args)
     except AsccCliError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
@@ -208,9 +221,17 @@ def command_run(args) -> int:
     copy_state_pdf(paths.state, args.pdf)
     require_doctor(paths.state, args.provider)
 
-    run_command(page_processor_cmd(paths, args))
-    run_command(page_extract_cmd(paths, args))
-    run_command(image_extract_cmd(paths, args))
+    if args.force or not paths.catalog_rows.exists():
+        if args.force or not paths.ocr_rows.exists():
+            run_command(page_processor_cmd(paths, args))
+            run_command(page_extract_cmd(paths, args))
+        else:
+            print()
+            print(f"using existing OCR rows: {paths.ocr_rows}")
+        run_command(image_extract_cmd(paths, args))
+    else:
+        print()
+        print(f"using existing catalog rows: {paths.catalog_rows}")
     copied_images = copy_marking_images(paths)
     clean_bundle_dir(paths.bundle_dir)
     run_command(munger_cmd(paths, args))
@@ -241,6 +262,13 @@ def command_compare(args) -> int:
     require_file(paths.catalog_rows, "catalog rows")
     require_dir(paths.bundle_dir, "bundle")
     run_command(compare_cmd(paths, args))
+    return 0
+
+
+def command_clean(args) -> int:
+    removed = clean_generated(args.state)
+    scope = normalize_state(args.state) if args.state else "all states"
+    print(f"cleaned ASCC generated files for {scope}: {removed} item(s)")
     return 0
 
 
@@ -399,6 +427,72 @@ def clean_bundle_dir(bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
     for stem in IMPORT_STEMS:
         (bundle_dir / f"{stem}.csv").unlink(missing_ok=True)
+
+
+def clean_generated(state: str | None = None) -> int:
+    """Delete generated ASCC cache/out artifacts.
+
+    Without state, this clears generated files under tools/wip/cache and
+    tools/wip/out for all states. It intentionally does not touch tools/wip/in,
+    because that directory holds input PDFs and seed/reference CSVs.
+    """
+    if state:
+        return clean_generated_state(normalize_state(state))
+    removed = 0
+    removed += clean_directory_contents(WIP_CACHE)
+    removed += clean_directory_contents(WIP_OUT)
+    WIP_CACHE.mkdir(parents=True, exist_ok=True)
+    WIP_OUT.mkdir(parents=True, exist_ok=True)
+    return removed
+
+
+def clean_generated_state(state: str) -> int:
+    removed = 0
+    paths = state_paths(state)
+    cache_prefixes = state_cache_prefixes(state)
+    if WIP_CACHE.exists():
+        for path in WIP_CACHE.iterdir():
+            if path.name == "compare":
+                continue
+            if any(path.name.startswith(prefix) for prefix in cache_prefixes):
+                removed += remove_path(path)
+    removed += remove_path(paths.compare_dir)
+    removed += remove_path(paths.bundle_dir)
+    return removed
+
+
+def state_cache_prefixes(state: str) -> tuple[str, ...]:
+    """Return cache filename prefixes owned by one state.
+
+    Supports the canonical wrapper prefix, e.g. VA_ocr_rows.csv, plus the
+    historical basename style, e.g. VA-ASCC-CTLG_chunks.
+    """
+    return (
+        f"{state}_",
+        f"{state}-",
+        f"{state}.",
+    )
+
+
+def clean_directory_contents(directory: Path) -> int:
+    removed = 0
+    if not directory.exists():
+        return removed
+    for path in directory.iterdir():
+        if path.name == "_DELETE.ME":
+            continue
+        removed += remove_path(path)
+    return removed
+
+
+def remove_path(path: Path) -> int:
+    if not path.exists():
+        return 0
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    return 1
 
 
 def copy_marking_images(paths: StatePaths) -> int:

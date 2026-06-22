@@ -130,6 +130,26 @@ tools/wip/cache/compare/VA/review_ledger_VA.csv
 tools/wip/cache/VA_run.json
 ```
 
+`./woco ascc run VA` resumes by default:
+
+- if `tools/wip/cache/VA_catalog_rows.csv` exists, it skips OCR and image-count
+  verification and resumes at munger;
+- if only `tools/wip/cache/VA_ocr_rows.csv` exists, it skips page processing and
+  OCR extraction and resumes at image-count verification;
+- pass `--force` to rebuild OCR rows and catalog rows from the PDF.
+
+Clean generated cache/output files without touching source PDFs or seed CSVs:
+
+```sh
+./woco ascc clean VA
+./woco ascc clean
+```
+
+With a state, `clean` removes generated cache files for that state plus
+`tools/wip/out/<state>/` and `tools/wip/cache/compare/<STATE>/`. Without a
+state, it clears generated contents under `tools/wip/cache/` and
+`tools/wip/out/` for all states while preserving placeholder files.
+
 Expected exit code for each successful command: `0`.
 
 The API-dependent tools, `ascc_page_processor.py` stages `halves` and
