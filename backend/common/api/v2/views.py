@@ -1194,9 +1194,17 @@ class MarkingViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options", "trace"]
     search_fields = [
         "code",
+        # Rate/aux keywords ("PAID", "FREE", "DUE", "STEAM", rate amounts) live
+        # as free text in catalog_txt/inscription_txt, so a top-search for
+        # "paid"/"free" already matches here -- no structured rate keyword field
+        # exists. (#40)
         "catalog_txt",
         "inscription_txt",
         "desc",
+        # `type` holds the stored enum value (TOWNMARK/RATEMARK/AUXMARK), so a
+        # search for "ratemark"/"auxmark"/"townmark" finds all markings of that
+        # class. icontains on the enum value, not the human label. (#40)
+        "type",
         "post_office__post_office_regions__region__name",
         "post_office__name",
         "shape__name",
