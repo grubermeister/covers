@@ -30,12 +30,14 @@ describe("submission guidelines copy", () => {
     const marking = bodyFor(MARKING_SUBMISSION_GUIDELINES, "Rate vs. Auxiliary markings");
     expect(marking).toMatch(/rate mark/i);
     expect(marking).toMatch(/auxiliary/i);
-    // Ian's canonical examples (2026-06): Rate = Paid/Free/3/Due 3,
-    // Auxiliary = Advertised/Missent.
-    expect(marking).toMatch(/"Paid".*"Free"/);
-    expect(marking).toMatch(/"Due 3"/);
-    expect(marking).toMatch(/"Advertised"/);
-    expect(marking).toMatch(/"Missent"/);
+    // Shipped #23 copy uses the number heuristic: Rate examples are
+    // numerals/"PAID 3"; Auxiliary examples are word handstamps; and the
+    // "a marking bearing a number is a Rate Mark" rule of thumb is stated.
+    expect(marking).toMatch(/"3".*"5"/);
+    expect(marking).toMatch(/"PAID 3"/);
+    expect(marking).toMatch(/"FORWARDED"/);
+    expect(marking).toMatch(/"MISSENT"/);
+    expect(marking).toMatch(/bearing a number is a Rate Mark/i);
     // Cover form must NOT carry the marking-type explanation.
     expect(
       COVER_SUBMISSION_GUIDELINES.some((g) => g.label === "Rate vs. Auxiliary markings"),
