@@ -104,7 +104,7 @@ def read_legacy_dataframe(path: Path):
     import pandas as pd
 
     path = Path(path)
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, keep_default_na=False)
     _validate_headers(path, list(df.columns))
     rename_map = {
         canonical: legacy
@@ -116,6 +116,8 @@ def read_legacy_dataframe(path: Path):
     for col in OPTIONAL_LEGACY_COLUMNS:
         if col not in df.columns:
             df[col] = ""
+        else:
+            df[col] = df[col].fillna("").astype(object)
     return df
 
 

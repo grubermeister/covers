@@ -71,6 +71,21 @@ class CatalogRowsTests(unittest.TestCase):
         self.assertEqual(df.loc[0, "Listing"], "RICHMOND")
         self.assertEqual(int(df.loc[0, "Images Above"]), 1)
 
+    def test_read_legacy_dataframe_keeps_blank_optional_columns_assignable(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "WV_catalog_rows.csv"
+            path.write_text(
+                "Listing,Page,Chunk,Images Above,Type,Manuscript,Default Shape,Institutional Ownership\n"
+                "Circle handstamps unless otherwise noted,438,1,0,META,,,\n"
+                "WHEELING (1850;Black) 10.00,438,2,0,LISTING,,,\n",
+                encoding="utf-8",
+            )
+
+            df = read_legacy_dataframe(path)
+            df.at[1, "Default Shape"] = "C - Circle"
+
+        self.assertEqual(df.loc[1, "Default Shape"], "C - Circle")
+
 
 if __name__ == "__main__":
     unittest.main()
