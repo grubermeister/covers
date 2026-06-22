@@ -617,6 +617,7 @@ const CoverDetailPage = () => {
                   institutionallyOwned={institutionalText}
                   backstamp={backstampText}
                   submittedBy={cover.submitterName}
+                  description={cover.description}
                 />
                 {cover.canRemove && (
                   <div className="mt-4 pt-4 border-t border-border flex justify-end">

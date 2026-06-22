@@ -423,6 +423,7 @@ class CoverSerializer(serializers.ModelSerializer):
             "width",
             "display_submitter_name",
             "submitter_name",
+            "description",
             "dates_seen",
             "is_removed",
             "can_remove",

@@ -358,6 +358,8 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
     has_adhesive = _coerce_optional_bool(payload, "has_adhesive", False)
     is_institutional = _coerce_optional_bool(payload, "is_institutional", None)
     display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
+    raw_description = payload.get("description")
+    description = raw_description.strip() if isinstance(raw_description, str) else ""
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
 
@@ -368,6 +370,7 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
         has_adhesive=bool(has_adhesive),
         is_institutional=is_institutional,
         display_submitter_name=bool(display_submitter_name),
+        description=description,
         width=width,
         height=height,
         created_by=actor,
@@ -483,6 +486,11 @@ def _apply_cover_edit(
             _coerce_optional_bool(
                 payload, "display_submitter_name", cover.display_submitter_name
             )
+        )
+    if "description" in payload:
+        raw_description = payload.get("description")
+        cover.description = (
+            raw_description.strip() if isinstance(raw_description, str) else ""
         )
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     if width is not None:

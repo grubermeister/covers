@@ -23,3 +23,16 @@ describe("CoverRecordDetailFields — submitter row", () => {
     expect(screen.queryByText("Submitted by:")).toBeNull();
   });
 });
+
+describe("CoverRecordDetailFields — description row", () => {
+  it("shows the Description row when a description is present", () => {
+    render(<CoverRecordDetailFields {...base} description="Blue CDS, light toning." />);
+    expect(screen.getByText("Description:")).toBeTruthy();
+    expect(screen.getByText("Blue CDS, light toning.")).toBeTruthy();
+  });
+
+  it("omits the row when description is absent or blank", () => {
+    render(<CoverRecordDetailFields {...base} description="   " />);
+    expect(screen.queryByText("Description:")).toBeNull();
+  });
+});
