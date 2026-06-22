@@ -53,3 +53,39 @@ describe("buildMarkingFields — Dates Seen row (issue #25)", () => {
     expect(labels.indexOf("Dates Seen")).toBe(labels.indexOf("Latest Seen") + 1);
   });
 });
+
+describe("buildMarkingFields — State/Territory tags (issue #28)", () => {
+  it("attaches region tags (search links) to the State/Territory row when supplied", () => {
+    const rows = buildMarkingFields(
+      baseInput({
+        state: "Michigan, Michigan Territory",
+        regionTags: [
+          { label: "Michigan", to: "/search?state=Michigan" },
+          { label: "Michigan Territory", to: "/search?state=Michigan%20Territory" },
+        ],
+      }),
+      { isStaff: false },
+    );
+    const row = rows.find((r) => r.label === "State/Territory");
+    expect(row?.tags).toHaveLength(2);
+    expect(row?.tags?.[0]).toEqual({ label: "Michigan", to: "/search?state=Michigan" });
+    // value is kept as the comma-joined fallback (visibility key + ContributionDetail).
+    expect(row?.value).toBe("Michigan, Michigan Territory");
+  });
+
+  it("leaves tags undefined when no region tags are supplied (ContributionDetail path)", () => {
+    const rows = buildMarkingFields(baseInput({ state: "Virginia" }), { isStaff: false });
+    const row = rows.find((r) => r.label === "State/Territory");
+    expect(row?.tags).toBeUndefined();
+    expect(row?.value).toBe("Virginia");
+  });
+
+  it("treats an empty regionTags array as no tags (falls back to the value string)", () => {
+    const rows = buildMarkingFields(
+      baseInput({ state: "Virginia", regionTags: [] }),
+      { isStaff: false },
+    );
+    const row = rows.find((r) => r.label === "State/Territory");
+    expect(row?.tags).toBeUndefined();
+  });
+});
