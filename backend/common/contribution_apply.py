@@ -1069,6 +1069,24 @@ def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
     )
 
 
+# Form keys carrying a manually-entered marking ERD/LRD (+ granularity), read
+# by _sync_marking_dates_seen below. Setting a marking's date is editor-only
+# (issue #27): the contribution submit handler strips these from a non-editor's
+# submission, exactly as it strips CATALOG_CODE_KEYS. Kept here, next to the
+# code that consumes them, so the key list has one home.
+MARKING_DATE_SUBMIT_KEYS = frozenset({
+    "marking_erd",
+    "marking_erd_granularity",
+    "marking_lrd",
+    "marking_lrd_granularity",
+})
+
+
+def strip_marking_date_keys(data: dict) -> dict:
+    """Drop manually-entered marking date keys (editor-only; issue #27)."""
+    return {k: v for k, v in data.items() if k not in MARKING_DATE_SUBMIT_KEYS}
+
+
 def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
     """
     Record manually-entered ERD/LRD as MARKING-subject DateSeen rows from

@@ -1482,11 +1482,13 @@ const Contribute = () => {
         if (!isManuscriptSelected && letteringId) form.append("lettering_style_id", letteringId);
         if (!isManuscriptSelected && letteringId) form.append("lettering_id", letteringId);
         if (showDateFormatField && dateFmtCode) form.append("date_fmt", dateFmtCode);
-        if (erdToSend) {
+        // ERD/LRD are editor-only (issue #27): never send them from a
+        // non-editor, even if stale state lingers. The server also strips them.
+        if (isStateEditor && erdToSend) {
           form.append("marking_erd", erdToSend.date);
           form.append("marking_erd_granularity", erdToSend.granularity);
         }
-        if (lrdToSend) {
+        if (isStateEditor && lrdToSend) {
           form.append("marking_lrd", lrdToSend.date);
           form.append("marking_lrd_granularity", lrdToSend.granularity);
         }
@@ -2242,7 +2244,10 @@ const Contribute = () => {
                       </DropdownMenu>
                       {fieldErrors.dateFormat && <p className="text-sm text-destructive">{fieldErrors.dateFormat}</p>}
                     </div>}
-                    <div className="space-y-2">
+                    {/* Setting a marking's date is editor-only (issue #27); the
+                        field is hidden for non-editors and the server strips
+                        ERD/LRD from a non-editor's submission. */}
+                    {isStateEditor && <div className="space-y-2">
                       <Label>Recorded date range</Label>
                       <p className="text-sm text-muted-foreground">
                         Optional. Earliest (ERD) and latest (LRD) recorded dates for a
@@ -2280,7 +2285,7 @@ const Contribute = () => {
                         </div>
                       </div>
                       {fieldErrors.lrd && <p className="text-sm text-destructive">{fieldErrors.lrd}</p>}
-                    </div>
+                    </div>}
                     <div className="space-y-2">
                       <Label htmlFor="description">Description</Label>
                       <Textarea
