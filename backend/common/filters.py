@@ -76,6 +76,10 @@ class MarkingListFilter(django_filters.FilterSet):
         label='Shape id',
     )
     has_images = django_filters.CharFilter(method='filter_has_images', label='Has images')
+    institutional = django_filters.CharFilter(
+        method='filter_institutional',
+        label='Has an institutionally owned cover',
+    )
     reference_work_code = django_filters.CharFilter(
         method='filter_by_reference_work_code',
         label='Reference work code',
@@ -169,6 +173,22 @@ class MarkingListFilter(django_filters.FilterSet):
             subject_type=Image.SUBJECT_MARKING,
         ).values_list('subject_id', flat=True)
         return queryset.filter(pk__in=marking_ids_with_images)
+
+    @staticmethod
+    def filter_institutional(queryset, name, value):
+        # "Institutional" lives on Cover (is_institutional); a marking counts as
+        # institutional when at least one of its covers is institutionally
+        # owned. Route through Cover.objects (the default manager) so
+        # recycle-binned covers are excluded -- an FK traversal like
+        # cover__is_institutional=True would use base_manager_name='all_objects'
+        # and wrongly include removed covers. (issue #29)
+        if not value or str(value).strip().lower() != 'true':
+            return queryset
+        from .models import Cover, CoverMarking
+        institutional_marking_ids = CoverMarking.objects.filter(
+            cover__in=Cover.objects.filter(is_institutional=True),
+        ).values_list('marking_id', flat=True)
+        return queryset.filter(pk__in=institutional_marking_ids)
 
     @staticmethod
     def filter_by_reference_work_code(queryset, name, value):

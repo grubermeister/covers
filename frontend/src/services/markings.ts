@@ -616,6 +616,7 @@ export async function getMarkingsPage(
     height?: string;
     width?: string;
     hasImages?: boolean;
+    institutional?: boolean;
     referenceWorkCode?: string;
     reviewed?: "reviewed" | "unreviewed";
     deferCount?: boolean;
@@ -639,6 +640,7 @@ export async function getMarkingsPage(
   if (opt.height?.trim()) params.height = opt.height.trim();
   if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
+  if (opt.institutional === true) params.institutional = "true";
   if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
   if (opt.reviewed === "reviewed") params.reviewed = "true";
   else if (opt.reviewed === "unreviewed") params.reviewed = "false";
