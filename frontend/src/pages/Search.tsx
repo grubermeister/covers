@@ -282,6 +282,9 @@ const Search = () => {
     return "both";
   });
   const [imagesOnly, setImagesOnly] = useState(() => getSearchParam(searchParams, "images", "") === "true");
+  const [institutionalOnly, setInstitutionalOnly] = useState(
+    () => getSearchParam(searchParams, "institutional", "") === "true",
+  );
   const [reviewedFilter, setReviewedFilter] = useState<"all" | "reviewed" | "unreviewed">(() => {
     const raw = getSearchParam(searchParams, "reviewed", "");
     return raw === "reviewed" || raw === "unreviewed" ? raw : "all";
@@ -341,6 +344,7 @@ const Search = () => {
   const prevHeightFilterRef = useRef("");
   const prevWidthFilterRef = useRef("");
   const prevImagesOnlyRef = useRef(imagesOnly);
+  const prevInstitutionalOnlyRef = useRef(institutionalOnly);
   const prevManuscriptFilterRef = useRef(manuscriptFilter);
   const prevReviewedFilterRef = useRef(reviewedFilter);
   const prevTypeFilterRef = useRef(typeFilter);
@@ -420,6 +424,7 @@ const Search = () => {
     const heightFilterJustChanged = prevHeightFilterRef.current !== currentNormalizedHeight;
     const widthFilterJustChanged = prevWidthFilterRef.current !== currentNormalizedWidth;
     const imagesOnlyJustChanged = prevImagesOnlyRef.current !== imagesOnly;
+    const institutionalOnlyJustChanged = prevInstitutionalOnlyRef.current !== institutionalOnly;
     const manuscriptFilterJustChanged = prevManuscriptFilterRef.current !== manuscriptFilter;
     const reviewedFilterJustChanged = prevReviewedFilterRef.current !== reviewedFilter;
     const typeFilterJustChanged = prevTypeFilterRef.current !== typeFilter;
@@ -436,6 +441,7 @@ const Search = () => {
     if (heightFilterJustChanged) prevHeightFilterRef.current = currentNormalizedHeight;
     if (widthFilterJustChanged) prevWidthFilterRef.current = currentNormalizedWidth;
     if (imagesOnlyJustChanged) prevImagesOnlyRef.current = imagesOnly;
+    if (institutionalOnlyJustChanged) prevInstitutionalOnlyRef.current = institutionalOnly;
     if (manuscriptFilterJustChanged) prevManuscriptFilterRef.current = manuscriptFilter;
     if (reviewedFilterJustChanged) prevReviewedFilterRef.current = reviewedFilter;
     if (typeFilterJustChanged) prevTypeFilterRef.current = typeFilter;
@@ -454,6 +460,7 @@ const Search = () => {
       heightFilterJustChanged ||
       widthFilterJustChanged ||
       imagesOnlyJustChanged ||
+      institutionalOnlyJustChanged ||
       manuscriptFilterJustChanged ||
       reviewedFilterJustChanged ||
       typeFilterJustChanged ||
@@ -462,7 +469,7 @@ const Search = () => {
     if (anyFilterChanged) {
       setCurrentPage(1);
     }
-  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, referenceWorkFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, colorFilter, manuscriptFilter, reviewedFilter, typeFilter, submissionQueueSort, catalogSortKey]);
+  }, [debouncedKeywordSearch, shapeFilter, stateFilter, debouncedTownFilter, referenceWorkFilter, debouncedBeginYear, debouncedEndYear, debouncedHeightFilter, debouncedWidthFilter, imagesOnly, institutionalOnly, colorFilter, manuscriptFilter, reviewedFilter, typeFilter, submissionQueueSort, catalogSortKey]);
 
   // Treat years as active filters only when they are valid and 4 digits.
   const normalizedBeginYear = useMemo(() => {
@@ -543,6 +550,7 @@ const Search = () => {
       normalizedHeight,
       normalizedWidth,
       imagesOnly,
+      institutionalOnly,
       colorFilter,
       manuscriptFilter,
       reviewedFilter,
@@ -573,6 +581,7 @@ const Search = () => {
           height: normalizedHeight || undefined,
           width: normalizedWidth || undefined,
           hasImages: imagesOnly,
+          institutional: institutionalOnly,
           reviewed: reviewedFilter !== "all" ? reviewedFilter : undefined,
           ordering: orderingParamForSort(catalogSort),
         }
@@ -633,6 +642,7 @@ const Search = () => {
     if (colorFilter !== "all") params.set("color", colorFilter);
     if (manuscriptFilter !== "both") params.set("manuscripts", manuscriptFilter);
     if (imagesOnly) params.set("images", "true");
+    if (institutionalOnly) params.set("institutional", "true");
     if (reviewedFilter !== "all") params.set("reviewed", reviewedFilter);
     if (submissionQueueSort !== "newest") params.set("sort", submissionQueueSort);
     // Empty list (user toggled off all sorts) -> persist as the sentinel
@@ -645,7 +655,7 @@ const Search = () => {
     if (next !== current) {
       setSearchParams(next ? params : {}, { replace: true });
     }
-  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, referenceWorkFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, reviewedFilter, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
+  }, [currentPage, debouncedKeywordSearch, stateFilter, debouncedTownFilter, referenceWorkFilter, normalizedBeginYear, normalizedEndYear, normalizedHeight, normalizedWidth, shapeFilter, typeFilter, colorFilter, manuscriptFilter, imagesOnly, institutionalOnly, reviewedFilter, submissionQueueSort, catalogSort, catalogSortKey, itemsPerPage, searchParams, setSearchParams]);
 
   const totalPages = Math.ceil(totalCount / itemsPerPage) || 1;
   const pageStart = (currentPage - 1) * itemsPerPage;
@@ -672,6 +682,7 @@ const Search = () => {
     setValuationFilter("all");
     setManuscriptFilter("both");
     setImagesOnly(false);
+    setInstitutionalOnly(false);
     setReviewedFilter("all");
     setSubmissionQueueSort("newest");
     setCatalogSort([...DEFAULT_SORT]);
@@ -1046,6 +1057,20 @@ const Search = () => {
                         className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
                       >
                         Images Only
+                      </label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <Checkbox
+                        disabled={filtersDisabled}
+                        id="institutionalOnly"
+                        checked={institutionalOnly}
+                        onCheckedChange={(checked) => setInstitutionalOnly(checked as boolean)}
+                      />
+                      <label
+                        htmlFor="institutionalOnly"
+                        className="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+                      >
+                        Institutional Only
                       </label>
                     </div>
                   </div>
