@@ -1,0 +1,518 @@
+"""State-centered ASCC pipeline CLI used by ./woco ascc.
+
+This module keeps the demo-facing workflow small:
+
+    ./woco ascc doctor VA
+    ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+
+It preserves the existing tools/wip/in, tools/wip/cache, and tools/wip/out
+layout. The older tools remain stage implementations; this CLI owns the public
+argument names, canonical filenames, and run manifest.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import os
+import shutil
+import subprocess
+import sys
+from collections import Counter
+from dataclasses import dataclass
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+
+TOOLS_DIR = Path(__file__).resolve().parent
+REPO_ROOT = TOOLS_DIR.parent
+WIP_DIR = TOOLS_DIR / "wip"
+WIP_IN = WIP_DIR / "in"
+WIP_CACHE = WIP_DIR / "cache"
+WIP_OUT = WIP_DIR / "out"
+BACKEND_MEDIA = REPO_ROOT / "backend" / "media"
+
+IMPORT_STEMS = (
+    "colors",
+    "letterings",
+    "shapes",
+    "regions",
+    "reference_works",
+    "post_offices",
+    "post_office_regions",
+    "markings",
+    "covers",
+    "cover_valuations",
+    "dates_seen",
+    "cover_markings",
+    "citations",
+    "images",
+    "marking_lineage",
+)
+
+
+class AsccCliError(Exception):
+    """Raised for user-correctable ASCC CLI failures."""
+
+
+@dataclass(frozen=True)
+class StatePaths:
+    state: str
+    basename: str
+    pdf: Path
+    ocr_rows: Path
+    catalog_rows: Path
+    images_dir: Path
+    image_report: Path
+    bundle_dir: Path
+    compare_dir: Path
+    compare_ledger: Path
+    manifest: Path
+    media_dir: Path
+
+
+def state_paths(state: str) -> StatePaths:
+    state = normalize_state(state)
+    return StatePaths(
+        state=state,
+        basename=state,
+        pdf=WIP_IN / f"{state}.pdf",
+        ocr_rows=WIP_CACHE / f"{state}_ocr_rows.csv",
+        catalog_rows=WIP_CACHE / f"{state}_catalog_rows.csv",
+        images_dir=WIP_CACHE / f"{state}_images",
+        image_report=WIP_CACHE / f"{state}_subchunks_report.csv",
+        bundle_dir=WIP_OUT / state.lower(),
+        compare_dir=WIP_CACHE / "compare" / state,
+        compare_ledger=WIP_CACHE / "compare" / state / f"review_ledger_{state}.csv",
+        manifest=WIP_CACHE / f"{state}_run.json",
+        media_dir=BACKEND_MEDIA / state.lower(),
+    )
+
+
+def normalize_state(value: str) -> str:
+    state = str(value or "").strip().upper()
+    if len(state) != 2 or not state.isalpha():
+        raise AsccCliError("STATE must be a two-letter abbreviation, for example VA.")
+    return state
+
+
+def discover_state_pdf(state: str) -> tuple[Path | None, str | None]:
+    """Return the canonical or unique matching PDF for state.
+
+    The canonical path is tools/wip/in/<STATE>.pdf. If it does not exist,
+    exactly one case-insensitive tools/wip/in/<STATE>*.pdf match is accepted.
+    """
+    state = normalize_state(state)
+    canonical = WIP_IN / f"{state}.pdf"
+    if canonical.exists():
+        return canonical, None
+    matches = sorted(
+        p for p in WIP_IN.iterdir()
+        if p.is_file()
+        and p.suffix.lower() == ".pdf"
+        and p.name.upper().startswith(state)
+    ) if WIP_IN.exists() else []
+    if not matches:
+        return None, f"missing {canonical}"
+    if len(matches) > 1:
+        names = ", ".join(str(p) for p in matches)
+        return None, f"multiple matching PDFs: {names}"
+    return matches[0], None
+
+
+def copy_state_pdf(state: str, source: Path | None) -> Path:
+    """Ensure tools/wip/in/<STATE>.pdf exists and return that path."""
+    paths = state_paths(state)
+    WIP_IN.mkdir(parents=True, exist_ok=True)
+    if source is None:
+        found, error = discover_state_pdf(paths.state)
+        if error:
+            raise AsccCliError(error)
+        source = found
+    source = Path(source).expanduser()
+    if not source.exists():
+        raise AsccCliError(f"PDF not found: {source}")
+    if source.resolve() != paths.pdf.resolve():
+        shutil.copy2(source, paths.pdf)
+    return paths.pdf
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="./woco ascc")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    doctor = sub.add_parser("doctor", help="check ASCC pipeline prerequisites")
+    doctor.add_argument("state")
+    add_shared_options(doctor, include_import_check=False)
+
+    run = sub.add_parser("run", help="run PDF to catalog rows, bundle, and compare ledger")
+    run.add_argument("state")
+    run.add_argument("--pdf", type=Path, default=None)
+    add_shared_options(run, include_import_check=True)
+
+    munge = sub.add_parser("munge", help="build the import bundle from catalog rows")
+    munge.add_argument("state")
+    add_shared_options(munge, include_import_check=True)
+
+    compare = sub.add_parser("compare", help="run the compare ledger from catalog rows and bundle")
+    compare.add_argument("state")
+    add_shared_options(compare, include_import_check=False)
+
+    return parser
+
+
+def add_shared_options(parser: argparse.ArgumentParser, include_import_check: bool) -> None:
+    parser.add_argument("--provider", choices=("openrouter", "anthropic"), default=None)
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--pages", default=None)
+    parser.add_argument("--reference-work", default="ASCC1")
+    parser.add_argument("--legacy-status", choices=("active", "approved"), default="active")
+    if include_import_check:
+        parser.add_argument(
+            "--import-check",
+            choices=("auto", "always", "never"),
+            default="auto",
+        )
+
+
+def main(argv: list[str] | None = None) -> int:
+    load_dotenv(REPO_ROOT / ".env")
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "doctor":
+            return command_doctor(args)
+        if args.command == "run":
+            return command_run(args)
+        if args.command == "munge":
+            return command_munge(args)
+        if args.command == "compare":
+            return command_compare(args)
+    except AsccCliError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    return 2
+
+
+def command_doctor(args) -> int:
+    state = normalize_state(args.state)
+    checks = doctor_checks(state, provider=args.provider)
+    print_doctor(state, checks)
+    return 0 if not any(c["required"] and not c["ok"] for c in checks) else 2
+
+
+def command_run(args) -> int:
+    paths = state_paths(args.state)
+    copy_state_pdf(paths.state, args.pdf)
+    require_doctor(paths.state, args.provider)
+
+    run_command(page_processor_cmd(paths, args))
+    run_command(page_extract_cmd(paths, args))
+    run_command(image_extract_cmd(paths, args))
+    copied_images = copy_marking_images(paths)
+    clean_bundle_dir(paths.bundle_dir)
+    run_command(munger_cmd(paths, args))
+    run_command(compare_cmd(paths, args))
+    import_result = maybe_import_check(paths, args.import_check)
+    write_run_manifest(paths, args, copied_images, import_result)
+    print()
+    print(f"catalog rows:   {paths.catalog_rows}")
+    print(f"bundle:         {paths.bundle_dir}")
+    print(f"compare ledger: {paths.compare_ledger}")
+    print(f"manifest:       {paths.manifest}")
+    return 0
+
+
+def command_munge(args) -> int:
+    paths = state_paths(args.state)
+    require_file(paths.catalog_rows, "catalog rows")
+    copied_images = copy_marking_images(paths)
+    clean_bundle_dir(paths.bundle_dir)
+    run_command(munger_cmd(paths, args))
+    import_result = maybe_import_check(paths, args.import_check)
+    write_run_manifest(paths, args, copied_images, import_result)
+    return 0
+
+
+def command_compare(args) -> int:
+    paths = state_paths(args.state)
+    require_file(paths.catalog_rows, "catalog rows")
+    require_dir(paths.bundle_dir, "bundle")
+    run_command(compare_cmd(paths, args))
+    return 0
+
+
+def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, object]]:
+    paths = state_paths(state)
+    found_pdf, pdf_error = discover_state_pdf(state)
+    selected_provider = provider or os.environ.get("PIPELINE_LLM_PROVIDER") or "openrouter"
+    if selected_provider == "anthropic":
+        credential_ok = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        credential_name = "ANTHROPIC_API_KEY"
+    else:
+        credential_ok = bool(os.environ.get("OPENROUTER_API_KEY"))
+        credential_name = "OPENROUTER_API_KEY"
+    db_ok, db_message = check_db()
+    return [
+        check_item("pdf", found_pdf is not None, str(found_pdf or pdf_error), True),
+        check_path("reference works", WIP_IN / "reference_works.csv", True),
+        check_path("regions", WIP_IN / "regions.csv", True),
+        check_path("legacy states", WIP_IN / "tblStates.csv", True),
+        check_path("legacy rows", WIP_IN / "tblRawStateData.csv", True),
+        check_path("legacy images", WIP_IN / "tblTownmarkImages.csv", True),
+        check_item("pdftoppm", shutil.which("pdftoppm") is not None, shutil.which("pdftoppm") or "not on PATH", True),
+        check_item(credential_name, credential_ok, "set" if credential_ok else "missing", True),
+        check_item("wip in", WIP_IN.exists(), str(WIP_IN), True),
+        check_item("wip cache", WIP_CACHE.exists(), str(WIP_CACHE), True),
+        check_item("wip out", WIP_OUT.exists(), str(WIP_OUT), True),
+        check_item("database", db_ok, db_message, False),
+        check_item("catalog rows", paths.catalog_rows.exists(), str(paths.catalog_rows), False),
+        check_item("bundle", paths.bundle_dir.exists(), str(paths.bundle_dir), False),
+        check_item("compare ledger", paths.compare_ledger.exists(), str(paths.compare_ledger), False),
+    ]
+
+
+def check_path(name: str, path: Path, required: bool) -> dict[str, object]:
+    return check_item(name, path.exists(), str(path), required)
+
+
+def check_item(name: str, ok: bool, detail: str, required: bool) -> dict[str, object]:
+    return {"name": name, "ok": ok, "detail": detail, "required": required}
+
+
+def print_doctor(state: str, checks: list[dict[str, object]]) -> None:
+    print(f"ASCC doctor {state}")
+    for check in checks:
+        if check["ok"]:
+            status = "OK"
+        elif check["required"]:
+            status = "FAIL"
+        else:
+            status = "SKIP"
+        print(f"  {status:<4} {check['name']:<18} {check['detail']}")
+
+
+def require_doctor(state: str, provider: str | None) -> None:
+    failures = [
+        c for c in doctor_checks(state, provider=provider)
+        if c["required"] and not c["ok"]
+    ]
+    if failures:
+        details = "; ".join(f"{c['name']}: {c['detail']}" for c in failures)
+        raise AsccCliError(details)
+
+
+def require_file(path: Path, label: str) -> None:
+    if not path.exists():
+        raise AsccCliError(f"missing {label}: {path}")
+
+
+def require_dir(path: Path, label: str) -> None:
+    if not path.is_dir():
+        raise AsccCliError(f"missing {label}: {path}")
+
+
+def page_processor_cmd(paths: StatePaths, args) -> list[str]:
+    cmd = [sys.executable, str(TOOLS_DIR / "ascc_page_processor.py"), paths.basename]
+    add_provider_args(cmd, args)
+    if args.pages:
+        cmd.extend(["--pages", args.pages])
+    return cmd
+
+
+def page_extract_cmd(paths: StatePaths, args) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(TOOLS_DIR / "ascc_page_extract.py"),
+        paths.basename,
+        "--output-csv",
+        str(paths.ocr_rows),
+    ]
+    add_provider_args(cmd, args)
+    if args.pages:
+        cmd.extend(["--pages", args.pages])
+    return cmd
+
+
+def image_extract_cmd(paths: StatePaths, args) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(TOOLS_DIR / "ascc_image_extract.py"),
+        paths.basename,
+        "--ocr-rows",
+        str(paths.ocr_rows),
+        "--catalog-rows-out",
+        str(paths.catalog_rows),
+        "--strict",
+    ]
+    if args.pages:
+        cmd.extend(["--pages", args.pages])
+    return cmd
+
+
+def munger_cmd(paths: StatePaths, args) -> list[str]:
+    return [
+        sys.executable,
+        str(TOOLS_DIR / "ascc_data_munger.py"),
+        "--input",
+        str(paths.catalog_rows),
+        "--input-dir",
+        str(WIP_IN),
+        "--out-dir",
+        str(paths.bundle_dir),
+        "--reference-work-code",
+        args.reference_work,
+    ]
+
+
+def compare_cmd(paths: StatePaths, args) -> list[str]:
+    return [
+        sys.executable,
+        str(TOOLS_DIR / "ascc_compare.py"),
+        paths.state,
+        "--all",
+        "--status",
+        args.legacy_status,
+        "--catalog-rows",
+        str(paths.catalog_rows),
+        "--bundle-dir",
+        str(paths.bundle_dir),
+    ]
+
+
+def add_provider_args(cmd: list[str], args) -> None:
+    if args.provider:
+        cmd.extend(["--provider", args.provider])
+    if args.model:
+        cmd.extend(["--model", args.model])
+
+
+def run_command(cmd: list[str]) -> None:
+    print()
+    print("==> " + " ".join(cmd))
+    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+
+
+def clean_bundle_dir(bundle_dir: Path) -> None:
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    for stem in IMPORT_STEMS:
+        (bundle_dir / f"{stem}.csv").unlink(missing_ok=True)
+
+
+def copy_marking_images(paths: StatePaths) -> int:
+    paths.media_dir.mkdir(parents=True, exist_ok=True)
+    images = sorted(paths.images_dir.glob("*.png"))
+    for image in images:
+        shutil.copy2(image, paths.media_dir / image.name)
+    print()
+    print(f"copied marking images: {len(images)} -> {paths.media_dir}")
+    return len(images)
+
+
+def check_db() -> tuple[bool, str]:
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "backend" / "manage.py"),
+        "shell",
+        "-c",
+        "from django.db import connection; connection.ensure_connection()",
+    ]
+    try:
+        subprocess.run(
+            cmd,
+            cwd=REPO_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
+            check=True,
+        )
+    except Exception as exc:
+        return False, f"not available ({exc.__class__.__name__})"
+    return True, "available"
+
+
+def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
+    if mode == "never":
+        return {"mode": mode, "status": "skipped"}
+    db_ok, db_message = check_db()
+    if mode == "auto" and not db_ok:
+        print()
+        print(f"import dry-run skipped: database {db_message}")
+        return {"mode": mode, "status": "skipped", "reason": db_message}
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "backend" / "manage.py"),
+        "import_ascc_bundle",
+        str(paths.bundle_dir),
+        "--dry-run",
+    ]
+    run_command(cmd)
+    return {"mode": mode, "status": "passed"}
+
+
+def count_csv_rows(path: Path) -> int | None:
+    if not path.exists():
+        return None
+    with path.open(newline="") as fh:
+        return max(sum(1 for _ in fh) - 1, 0)
+
+
+def image_status_counts(path: Path) -> dict[str, int]:
+    if not path.exists():
+        return {}
+    with path.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        return dict(Counter(row.get("Status", "") for row in reader))
+
+
+def write_run_manifest(
+    paths: StatePaths,
+    args,
+    copied_images: int,
+    import_result: dict[str, object],
+) -> None:
+    """Write tools/wip/cache/<STATE>_run.json.
+
+    Example output shape:
+    {
+      "state": "VA",
+      "paths": {"catalog_rows": "tools/wip/cache/VA_catalog_rows.csv"},
+      "counts": {"catalog_rows": 1596},
+      "import_check": {"mode": "auto", "status": "passed"}
+    }
+    """
+    paths.manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "state": paths.state,
+        "provider": args.provider or os.environ.get("PIPELINE_LLM_PROVIDER") or "openrouter",
+        "model": args.model or os.environ.get("PIPELINE_LLM_MODEL") or "",
+        "reference_work": args.reference_work,
+        "legacy_status": args.legacy_status,
+        "paths": {
+            "pdf": str(paths.pdf),
+            "ocr_rows": str(paths.ocr_rows),
+            "catalog_rows": str(paths.catalog_rows),
+            "images_dir": str(paths.images_dir),
+            "bundle": str(paths.bundle_dir),
+            "compare_ledger": str(paths.compare_ledger),
+        },
+        "counts": {
+            "ocr_rows": count_csv_rows(paths.ocr_rows),
+            "catalog_rows": count_csv_rows(paths.catalog_rows),
+            "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
+            "compare_ledger": count_csv_rows(paths.compare_ledger),
+            "copied_images": copied_images,
+        },
+        "image_status_counts": image_status_counts(paths.image_report),
+        "import_check": import_result,
+    }
+    paths.manifest.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

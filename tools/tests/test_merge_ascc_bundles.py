@@ -1,7 +1,8 @@
 """Tests for tools/merge_ascc_bundles.py.
 
 Run from repo root:
-    .venv/bin/python -m unittest discover -s tools -p 'test_merge_ascc_bundles.py'
+    PYTHONPATH=tools .venv/bin/python -m unittest discover \
+        -s tools/tests -p 'test_merge_ascc_bundles.py'
 
 Expected exit code: 0.
 """
@@ -167,6 +168,19 @@ class MergeAsccBundlesTests(unittest.TestCase):
             errors = check_bundle(bundle)
 
             self.assertIn("colors: duplicate name Black", errors)
+
+    def test_blank_marking_color_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            va = root / "va"
+            out = root / "out"
+            make_bundle(va, "VA", "Virginia", "Richmond", "ASCC1-VA-1", "va/va-1.png")
+            rows = read_rows(va / "markings.csv")
+            rows[0]["color"] = ""
+            write_csv(va / "markings.csv", list(rows[0]), rows)
+
+            with self.assertRaisesRegex(MergeError, "VA:markings.color: blank id"):
+                merge_bundles([BundleSpec("VA", va)], out)
 
     def test_check_bundle_allows_storage_filename_fanout_same_checksum(self):
         with tempfile.TemporaryDirectory() as td:

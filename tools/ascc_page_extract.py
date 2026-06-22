@@ -1,9 +1,9 @@
 """ascc_page_extract.py -- single-pass ASCC chunk extraction.
 
 Reads chunk PNGs at tools/wip/cache/<basename>_chunks/page-NNNN-MMMM.png, sends
-each to Claude Sonnet through the selected provider, and writes a 4-column CSV
-(Listing, Page, Images Above, Type) to tools/wip/cache/<basename>.csv for
-ascc_data_munger.py to consume downstream.
+each to Claude Sonnet through the selected provider, and writes a catalog-row
+CSV to tools/wip/cache/<basename>.csv for ascc_data_munger.py to consume
+downstream.
 
 Pipeline position: downstream of tools/ascc_page_processor.py (which
 produces the chunk PNGs); upstream of tools/ascc_data_munger.py.
@@ -53,6 +53,7 @@ from pipeline_llm import (
     resolve_model,
     resolve_provider,
 )
+from catalog_rows import CANONICAL_COLUMNS
 
 
 # Script-root paths let this tool run from any cwd while preserving the
@@ -78,9 +79,9 @@ EXTRACT_PROMPT_VERSION = "v9"
 # prompt version.
 EXTRACT_MAX_TOKENS     = 16000
 
-# Reference table for state-header derivation (USPS abbrev -> region name).
-# Loaded rows have region_tier in {STATE, DISTRICT}; COUNTRY rows are
-# skipped.
+# Reference table for state-header derivation (region abbrev -> region name).
+# Loaded rows have region_tier in {STATE, DISTRICT, TERRITORY}; COUNTRY rows
+# are skipped.
 REGIONS_CSV = WIP_DIR / "in" / "regions.csv"
 
 
@@ -238,10 +239,10 @@ If a chunk is pure illustration with no catalog text below, return
 
 class Paths:
     """Per-run filesystem layout, derived from the basename."""
-    def __init__(self, basename):
+    def __init__(self, basename, output_csv=None):
         self.basename   = basename
         self.images_dir = WIP_DIR / "cache" / f"{basename}_chunks"
-        self.output_csv = WIP_DIR / "cache" / f"{basename}.csv"
+        self.output_csv = Path(output_csv) if output_csv else WIP_DIR / "cache" / f"{basename}.csv"
         self.cache_file = WIP_DIR / "cache" / f"{basename}_extract.json"
         self.run_log    = WIP_DIR / "cache" / f"{basename}_extract.log"
 
@@ -282,10 +283,9 @@ def log_only(msg):
 # ---------------------------------------------------------------------------
 
 def load_region_map(csv_path):
-    """Return {USPS_ABBREV_UPPER: REGION_NAME_UPPER} from the regions
-    reference CSV. Skip rows whose region_tier is not STATE or DISTRICT
-    (e.g. the COUNTRY row for USA). Returns {} and prints a one-line
-    warning if csv_path is missing."""
+    """Return {REGION_ABBREV_UPPER: REGION_NAME_UPPER} from the regions
+    reference CSV. Skip COUNTRY rows such as USA. Returns {} and prints a
+    one-line warning if csv_path is missing."""
     if not csv_path.exists():
         print(f"warning: {csv_path} not found; "
               f"state-header derivation disabled")
@@ -294,7 +294,11 @@ def load_region_map(csv_path):
     with csv_path.open() as fh:
         reader = csv.DictReader(fh)
         for row in reader:
-            if row.get("region_tier") not in ("STATE", "DISTRICT"):
+            if row.get("region_tier") not in (
+                "STATE",
+                "DISTRICT",
+                "TERRITORY",
+            ):
                 continue
             abbrev = (row.get("abbrev") or "").strip().upper()
             name = (row.get("name") or "").strip().upper()
@@ -303,11 +307,56 @@ def load_region_map(csv_path):
     return out
 
 
+def load_region_name_by_id(csv_path, region_id):
+    """Return REGION_NAME_UPPER for one id from the regions reference CSV.
+
+    The CSV row must have a non-empty name and a tier in the same set used by
+    load_region_map. Missing ids raise ValueError so a mistyped CLI override
+    does not silently disable state-heading trimming.
+    """
+    target = str(region_id).strip()
+    if not target:
+        raise ValueError("region id is empty")
+    if not csv_path.exists():
+        raise ValueError(f"{csv_path} not found")
+    with csv_path.open() as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            if (row.get("id") or "").strip() != target:
+                continue
+            if row.get("region_tier") not in (
+                "STATE",
+                "DISTRICT",
+                "TERRITORY",
+            ):
+                raise ValueError(
+                    "region id {} has unsupported tier {!r}".format(
+                        target,
+                        row.get("region_tier"),
+                    )
+                )
+            name = (row.get("name") or "").strip().upper()
+            if not name:
+                raise ValueError(f"region id {target} has no name")
+            return name
+    raise ValueError(f"region id {target} not found in {csv_path}")
+
+
+def basename_region_prefix(basename):
+    """Return the first alphanumeric region token from a catalog basename."""
+    stem = Path(basename).stem
+    parts = re.split(r"[^A-Za-z0-9]+", stem, maxsplit=1)
+    return parts[0].upper() if parts else ""
+
+
 def derive_state_header(basename, region_map):
-    """Map basename like 'VA_ASCC_CTLG' to 'VIRGINIA'. Returns None if
-    the basename's first '_'-delimited token is not in region_map."""
-    prefix = basename.split("_", 1)[0].upper()
-    return region_map.get(prefix)
+    """Map basename like 'VA_ASCC_CTLG' or 'WV-ASCC-CTLG' to 'VIRGINIA'.
+
+    The prefix is the first alphanumeric token in the basename stem. This
+    keeps the lookup tied to tools/wip/in/regions.csv while accepting both
+    underscore and hyphen file naming styles.
+    """
+    return region_map.get(basename_region_prefix(basename))
 
 
 # ---------------------------------------------------------------------------
@@ -520,6 +569,13 @@ def save_cache(path, cache):
 
 _PAGE_NUMBER_RE = re.compile(r"^\d{1,4}$")
 _LEADER_STRIP_RE = re.compile(r"^[.\s]+|[.\s]+$")
+_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def _normalize_heading(text):
+    """Return a stable uppercase heading key for exact META matches."""
+    core = _LEADER_STRIP_RE.sub("", text).strip()
+    return _WHITESPACE_RE.sub(" ", core.upper())
 
 
 def _is_garbage_meta(text, state_header):
@@ -538,6 +594,22 @@ def _is_garbage_meta(text, state_header):
                 and upper in state_header):
             return True
     return False
+
+
+def _is_state_heading_meta(row, state_header):
+    """True only for the expected state opener META row.
+
+    The extractor derives state_header from tools/wip/in/regions.csv, for
+    example:
+        {"WV": "WEST VIRGINIA"}
+
+    This check is intentionally exact after whitespace normalization. It
+    should match "WEST VIRGINIA" or "WEST\nVIRGINIA", but not paragraphs
+    that merely mention West Virginia.
+    """
+    if not state_header or row["type"] != "META":
+        return False
+    return _normalize_heading(row["text"]) == _normalize_heading(state_header)
 
 
 def _is_city_illustration_leak(text, position, chunk_listing_count):
@@ -632,17 +704,24 @@ def run_extract(paths, provider, model, page_filter, force, llm):
 # DataFrame assembly + CSV write
 # ---------------------------------------------------------------------------
 
-CSV_COLUMNS = ["Listing", "Page", "Chunk", "Images Above", "Type"]
+CSV_COLUMNS = CANONICAL_COLUMNS[:5]
 
 
 def assemble_rows(chunks, responses, state_header):
     """Walk chunks in reading order, apply both META post-filters,
-    build the row list. The Images Above count attaches to the FIRST
+    build the row list. The image_count value attaches to the FIRST
     surviving entry of each chunk (so dropping the first entry as
-    garbage does not lose the count). Returns (rows, dropped_meta)
-    where dropped_meta is a list of (key, text) tuples."""
+    garbage does not lose the count). If state_header is available, skip
+    cached OCR rows before the first exact META state heading so split-page
+    PDFs do not import listings from the previous catalog section.
+
+    Returns (rows, dropped_meta, skipped_prefix_count) where dropped_meta
+    is a list of (key, text) tuples."""
     rows = []
+    pending_prefix_rows = []
     dropped_meta = []
+    found_state_heading = state_header is None
+    skipped_prefix_count = 0
     for page, chunk_seq, _ in chunks:
         key = f"page-{page:04d}-{chunk_seq:04d}"
         entry = responses.get(key)
@@ -663,15 +742,31 @@ def assemble_rows(chunks, responses, state_header):
             ):
                 dropped_meta.append((key, r["text"]))
                 continue
-            rows.append({
-                "Listing": r["text"],
-                "Page": int(page),
-                "Chunk": int(chunk_seq),
-                "Images Above": chunk_images if emitted_in_chunk == 0 else 0,
-                "Type": r["type"],
-            })
+            row = {
+                "listing_text": r["text"],
+                "catalog_page": int(page),
+                "chunk_number": int(chunk_seq),
+                "image_count": chunk_images if emitted_in_chunk == 0 else 0,
+                "row_type": r["type"],
+            }
+            if not found_state_heading:
+                if _is_state_heading_meta(r, state_header):
+                    found_state_heading = True
+                    skipped_prefix_count = len(pending_prefix_rows)
+                    pending_prefix_rows = []
+                    rows.append(row)
+                else:
+                    pending_prefix_rows.append(row)
+            else:
+                rows.append(row)
             emitted_in_chunk += 1
-    return rows, dropped_meta
+    if pending_prefix_rows:
+        print(
+            "WARNING: expected state heading {!r} was not found; "
+            "keeping all cached rows".format(state_header)
+        )
+        rows = pending_prefix_rows + rows
+    return rows, dropped_meta, skipped_prefix_count
 
 
 def write_csv(rows, output_csv):
@@ -687,16 +782,16 @@ def write_csv(rows, output_csv):
             lineterminator="\n",
         )
         writer.writeheader()
-        for r in rows:
-            writer.writerow(r)
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in CSV_COLUMNS})
 
 
 def _print_summary(rows):
-    """Print the per-page / per-Images-Above / per-Type counts that the
+    """Print the per-page / image_count / row_type counts that the
     notebook used to print via pandas. Sorted by key for stable output."""
     if not rows:
         return
-    pages = [r["Page"] for r in rows]
+    pages = [r["catalog_page"] for r in rows]
     print(f"pages: {min(pages)}-{max(pages)}")
     print()
     print("rows per page:")
@@ -704,13 +799,13 @@ def _print_summary(rows):
     for page in sorted(page_counts):
         print(f"  {page:>4d}  {page_counts[page]:>5d}")
     print()
-    print("Images Above value counts:")
-    ia_counts = Counter(r["Images Above"] for r in rows)
+    print("image_count value counts:")
+    ia_counts = Counter(r["image_count"] for r in rows)
     for v in sorted(ia_counts):
         print(f"  {v:>2d}  {ia_counts[v]:>5d}")
     print()
-    print("Type value counts:")
-    type_counts = Counter(r["Type"] for r in rows)
+    print("row_type value counts:")
+    type_counts = Counter(r["row_type"] for r in rows)
     for t in sorted(type_counts):
         print(f"  {t:<8s}  {type_counts[t]:>5d}")
 
@@ -759,19 +854,36 @@ def main(argv=None):
               "FULL cache regardless of this filter -- --pages only "
               "scopes which chunks are queried."),
     )
-    parser.add_argument(
+    header_group = parser.add_mutually_exclusive_group()
+    header_group.add_argument(
         "--state-header",
         default=None,
         help=("override the running-head word used by the META post-filter "
               "(e.g. VIRGINIA). Default: derived from the basename's "
-              "USPS prefix via tools/wip/in/regions.csv (VA -> VIRGINIA, "
-              "MA -> MASSACHUSETTS, ...)."),
+              "region prefix via tools/wip/in/regions.csv (VA -> VIRGINIA, "
+              "WV -> WEST VIRGINIA, ...)."),
+    )
+    header_group.add_argument(
+        "--region-id",
+        default=None,
+        help=("override the basename-derived region by id in "
+              "tools/wip/in/regions.csv. The selected row's name becomes "
+              "the expected META heading."),
     )
     parser.add_argument(
         "--force",
         action="store_true",
         help=("re-query every in-scope chunk, ignoring the cache. Scoped "
               "to --pages when set. Default: cached chunks are skipped."),
+    )
+    parser.add_argument(
+        "--output-csv",
+        type=Path,
+        default=None,
+        help=(
+            "write catalog rows to this path. Default: "
+            "tools/wip/cache/<basename>.csv."
+        ),
     )
     parser.add_argument(
         "-v", "--verbose",
@@ -781,7 +893,7 @@ def main(argv=None):
     )
     args = parser.parse_args(argv)
 
-    paths = Paths(args.basename)
+    paths = Paths(args.basename, output_csv=args.output_csv)
     provider = resolve_provider(args.provider)
     model = resolve_model(provider, args.model)
 
@@ -808,11 +920,23 @@ def main(argv=None):
         if args.state_header:
             state_header = args.state_header.upper()
             print(f"state header: {state_header} (from --state-header)")
+        elif args.region_id:
+            try:
+                state_header = load_region_name_by_id(
+                    REGIONS_CSV,
+                    args.region_id,
+                )
+            except ValueError as e:
+                raise SystemExit(f"--region-id: {e}") from e
+            print(
+                f"state header: {state_header} "
+                f"(region id {args.region_id} via {REGIONS_CSV})"
+            )
         else:
             region_map = load_region_map(REGIONS_CSV)
             state_header = derive_state_header(args.basename, region_map)
             if state_header:
-                prefix = args.basename.split("_", 1)[0].upper()
+                prefix = basename_region_prefix(args.basename)
                 print(
                     f"state header: {state_header} "
                     f"({prefix} via {REGIONS_CSV})"
@@ -855,13 +979,15 @@ def main(argv=None):
         # --pages -- partial runs must not clobber complete CSVs with a
         # subset).
         chunks = discover_chunks(paths.images_dir)
-        rows, dropped_meta = assemble_rows(
+        rows, dropped_meta, skipped_prefix_count = assemble_rows(
             chunks, cache["responses"], state_header
         )
 
         print()
         print(f"rows: {len(rows):,}")
         _print_summary(rows)
+        print()
+        print(f"rows skipped before state heading: {skipped_prefix_count}")
         print()
         print(f"meta rows dropped as page furniture: {len(dropped_meta)}")
         if dropped_meta:

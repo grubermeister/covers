@@ -2,7 +2,7 @@
 
 Reads chunk PNGs at tools/wip/cache/<basename>_chunks/page-NNNN-MMMM.png plus
 the raw extractor CSV at tools/wip/cache/<basename>.csv. For each chunk where
-Images Above >= 1:
+image_count >= 1:
 
   Stage 1 (deterministic, no API calls):
       Find row-blocks via find_blocks (BLANK_RUN=5 from the processor).
@@ -34,7 +34,7 @@ Images Above >= 1:
         - N == len(surviving runs): one bbox per run (side-by-side row);
         - N == len(row_blocks): one bbox per row-block (stacked);
         - Else: log marking_count_mismatch and emit nothing unless the
-          mismatch is a safe one-content overcount that can be reconciled
+          mismatch is a safe one-content overcount that can be corrected
           to one emitted marking.
       Y bounds per bbox are tightened to the actual dark rows inside the
       bbox X range.
@@ -43,10 +43,10 @@ Outputs:
   tools/wip/cache/<basename>_subchunks/<region>-<page>-<chunk>.png
   tools/wip/cache/<basename>_images/<region>-<page>-<chunk>-<counter>.png
   tools/wip/cache/<basename>_subchunks_report.csv
-  optional reconciled CSV for downstream import-safe munger input
+  optional catalog-row CSV: raw OCR CSV with image_count values verified
 
 Pipeline position: downstream of tools/ascc_page_extract.py (which
-produces the authoritative CSV with Images Above counts).
+produces the authoritative CSV with image_count values).
 
 Usage:
 
@@ -57,7 +57,7 @@ Usage:
 No caches: both stages are deterministic and re-run quickly.
 
 Report:
-    Status codes: ok, count_reconciled, not_in_csv, no_blocks,
+    Status codes: ok, count_corrected, not_in_csv, no_blocks,
     marking_count_mismatch, csv_parse_error.
 """
 
@@ -91,6 +91,10 @@ from ascc_page_extract import (     # noqa: E402
     discover_chunks,
     parse_pages_arg,
 )
+from catalog_rows import (          # noqa: E402
+    canonicalize_row,
+    write_catalog_rows,
+)
 from munger.images import (         # noqa: E402
     catalog_image_slug,
     image_filename,
@@ -102,7 +106,7 @@ from munger.images import (         # noqa: E402
 # ---------------------------------------------------------------------------
 
 REPORT_COLUMNS = [
-    "Page", "Chunk", "Images Above", "Markings Found", "Status", "Notes",
+    "Page", "Chunk", "Image Count", "Markings Found", "Status", "Notes",
 ]
 
 IMPORT_BLOCKING_STATUSES = {
@@ -164,10 +168,10 @@ WRAPPED_LISTING_MAX_LEFT_FRAC = 0.18
 class Paths:
     """Per-run filesystem layout, derived from the basename."""
 
-    def __init__(self, basename):
+    def __init__(self, basename, input_csv=None):
         self.basename       = basename
         self.images_dir     = WIP_DIR / "cache" / f"{basename}_chunks"
-        self.input_csv      = WIP_DIR / "cache" / f"{basename}.csv"
+        self.input_csv      = Path(input_csv) if input_csv else WIP_DIR / "cache" / f"{basename}.csv"
         self.subchunks_dir  = WIP_DIR / "cache" / f"{basename}_subchunks"
         self.markings_dir   = WIP_DIR / "cache" / f"{basename}_images"
         self.report_csv     = WIP_DIR / "cache" / f"{basename}_subchunks_report.csv"
@@ -211,12 +215,12 @@ def _cleanup_chunk_outputs(paths, image_slug, page, chunk_seq):
 # ---------------------------------------------------------------------------
 
 def load_csv_counts(csv_path):
-    """Read tools/wip/cache/<basename>.csv. Returns:
-        counts:       {(page, chunk): images_above_sum}
+    """Read the OCR catalog-row CSV. Returns:
+        counts:       {(page, chunk): image_count_sum}
         parse_errors: list of (page, chunk, raw_value) for rows whose
-                      Images Above column was not parseable as int.
+                      image_count column was not parseable as int.
 
-    The extract tool stores Images Above on the FIRST surviving row of
+    The extract tool stores image_count on the FIRST surviving row of
     each chunk; later rows of the same chunk have 0. Summing per (page,
     chunk) recovers the count even if that convention later changes.
     """
@@ -228,13 +232,14 @@ def load_csv_counts(csv_path):
     parse_errors = []
     with csv_path.open() as fh:
         reader = csv.DictReader(fh)
-        for row in reader:
+        for raw_row in reader:
+            row = canonicalize_row(raw_row)
             try:
-                page = int(row["Page"])
-                chunk = int(row["Chunk"])
+                page = int(row["catalog_page"])
+                chunk = int(row["chunk_number"])
             except (ValueError, KeyError):
                 continue
-            raw_ia = row.get("Images Above", "")
+            raw_ia = row.get("image_count", "")
             try:
                 ia = int(float(raw_ia or 0))
             except (ValueError, TypeError):
@@ -730,41 +735,37 @@ def write_report(report_csv, rows):
             writer.writerow(r)
 
 
-def write_reconciled_csv(input_csv, output_csv, reconciled_counts):
+def write_catalog_rows_with_verified_counts(input_csv, output_csv, verified_counts):
     """Copy the raw extractor CSV, applying per-chunk count corrections.
 
     Example correction map shape:
         {(419, 14): 1}
 
-    The first row for each corrected (Page, Chunk) receives the corrected
-    Images Above value. Later rows for that same chunk receive 0. Rows that
+    The first row for each corrected (catalog_page, chunk_number) receives
+    the corrected image_count value. Later rows for that same chunk receive 0. Rows that
     are not corrected are written unchanged.
     """
     output_csv = Path(output_csv)
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     seen = set()
-    with input_csv.open(newline="") as src, output_csv.open("w", newline="") as dst:
+    rows = []
+    with input_csv.open(newline="") as src:
         reader = csv.DictReader(src)
-        writer = csv.DictWriter(
-            dst,
-            fieldnames=reader.fieldnames,
-            quoting=csv.QUOTE_MINIMAL,
-            lineterminator="\n",
-        )
-        writer.writeheader()
-        for row in reader:
+        for raw_row in reader:
+            row = canonicalize_row(raw_row)
             key = None
             try:
-                key = (int(row["Page"]), int(row["Chunk"]))
+                key = (int(row["catalog_page"]), int(row["chunk_number"]))
             except (ValueError, KeyError, TypeError):
                 pass
-            if key in reconciled_counts:
+            if key in verified_counts:
                 if key in seen:
-                    row["Images Above"] = "0"
+                    row["image_count"] = "0"
                 else:
-                    row["Images Above"] = str(int(reconciled_counts[key]))
+                    row["image_count"] = str(int(verified_counts[key]))
                     seen.add(key)
-            writer.writerow(row)
+            rows.append(row)
+    write_catalog_rows(output_csv, rows)
 
 
 def strict_failures(report_rows):
@@ -779,8 +780,8 @@ def strict_failures(report_rows):
 # Main loop
 # ---------------------------------------------------------------------------
 
-def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
-    """Walk every chunk on disk. For each chunk with CSV Images Above >= 1
+def run_extract(paths, page_filter, verbose, catalog_rows_out=None, strict=False):
+    """Walk every chunk on disk. For each chunk with CSV image_count >= 1
     (and inside the --pages filter), classify its row-blocks, cut above
     the first text block, and save the top portion as a sub-chunk PNG.
 
@@ -809,14 +810,14 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
     report_rows = []
     subchunks_emitted = 0
     markings_emitted = 0
-    reconciled_counts = {}
+    verified_counts = {}
 
     for page, chunk_seq, path in chunks:
         if (page, chunk_seq) not in counts:
             report_rows.append({
                 "Page":           page,
                 "Chunk":          chunk_seq,
-                "Images Above":   "",
+                "Image Count":    "",
                 "Markings Found": "",
                 "Status":         "not_in_csv",
                 "Notes":          "no row in extract CSV",
@@ -859,11 +860,11 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
                 # Stage 2: deterministic split (no API calls).
                 markings = split_subchunk_into_markings(subchunk, expected)
                 if markings is None:
-                    reconciled = (
+                    corrected = (
                         reconcile_single_marking_overcount(subchunk)
                         if expected > 1 else None
                     )
-                    if reconciled is None:
+                    if corrected is None:
                         status = "marking_count_mismatch"
                         found = 0
                         notes = (
@@ -874,13 +875,13 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
                     else:
                         found = save_marking_images(
                             paths, image_slug, page, chunk_seq,
-                            subchunk, reconciled,
+                            subchunk, corrected,
                         )
                         markings_emitted += found
-                        status = "count_reconciled"
-                        reconciled_counts[(page, chunk_seq)] = found
+                        status = "count_corrected"
+                        verified_counts[(page, chunk_seq)] = found
                         notes = (
-                            f"{notes}; reconciled Images Above from "
+                            f"{notes}; corrected image_count from "
                             f"{expected} to {found}; emitted {found} "
                             f"marking(s)"
                         )
@@ -895,7 +896,7 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
         report_rows.append({
             "Page":           page,
             "Chunk":          chunk_seq,
-            "Images Above":   expected,
+            "Image Count":    expected,
             "Markings Found": found,
             "Status":         status,
             "Notes":          notes,
@@ -905,10 +906,10 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
         report_rows.append({
             "Page":           page,
             "Chunk":          chunk_seq,
-            "Images Above":   "" if raw_ia is None else raw_ia,
+            "Image Count":    "" if raw_ia is None else raw_ia,
             "Markings Found": "",
             "Status":         "csv_parse_error",
-            "Notes":          "Images Above unparseable",
+            "Notes":          "image_count unparseable",
         })
 
     def _sort_key(r):
@@ -918,11 +919,11 @@ def run_extract(paths, page_filter, verbose, reconciled_csv=None, strict=False):
 
     report_rows.sort(key=_sort_key)
     write_report(paths.report_csv, report_rows)
-    if reconciled_csv is not None:
-        write_reconciled_csv(
-            paths.input_csv, reconciled_csv, reconciled_counts,
+    if catalog_rows_out is not None:
+        write_catalog_rows_with_verified_counts(
+            paths.input_csv, catalog_rows_out, verified_counts,
         )
-        print(f"reconciled csv:  {reconciled_csv}")
+        print(f"catalog rows: {catalog_rows_out}")
     _print_summary(subchunks_emitted, markings_emitted, report_rows)
     failures = strict_failures(report_rows)
     if strict and failures:
@@ -962,7 +963,7 @@ def main(argv=None):
             "row is visible. Stage 2: split the sub-chunk into individual "
             "markings via row-block + column-segment analysis with noise "
             "filtering and Y-aware merging; emit one PNG per marking when "
-            "the count satisfies the CSV's Images Above; reconcile safe "
+            "the count satisfies the CSV's image_count; correct safe "
             "one-content overcounts; otherwise log the mismatch and skip "
             "marking emission for that chunk."
         ),
@@ -976,6 +977,15 @@ def main(argv=None):
             "tools/wip/cache/<basename>_subchunks/, markings dir "
             "tools/wip/cache/<basename>_images/, report CSV "
             "tools/wip/cache/<basename>_subchunks_report.csv."
+        ),
+    )
+    parser.add_argument(
+        "--ocr-rows",
+        type=Path,
+        default=None,
+        help=(
+            "read raw OCR catalog rows from this path. Default: "
+            "tools/wip/cache/<basename>.csv."
         ),
     )
     parser.add_argument(
@@ -996,13 +1006,12 @@ def main(argv=None):
         ),
     )
     parser.add_argument(
-        "--reconciled-csv",
+        "--catalog-rows-out",
         type=Path,
         default=None,
         help=(
-            "write an import-safe CSV that preserves the raw extractor "
-            "CSV shape but corrects Images Above for chunks whose "
-            "overcount was deterministically reconciled."
+            "write verified catalog rows to this path, correcting image_count "
+            "for chunks whose overcount was identified deterministically."
         ),
     )
     parser.add_argument(
@@ -1010,12 +1019,12 @@ def main(argv=None):
         action="store_true",
         help=(
             "exit nonzero after writing the report if any import-blocking "
-            "image extraction status remains unreconciled."
+            "image extraction status remains unresolved."
         ),
     )
     args = parser.parse_args(argv)
 
-    paths = Paths(args.basename)
+    paths = Paths(args.basename, input_csv=args.ocr_rows)
 
     log_fh = None
     saved_stdout = sys.stdout
@@ -1038,8 +1047,9 @@ def main(argv=None):
               "(listing-leader boundary, largest-gap fallback)")
         print(f"stage2:          deterministic "
               f"(min_width={MIN_MARKING_WIDTH}, merge_gap={MERGE_GAP_MAX})")
-        if args.reconciled_csv is not None:
-            print(f"reconciled csv:  {args.reconciled_csv}")
+        print(f"ocr rows:        {paths.input_csv}")
+        if args.catalog_rows_out is not None:
+            print(f"catalog rows:    {args.catalog_rows_out}")
         print(f"strict:          {'yes' if args.strict else 'no'}")
         if args.pages is not None:
             ids = args.pages
@@ -1053,7 +1063,7 @@ def main(argv=None):
             paths,
             args.pages,
             args.verbose,
-            reconciled_csv=args.reconciled_csv,
+            catalog_rows_out=args.catalog_rows_out,
             strict=args.strict,
         )
     finally:

@@ -360,9 +360,9 @@ class Paths:
         self.pdf          = WIP_DIR / "in" / f"{basename}.pdf"
         self.full_dir     = WIP_DIR / "cache" / f"{basename}_full"
         self.halves_dir   = WIP_DIR / "cache" / f"{basename}_halves"
-        self.halves_cache = WIP_DIR / "cache" / f"{basename}_split_halves.json"
-        self.blocks_cache = WIP_DIR / "cache" / f"{basename}_blocks.json"
-        self.review_cache = WIP_DIR / "cache" / f"{basename}_review.json"
+        self.page_halves_cache    = WIP_DIR / "cache" / f"{basename}_page_halves.json"
+        self.block_classify_cache = WIP_DIR / "cache" / f"{basename}_block_classify.json"
+        self.chunk_cuts_cache     = WIP_DIR / "cache" / f"{basename}_chunk_cuts.json"
         self.run_log      = WIP_DIR / "cache" / f"{basename}_run.log"
         self.output_dir   = WIP_DIR / "cache" / f"{basename}_chunks"
 
@@ -541,15 +541,15 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
     runs for every page in full_pages so the catalog<->pdf mapping stays
     complete (cached anyway after the first run)."""
     paths.halves_dir.mkdir(parents=True, exist_ok=True)
-    paths.halves_cache.parent.mkdir(parents=True, exist_ok=True)
+    paths.page_halves_cache.parent.mkdir(parents=True, exist_ok=True)
 
-    halves_cache = load_cache(
-        paths.halves_cache,
+    page_halves_cache = load_cache(
+        paths.page_halves_cache,
         provider,
         model,
         HALVES_PROMPT_VER,
     )
-    responses = halves_cache["responses"]
+    responses = page_halves_cache["responses"]
 
     # If --force halves was set, drop in-scope cache entries up front so the
     # loop re-queries them. Without --pages, every PDF page is in scope.
@@ -572,7 +572,7 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
             for key in to_drop:
                 del responses[key]
             print(f"halves: --force halves set, cleared {len(to_drop)} cache entries in scope")
-        save_cache(paths.halves_cache, halves_cache)
+        save_cache(paths.page_halves_cache, page_halves_cache)
 
     calls = 0
     rule_failures = []
@@ -596,7 +596,7 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
                         rec["rule_x"] = weak_rule_x
                         rec["rule_source"] = "vision_confirmed_weak_rule"
                         responses[key] = rec
-                        save_cache(paths.halves_cache, halves_cache)
+                        save_cache(paths.page_halves_cache, page_halves_cache)
             else:
                 rule_x = detect_rule_x(im)
 
@@ -648,7 +648,7 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
                     "image_height":    ih,
                 }
                 responses[key] = rec
-                save_cache(paths.halves_cache, halves_cache)
+                save_cache(paths.page_halves_cache, page_halves_cache)
 
         pn = rec["page_number"]
         if rec["has_two_columns"]:
@@ -665,7 +665,7 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
             print(f"  {key} catalog {pn}")
         print(f"no weak rule candidate was found; rule_x has been set to")
         print(f"image_width//2 as a fallback. Inspect the")
-        print(f"halves output and hand-edit {paths.halves_cache} if the split is off.")
+        print(f"halves output and hand-edit {paths.page_halves_cache} if the split is off.")
 
     # Duplicate-page-number guard runs BEFORE any writes.
     by_pn = {}
@@ -677,7 +677,7 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
     if dups:
         raise RuntimeError(
             f"duplicate catalog page_number(s) detected in halves cache: {dups}.\n"
-            f"Edit {paths.halves_cache} to fix the misread page_number(s) and re-run."
+            f"Edit {paths.page_halves_cache} to fix the misread page_number(s) and re-run."
         )
 
     # Decide which pages to (re)write.
@@ -729,6 +729,18 @@ def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
 
 # ---------------------------------------------------------------------------
 # Stage C -- chunks (block detection + classify + cut)
+#
+# Terminology used throughout this stage and its cache files:
+#   block  -- a dark-pixel band found by the row scanner (in-memory only;
+#              never written to disk). The scanner groups contiguous dark rows
+#              separated by blank runs into blocks, then sends each block to
+#              the LLM to classify it as "illustration" or "text".
+#              Cache: _block_classify.json (one entry per block image hash).
+#   chunk  -- a final output PNG slice written to _chunks/. After all blocks
+#              are classified, cut decisions are made and each resulting region
+#              is saved as a chunk file. A second LLM pass reviews each
+#              tentative chunk and may insert additional cuts.
+#              Cache: _chunk_cuts.json (one entry per tentative-chunk hash).
 # ---------------------------------------------------------------------------
 
 def find_blocks(img_gray):
@@ -779,7 +791,7 @@ def find_blocks(img_gray):
     return blocks
 
 
-def classify_block(block_im, blocks_cache, llm, model, verbose=False, label=""):
+def classify_block(block_im, block_classify_cache, llm, model, verbose=False, label=""):
     """Classify a single block crop as 'illustration' or 'text'.
 
     Cache key: SHA-256 of the block PNG bytes. Coordinate-keyed caching
@@ -793,7 +805,7 @@ def classify_block(block_im, blocks_cache, llm, model, verbose=False, label=""):
     png_bytes = buf.getvalue()
     key = hashlib.sha256(png_bytes).hexdigest()
 
-    responses = blocks_cache["responses"]
+    responses = block_classify_cache["responses"]
     if key in responses:
         if verbose:
             print(f"    {label} CACHE HIT -> {responses[key]['kind']}")
@@ -1037,7 +1049,7 @@ def snap_cut_to_blank_run(cut_y, blank_runs, tolerance=SNAP_TOLERANCE_PX):
     return best_mid
 
 
-def review_slice(slice_im, review_cache, llm, model, verbose=False, label=""):
+def review_slice(slice_im, chunk_cuts_cache, llm, model, verbose=False, label=""):
     """Per-slice entry-aware review.
 
     Returns (cuts, was_call). cuts is a list of LOCAL y-offsets where the
@@ -1050,7 +1062,7 @@ def review_slice(slice_im, review_cache, llm, model, verbose=False, label=""):
     png_bytes = buf.getvalue()
     key = hashlib.sha256(png_bytes).hexdigest()
 
-    responses = review_cache["responses"]
+    responses = chunk_cuts_cache["responses"]
     if key in responses:
         cuts = responses[key]["cuts"]
         if verbose:
@@ -1110,7 +1122,7 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
     """Run stage C. page_filter, if not None, is a (kind, set_of_ints).
     'kind' for chunks is always interpreted as catalog page numbers
     because halves are named by catalog page; a 'pdf' filter raises."""
-    paths.blocks_cache.parent.mkdir(parents=True, exist_ok=True)
+    paths.block_classify_cache.parent.mkdir(parents=True, exist_ok=True)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
     halves = sorted(paths.halves_dir.glob("page-*.png"))
@@ -1143,14 +1155,14 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
             )
         pages = {pn: v for pn, v in pages.items() if pn in ids}
 
-    blocks_cache = load_cache(
-        paths.blocks_cache,
+    block_classify_cache = load_cache(
+        paths.block_classify_cache,
         provider,
         model,
         BLOCKS_PROMPT_VER,
     )
-    review_cache = load_cache(
-        paths.review_cache,
+    chunk_cuts_cache = load_cache(
+        paths.chunk_cuts_cache,
         provider,
         model,
         REVIEW_PROMPT_VER,
@@ -1161,14 +1173,14 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
     # there is no honest way to scope the wipe to a page subset; the user
     # signalled they want everything reclassified.
     if force:
-        nb = len(blocks_cache["responses"])
-        nr = len(review_cache["responses"])
+        nb = len(block_classify_cache["responses"])
+        nr = len(chunk_cuts_cache["responses"])
         print(f"chunks: --force chunks set, clearing {nb} block cache entries "
               f"and {nr} review cache entries")
-        blocks_cache["responses"].clear()
-        review_cache["responses"].clear()
-        save_cache(paths.blocks_cache, blocks_cache)
-        save_cache(paths.review_cache, review_cache)
+        block_classify_cache["responses"].clear()
+        chunk_cuts_cache["responses"].clear()
+        save_cache(paths.block_classify_cache, block_classify_cache)
+        save_cache(paths.chunk_cuts_cache, chunk_cuts_cache)
 
     # Wipe in-scope output files first so stale chunks do not linger.
     for pn in pages:
@@ -1213,11 +1225,11 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
                     label = (f"[{pn:04d}-{side} block {i}/{len(blocks)} "
                              f"y={y0}-{y1} h={y1 - y0 + 1}]")
                     kind, was_call = classify_block(
-                        block_im, blocks_cache, llm, model,
+                        block_im, block_classify_cache, llm, model,
                         verbose=verbose, label=label,
                     )
                     if was_call:
-                        save_cache(paths.blocks_cache, blocks_cache)
+                        save_cache(paths.block_classify_cache, block_classify_cache)
                         calls += 1
                     block_records.append({
                         "y0": y0,
@@ -1293,11 +1305,11 @@ def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
                     sw, sh = sl.size
                     rlabel = (f"[{pn:04d}-{side} slice {si}/{n_slices} h={sh}]")
                     extra_cuts, was_call = review_slice(
-                        sl, review_cache, llm, model,
+                        sl, chunk_cuts_cache, llm, model,
                         verbose=verbose, label=rlabel,
                     )
                     if was_call:
-                        save_cache(paths.review_cache, review_cache)
+                        save_cache(paths.chunk_cuts_cache, chunk_cuts_cache)
                         review_calls += 1
                     if not extra_cuts:
                         final_pieces.append(sl)

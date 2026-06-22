@@ -13,13 +13,14 @@
 # Output:
 #   tools/wip/cache/<BASE>_chunks/             reviewed chunk PNG handoff
 #   tools/wip/cache/<BASE>.csv                 raw OCR CSV from vision
-#   tools/wip/cache/<BASE>_reconciled.csv      import-safe OCR CSV handoff
+#   tools/wip/cache/<BASE>_catalog_rows.csv    verified catalog rows
 #   backend/media/<region>/                    copied marking images
 #   tools/wip/out/                             import_ascc_bundle-ready CSVs
 #
 # Usage:
 #   ./tools/run_ascc_pipeline.sh VA_ASCC_CTLG
 #   ./tools/run_ascc_pipeline.sh WV-ASCC-CTLG --reference-work-code ASCC1
+#   ./tools/run_ascc_pipeline.sh WV-ASCC-CTLG --region-id 56
 #   ./tools/run_ascc_pipeline.sh VA_ASCC_CTLG --provider anthropic --check-import
 
 set -euo pipefail
@@ -31,6 +32,7 @@ BASE=""
 PROVIDER=""
 MODEL=""
 PAGES=""
+REGION_ID=""
 REFERENCE_WORK_CODE="ASCC1"
 INPUT_DIR="tools/wip/in"
 OUT_DIR="tools/wip/out"
@@ -65,6 +67,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --pages)
       PAGES="$(require_arg_value "$1" "${2:-}")"
+      shift 2
+      ;;
+    --region-id)
+      REGION_ID="$(require_arg_value "$1" "${2:-}")"
       shift 2
       ;;
     --reference-work-code)
@@ -128,7 +134,7 @@ fi
 
 PDF_PATH="${INPUT_DIR}/${BASE}.pdf"
 CACHE_CSV="tools/wip/cache/${BASE}.csv"
-CACHE_RECONCILED_CSV="tools/wip/cache/${BASE}_reconciled.csv"
+CACHE_CATALOG_ROWS_CSV="tools/wip/cache/${BASE}_catalog_rows.csv"
 CACHE_IMAGES_DIR="tools/wip/cache/${BASE}_images"
 
 require_file() {
@@ -199,6 +205,9 @@ if [[ -n "$PAGES" ]]; then
   extract_args+=(--pages "$PAGES")
   image_args+=(--pages "$PAGES")
 fi
+if [[ -n "$REGION_ID" ]]; then
+  extract_args+=(--region-id "$REGION_ID")
+fi
 if [[ "$SKIP_REVIEW" -eq 1 ]]; then
   processor_args+=(--skip-review)
 fi
@@ -212,16 +221,20 @@ echo "ASCC pipeline"
 echo "  base:       $BASE"
 echo "  pdf:        $PDF_PATH"
 echo "  cache csv:  $CACHE_CSV"
-echo "  handoff csv: $CACHE_RECONCILED_CSV"
+echo "  catalog rows: $CACHE_CATALOG_ROWS_CSV"
 echo "  media dir:  $MEDIA_DIR"
 echo "  out dir:    $OUT_DIR"
 echo "  reference:  $REFERENCE_WORK_CODE"
+if [[ -n "$REGION_ID" ]]; then
+  echo "  region id:  $REGION_ID"
+fi
 
 run_cmd uv run python tools/ascc_page_processor.py "${processor_args[@]}"
 run_cmd uv run python tools/ascc_page_extract.py "${extract_args[@]}"
 run_cmd uv run python tools/ascc_image_extract.py "${image_args[@]}" \
+  --ocr-rows "$CACHE_CSV" \
   --strict \
-  --reconciled-csv "$CACHE_RECONCILED_CSV"
+  --catalog-rows-out "$CACHE_CATALOG_ROWS_CSV"
 
 mkdir -p "$MEDIA_DIR"
 shopt -s nullglob
@@ -241,7 +254,7 @@ if [[ "$CLEAN_OUT" -eq 1 ]]; then
 fi
 
 run_cmd uv run python tools/ascc_data_munger.py \
-  --input "$CACHE_RECONCILED_CSV" \
+  --input "$CACHE_CATALOG_ROWS_CSV" \
   --input-dir "$INPUT_DIR" \
   --out-dir "$OUT_DIR" \
   --reference-work-code "$REFERENCE_WORK_CODE"

@@ -7,6 +7,18 @@ canonical, reproducible path; it supersedes the notebook chain described in
 
 **Validated end-to-end against Virginia (`VA_ASCC_CTLG`), 2026-06-09.**
 
+For normal use and live demos, use the state-centered wrapper:
+
+```bash
+./woco ascc doctor VA
+./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+```
+
+For state `VA`, the wrapper writes `tools/wip/in/VA.pdf`,
+`tools/wip/cache/VA_ocr_rows.csv`, `tools/wip/cache/VA_catalog_rows.csv`,
+`tools/wip/out/va/`, `tools/wip/cache/compare/VA/review_ledger_VA.csv`, and
+`tools/wip/cache/VA_run.json`.
+
 ---
 
 ## 0. Prerequisites
@@ -43,9 +55,9 @@ Every script keys off one basename, e.g. `VA_ASCC_CTLG`. It must:
 | A | `ascc_page_processor.py ... --stages render` | no | `wip/in/<BASE>.pdf` | `wip/cache/<BASE>_full/page-*.png` |
 | B | `ascc_page_processor.py ... --stages halves` | yes | full pages | `wip/cache/<BASE>_halves/` |
 | C | `ascc_page_processor.py ... --stages chunks` | yes | halves | `wip/cache/<BASE>_chunks/page-NNNN-MMMM.png` |
-| D | `ascc_page_extract.py <BASE>` | yes | `wip/cache/<BASE>_chunks/` chunks | `wip/cache/<BASE>.csv` |
-| E | `ascc_image_extract.py <BASE>` | no | raw extract CSV + chunks | marking images + reconciled CSV |
-| F | `ascc_data_munger.py --input ... --input-dir ...` | no | reconciled CSV + seeds + images | Django-shape CSVs in `wip/out/` |
+| D | `ascc_page_extract.py <BASE>` | yes | `wip/cache/<BASE>_chunks/` chunks | raw OCR catalog rows |
+| E | `ascc_image_extract.py <BASE>` | no | raw OCR rows + chunks | marking images + verified catalog rows |
+| F | `ascc_data_munger.py --input ... --input-dir ...` | no | verified catalog rows + seeds + images | Django-shape CSVs in `wip/out/` |
 | G | `manage.py import_ascc_bundle <out-dir>` | no | the bundle | rows in MySQL |
 
 All commands run from the repo root (`worldcovers/`).
@@ -95,12 +107,12 @@ needed.
 uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
 ```
 
-Sends each chunk to the vision model; writes catalog rows (Listing, Page,
-Chunk, Images Above, Type) to `wip/cache/VA_ASCC_CTLG.csv`.
+Sends each chunk to the vision model; writes raw OCR catalog rows with columns
+`listing_text`, `catalog_page`, `chunk_number`, `image_count`, and `row_type`.
 
 Result (VA): **1,596 rows** (1,539 LISTING + 57 META), 167 chunks with
-`Images Above >= 1` (~22 min). This CSV is raw vision output. Downstream
-import uses the reconciled handoff CSV written by image-extract.
+`image_count >= 1` (~22 min). This CSV is raw vision output. Downstream import
+uses the verified catalog rows CSV written by image-extract.
 
 > **Known limitation (MD run, 2026-06-12):** image-extract separates
 > illustrations from text at the chunk's single largest vertical gap. On dense
@@ -115,16 +127,17 @@ import uses the reconciled handoff CSV written by image-extract.
 
 ```bash
 uv run python tools/ascc_image_extract.py VA_ASCC_CTLG \
+  --ocr-rows tools/wip/cache/VA_ocr_rows.csv \
   --strict \
-  --reconciled-csv tools/wip/cache/VA_ASCC_CTLG_reconciled.csv
+  --catalog-rows-out tools/wip/cache/VA_catalog_rows.csv
 ```
 
-For each chunk with `Images Above >= 1`, cuts the marking illustration(s) out by
+For each chunk with `image_count >= 1`, cuts the marking illustration(s) out by
 gap/dark-region geometry (no vision). Writes
 `wip/cache/VA_ASCC_CTLG_images/va-<page>-<chunk>-<counter>.png`. If the raw
 vision count safely over-counts one substantial marking group, image-extract
-emits one image, reports `count_reconciled`, and writes the corrected count to
-`tools/wip/cache/VA_ASCC_CTLG_reconciled.csv`. Unreconciled mismatches fail
+emits one image and writes the corrected `image_count` to
+`tools/wip/cache/VA_catalog_rows.csv`. Unresolved mismatches fail
 under `--strict` before the munger can reference missing files.
 
 Result (VA): 167 subchunks, **205 marking images**, with all import-blocking
@@ -142,12 +155,12 @@ cp tools/wip/cache/VA_ASCC_CTLG_images/*.png backend/media/va/
 
 ## F. Munge  (deterministic, no API)
 
-Point `--input` at the reconciled handoff CSV from image-extract,
+Point `--input` at the verified catalog rows CSV from image-extract,
 `--input-dir` at the seeds in `in/`:
 
 ```bash
 uv run python tools/ascc_data_munger.py \
-  --input tools/wip/cache/VA_ASCC_CTLG_reconciled.csv \
+  --input tools/wip/cache/VA_catalog_rows.csv \
   --input-dir tools/wip/in
 ```
 
@@ -272,5 +285,5 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 |--------|-------|--------|
 | `parse_head` town-heading date peel | `tools/munger/head.py` (code) | local patch, branch `reese/issue-1-va-e2e`, **proposed to Michael** |
 | 4 schema fixes + user id=1 | local MySQL only | local workaround; **Michael fixes migrations** |
-| safe `Images Above` overcount reconciliation | `ascc_image_extract.py` | automatic handoff correction |
+| safe `image_count` overcount correction | `ascc_image_extract.py` | automatic catalog-row correction |
 | keep ASCC1 in `reference_works.csv` | scratch seed | baseline choice |

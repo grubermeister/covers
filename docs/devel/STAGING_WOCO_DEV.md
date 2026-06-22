@@ -80,12 +80,9 @@ The pipeline runs locally; only the bundle + media are pushed. From your local
 checkout:
 
 ```sh
-# 1. Build the Django-shape bundle from the reconciled extract.
+# 1. Build the Django-shape bundle from verified catalog rows.
 #    (Michigan's seed regions.csv already carries Michigan/Indiana Territory.)
-uv run python tools/ascc_data_munger.py \
-  --input tools/wip/out/MI_ASCC_CTLG.csv \
-  --input-dir tools/wip/in --out-dir tools/wip/out \
-  --reference-work-code ASCC1
+./woco ascc munge MI --import-check never
 
 # 2. Push the bundle + media and reload (truncate + import) on the box.
 #    push_data.sh honours WOCO_HOST / WOCO_REMOTE_ROOT.
