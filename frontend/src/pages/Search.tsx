@@ -666,6 +666,12 @@ const Search = () => {
   // "Sort Results" column.
   const paginatedResults = catalogRecords;
 
+  useEffect(() => {
+    if (!queryLoading && currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, queryLoading, totalPages]);
+
   // Clear all filters and URL params
   const handleClearAllFilters = () => {
     setKeywordSearch("");
@@ -746,7 +752,7 @@ const Search = () => {
                         value={keywordSearch}
                         onChange={(e) => setKeywordSearch(e.target.value)}
                         className="pl-9"
-                        aria-label="Search records by code, catalog text, town, state, shape, lettering, color, or reference work code or name"
+                        aria-label="Search records by code, inscription text, town, state, shape, lettering, color, or reference work code or name"
                         disabled={filtersDisabled}
                       />
                     </div>
@@ -1309,6 +1315,10 @@ const Search = () => {
                       onValueChange={(v) => {
                         const n = parseInt(v, 10);
                         if (n === 10 || n === 25 || n === 50 || n === 100) {
+                          if (n !== itemsPerPage) {
+                            setCurrentPage(1);
+                            setGoToPageInput("");
+                          }
                           setItemsPerPage(n);
                         }
                       }}

@@ -70,6 +70,12 @@ The built SPA is served at `/`. The API lives under `/api/` and the admin at `/a
 
 ### Launcher
 
+The repo includes local launchers for shells that do not have the virtualenv
+activated:
+
+- macOS and Linux: `./woco <command>`
+- Windows cmd.exe and PowerShell: `.\woco.bat <command>`
+
 `woco dev` is the one-command dev launcher. It reads Django's `DEBUG` setting and picks the right mode:
 
 - `DEBUG=True` (default): starts the Vite dev server on :8080 (with HMR) and Django on :8000 in the same terminal. Open `http://localhost:8080` -- API/admin/static requests are proxied to Django. Edit any frontend or backend file and the change shows up immediately. Ctrl+C kills both processes.

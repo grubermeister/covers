@@ -6,7 +6,8 @@ Role mapping (see plan in
 
     Guest          -> anonymous request
     Contributor    -> in `Contributors` group
-    Editor         -> in `Editors` group (has `common.review_contribution`)
+    Editor         -> assigned to at least one Collection, or has
+                      `common.review_contribution`
     Administrator  -> `is_superuser` (single-person admin per design)
 
 `IsAdminUser` (DRF built-in) is used directly in views for Administrator-only
@@ -23,6 +24,32 @@ REVIEW_CONTRIBUTION_PERM = "common.review_contribution"
 APPROVE_IMAGE_PERM = "common.approve_image"
 
 
+def user_assigned_collection_ids(user) -> set[int]:
+    """Return the set of Collection IDs this user is assigned to as an Editor."""
+    if not user or not user.is_authenticated:
+        return set()
+    return set(
+        user.collection_assignments.values_list("collection_id", flat=True)
+    )
+
+
+def user_can_review_contributions(user) -> bool:
+    """
+    Return True when the user can enter review flows.
+
+    CollectionAssignment is the scoped editor source of truth. The
+    `common.review_contribution` permission is retained for legacy group-based
+    editor accounts and broad catalog tooling.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        return True
+    return bool(user_assigned_collection_ids(user))
+
+
 def _get_user_assigned_regions(user):
     if not user or not user.is_authenticated:
         return Region.objects.none()
@@ -34,7 +61,7 @@ def _user_is_responsible_for_marking(user, marking):
         return False
     if user.is_superuser:
         return True
-    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+    if not user_can_review_contributions(user):
         return False
     if not marking or not marking.post_office_id:
         return False
@@ -56,7 +83,7 @@ def _user_is_responsible_for_cover(user, cover):
         return False
     if user.is_superuser:
         return True
-    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+    if not user_can_review_contributions(user):
         return False
     assigned = _get_user_assigned_regions(user)
     if not assigned.exists():
@@ -73,18 +100,9 @@ def _user_is_responsible_for_cover(user, cover):
     return assigned.filter(pk__in=region_ids).exists()
 
 
-def user_assigned_collection_ids(user) -> set[int]:
-    """Return the set of Collection IDs this user is assigned to as an Editor."""
-    if not user or not user.is_authenticated:
-        return set()
-    return set(
-        user.collection_assignments.values_list("collection_id", flat=True)
-    )
-
-
 class IsEditor(BasePermission):
     """
-    Granted to users in the `Editors` group OR superusers.
+    Granted to assigned editors, users with the review permission, or superusers.
 
     This is a pure role check; it does NOT scope to a specific Collection.
     Use `CanReviewContribution` when you need to also verify the user is
@@ -95,7 +113,7 @@ class IsEditor(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        return user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)
+        return user_can_review_contributions(user)
 
 
 class IsEditorOrAdminWrite(IsEditor):
@@ -119,7 +137,8 @@ class CanReviewContribution(BasePermission):
 
     Allowed if:
     - superuser, or
-    - has `common.review_contribution` AND is assigned to the contribution's Collection.
+    - is assigned to the contribution's Collection, with legacy support for
+      users carrying `common.review_contribution`.
 
     For collection-listing actions (no object yet), allow any authenticated user
     in the Editors group; per-object filtering happens in get_queryset.
@@ -142,12 +161,12 @@ class CanReviewContribution(BasePermission):
         if request.method in SAFE_METHODS:
             if getattr(obj, "contributor_id", None) == user.id:
                 return True
-            if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+            if not user_can_review_contributions(user):
                 return False
             return obj.collection_id in user_assigned_collection_ids(user)
 
-        # Write access (approve/reject/edit): must have perm AND be assigned to this Collection.
-        if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        # Write access (approve/reject/edit): must be assigned to this Collection.
+        if not user_can_review_contributions(user):
             return False
         return obj.collection_id in user_assigned_collection_ids(user)
 

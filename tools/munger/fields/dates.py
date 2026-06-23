@@ -44,15 +44,34 @@ YEAR_RANGE_RE = re.compile(
     r'c?(\d{4})\s*[-]\s*(\d{2,4})'
 )
 
-DECADE_RE = re.compile(r"c?(\d{4})'s", re.IGNORECASE)
+DECADE_RE = re.compile(r"c?(\d{4})'?s", re.IGNORECASE)
 
 BARE_YEAR_RE = re.compile(r'c?(\d{4})$')
 
 CIRCA_RE = re.compile(r'^c\d', re.IGNORECASE)
 
+def _unknown_date_result(raw):
+    """Return the parse shape for a catalog date slot marked unknown.
+
+    The ASCC semicolon fields are positional. A leading "--" can mean the
+    date slot is present but unknown; downstream date exporters skip this
+    because date_granularity is "UNKNOWN" rather than DAY/MONTH/YEAR/RANGE.
+    """
+    return {
+        'date_month': None, 'date_day': None,
+        'date_year_start': None, 'date_year_end': None,
+        'date_granularity': 'UNKNOWN',
+        'date_is_circa': False,
+        'date_raw': raw,
+        'date_error': None,
+    }
+
 def parse_date_field(text):
     """Decompose a date-classified paren field into structured components."""
     t = text.strip()
+    if t == '--':
+        return _unknown_date_result(t)
+
     is_circa = bool(CIRCA_RE.match(t))
 
     # 1. Full date: Month day, year
@@ -73,7 +92,7 @@ def parse_date_field(text):
             'date_error': None,
         }
 
-    # 2. Decade: 1850's
+    # 2. Decade: 1850's or 1850s (apostrophe optional)
     m = DECADE_RE.search(t)
     if m:
         base = int(m.group(1))

@@ -12,6 +12,7 @@ from rest_framework.test import APIClient
 from common.models import (
     Citation,
     Collection,
+    CollectionAssignment,
     Color,
     Contribution,
     Cover,
@@ -47,6 +48,11 @@ class MarkingBackupRestoreCommandTests(TestCase):
             email="editor@example.com",
             password="pw",
         )
+        self.virginia_editor = User.objects.create_user(
+            username="virginia-editor",
+            email="virginia-editor@example.com",
+            password="pw",
+        )
         self.color = Color.objects.create(
             name="Black",
             created_by=self.editor,
@@ -62,6 +68,12 @@ class MarkingBackupRestoreCommandTests(TestCase):
         self.collection = Collection.objects.create(
             name="Virginia",
             region=self.region,
+            created_by=self.editor,
+            modified_by=self.editor,
+        )
+        CollectionAssignment.objects.create(
+            user=self.virginia_editor,
+            collection=self.collection,
             created_by=self.editor,
             modified_by=self.editor,
         )
@@ -296,6 +308,34 @@ class MarkingBackupRestoreCommandTests(TestCase):
         with self.assertRaises(CommandError):
             call_command("restore_marking", str(edited_path), verbosity=0)
         self.assertFalse(Contribution.objects.exists())
+
+    def test_restore_marking_maps_stale_collection_name_by_region(self):
+        payload = self._payload()
+        payload["datasets"]["collections"]["rows"][0]["name"] = "Virgin Islands"
+        payload["datasets"]["collections"]["rows"][0]["region"] = "Virginia"
+        payload["datasets"]["contributions"]["rows"][0]["collection"] = (
+            "Virgin Islands"
+        )
+        edited_path = self.tmp_path / "stale-collection.json"
+        edited_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        call_command("wipe_user_data", no_input=True, verbosity=0)
+        call_command("restore_marking", str(edited_path), verbosity=0)
+
+        restored = Contribution.objects.get(marking=self.marking)
+        self.assertEqual(restored.collection, self.collection)
+        self.assertEqual(self.collection.name, "Virginia")
+
+        client = APIClient()
+        client.force_authenticate(self.virginia_editor)
+        response = client.get(
+            "/api/v2/contributions/",
+            {"mode": "editor"},
+            format="json",
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        rows = response.data.get("results", response.data)
+        self.assertEqual([row["id"] for row in rows], [restored.pk])
 
     def _round_trip_counts(self):
         return {

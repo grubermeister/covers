@@ -30,13 +30,13 @@ from import_export.widgets import (
 from common.admin import IsoDateTimeWidget, NullableCharWidget
 from common.auth_resources import (
     AuthDatasetSpec,
-    CollectionResource as AuthCollectionResource,
     ExportOnlyIdMixin,
     TimestampedRestoreMixin,
     _fallback_audit_user,
 )
 from common.models import (
     Citation,
+    Collection,
     Color,
     Contribution,
     Cover,
@@ -404,6 +404,42 @@ class MarkingReferenceWorkResource(PortableTimestampedResource):
             "modified_by",
         )
         import_id_fields = ("code", "title", "publication_year")
+
+
+class MarkingCollectionResource(
+    TimestampedRestoreMixin,
+    ExportOnlyIdMixin,
+    resources.ModelResource,
+):
+    """Collection sidecar keyed by Region for single-marking restore.
+
+    Collection.name is editor configuration, not a stable catalog key. Old
+    backups can contain stale names, so restoring by region keeps editor
+    dashboard visibility on the destination's local Collection.
+    """
+
+    region = fields.Field(
+        column_name="region",
+        attribute="region",
+        widget=ForeignKeyWidget(Region, "name"),
+    )
+
+    class Meta:
+        model = Collection
+        fields = ("id", "name", "description", "region", "is_active")
+        import_id_fields = ("region",)
+
+    def before_save_instance(self, instance, row, **kwargs):
+        if instance.pk:
+            existing = Collection.objects.only(
+                "name",
+                "description",
+                "is_active",
+            ).get(pk=instance.pk)
+            instance.name = existing.name
+            instance.description = existing.description
+            instance.is_active = existing.is_active
+        super().before_save_instance(instance, row, **kwargs)
 
 
 ###################################################################################################
@@ -1327,7 +1363,7 @@ MARKING_DATASET_SPECS = (
         "post office regions",
         MarkingPostOfficeRegionResource,
     ),
-    MarkingDatasetSpec("collections", "collections", AuthCollectionResource),
+    MarkingDatasetSpec("collections", "collections", MarkingCollectionResource),
     MarkingDatasetSpec("covers", "covers", MarkingCoverResource),
     MarkingDatasetSpec(
         "cover_recycle_bin",

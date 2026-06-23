@@ -14,7 +14,8 @@ RATE_FIELD_RE = re.compile(
     r'\bPAID\b|\bFREE\b|\bSTEAM\b|\bDUE\b'
     r'|\bP\.?M\.?'
     r'|\bfrank\b'
-    r'|\[[^\]]*\]'         # brackets: [ms], [C], [hdstp rate], [cogged circle]
+    # Bracketed rate hints: [ms], [C], and OCR close variants like [C[.
+    r'|[\[\{\|][^\[\{\|\]\}]*[\[\{\|\]\}]'
     r'|\bwith\s+\d'        # "with 24" = with adhesive
     r')',
     re.IGNORECASE
@@ -43,6 +44,18 @@ BARE_NUMBER_RE = re.compile(r'^\d{1,3}(?:\.\d+)?$')
 # in the size slot of an unknown-date listing is a rate (e.g. a 2c drop rate),
 # not a sub-centimetre circle. Town CDS diameters in ASCC run ~15-60mm.
 MIN_BARE_DIAMETER_MM = 13.0
+
+
+def _leading_dash_is_unknown_date(paren_fields, types):
+    """True when a leading dash is the date slot, not a size placeholder."""
+    if not paren_fields or paren_fields[0].strip() not in ('-', '--'):
+        return False
+
+    # Decision: only full date/size/rate/color-style rows promote a leading
+    # dash to unknown date. Short rows such as ["--", "28"] keep staging's
+    # size-placeholder behavior so the following diameter is not a rate.
+    tail_types = types[2:]
+    return len(paren_fields) >= 4 and 'rate' in tail_types and 'color' in tail_types
 
 def classify_paren_field(field_text):
     """Classify a single paren field by intrinsic content signals.
@@ -80,7 +93,14 @@ def classify_paren_field(field_text):
 def classify_all_fields(paren_fields):
     """Classify each field in the list. Returns parallel list of type labels."""
     types = [classify_paren_field(f) for f in paren_fields]
-    
+
+    # Positional disambiguation: in semicolon parentheticals, the first field
+    # can be an unknown date when the rest of the row has enough context to
+    # prove it. Later dash fields still use the size parser so forms like
+    # "--,YD" keep their existing unknown-dimension meaning.
+    if _leading_dash_is_unknown_date(paren_fields, types):
+        types[0] = 'date'
+
     # Positional disambiguation: ASCC entries have at most one size field.
     # If a second 'size' appears and it's a bare number (no shape code, no
     # dateformat, no dimension separator), reclassify it as 'rate'.

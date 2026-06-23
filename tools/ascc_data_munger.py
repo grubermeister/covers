@@ -5,6 +5,16 @@ Hoistable function and constant definitions live at module scope;
 functions or constants that depend on runtime pipeline state remain
 inside main(). AUDIT_TS honors the ASCC_AUDIT_TS env var when set, for
 diffable test runs.
+
+Input contract for --input:
+  Pass the catalog rows CSV produced by ascc_image_extract.py. It has
+  snake_case columns such as listing_text, catalog_page, chunk_number,
+  image_count, and row_type. The image extractor verifies image_count before
+  the munger uses it to link marking illustrations to listings.
+
+Pipeline position:
+  ascc_page_processor.py -> ascc_page_extract.py -> ascc_image_extract.py
+    -> THIS SCRIPT -> backend/manage.py import_ascc_bundle
 """
 import argparse
 import hashlib
@@ -18,6 +28,7 @@ import mimetypes
 from pathlib import Path
 from PIL import Image as PILImage
 
+from catalog_rows import read_legacy_dataframe
 from munger.assembly import LETTERING_SEEDS, SHAPE_SEEDS, _nkey, confidence_level, dt_date, resolve_effective_shape, resolve_shape_name
 from munger.classify import RELATIONSHIP_PATTERN, TRAILING_VALUE_PATTERN, _csv_manuscript_truthy, classify_entry, detect_cross_reference, detect_fragment, detect_structural_anatomy
 from munger.export import AUDIT_TAIL, AUDIT_USER_ID, INT_COLS, _by_listing, _cast_int_columns, _resolve_int_fk, _src_row_by
@@ -47,13 +58,53 @@ from munger.text_utils import strip_dot_leaders
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
+DEFAULT_MARKING_COLOR = "BLACK"
+
+def source_key_component(value):
+    """Return the Page/Chunk component used in marking_lineage.csv keys."""
+    if value is None or pd.isna(value):
+        return ""
+    try:
+        as_float = float(value)
+    except (TypeError, ValueError):
+        return str(value).strip()
+    if as_float.is_integer():
+        return str(int(as_float))
+    return str(value).strip()
+
+
+def format_dates_seen_desc(raw_text):
+    """Return the desc line for a source Dates Seen column value.
+
+    Example output shape:
+    Dates Seen 1811, 1849-55
+    """
+    tokens = _split_ms_date_token(raw_text)
+    if not tokens:
+        return None
+    return "Dates Seen " + ", ".join(tokens)
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--input", default=WIP_DIR / "cache" / "VA_ASCC_CTLG.csv")
+    ap.add_argument(
+        "--input",
+        default=WIP_DIR / "cache" / "VA_catalog_rows.csv",
+        help=(
+            "path to verified catalog rows produced by ascc_image_extract.py "
+            "(for example tools/wip/cache/VA_catalog_rows.csv)."
+        ),
+    )
     ap.add_argument("--input-dir", default=WIP_DIR / "in")
     ap.add_argument("--out-dir", default=WIP_DIR / "out")
     ap.add_argument("--reference-work-code", default="ASCC1")
+    ap.add_argument(
+        "--region-abbrev",
+        default=None,
+        help=(
+            "Two-letter catalog region abbreviation. Defaults to the first "
+            "two letters of the input CSV basename for OCR-derived rows."
+        ),
+    )
     args = ap.parse_args(argv)
 
     INPUT_CSV = Path(args.input)
@@ -65,7 +116,16 @@ def main(argv=None):
     # 0. Setup
     # ======================================================================
     # INPUT_CSV / INPUT_DIR / OUT_DIR supplied by main() argparse.
-    REGION_ABBREV = catalog_region_abbrev(INPUT_CSV)
+    REGION_ABBREV = (
+        str(args.region_abbrev).strip().upper()
+        if args.region_abbrev
+        else catalog_region_abbrev(INPUT_CSV)
+    )
+    if not re.fullmatch(r"[A-Z]{2}", REGION_ABBREV):
+        raise ValueError(
+            "region abbrev must be exactly two ASCII letters: "
+            f"{REGION_ABBREV!r}"
+        )
     REFERENCE_WORK_CODE = str(args.reference_work_code).strip()
     _rw_seed = pd.read_csv(os.path.join(INPUT_DIR, 'reference_works.csv'))
     _rw_match = _rw_seed[
@@ -87,7 +147,7 @@ def main(argv=None):
         )
     REGION_ID = int(_match.iloc[0]['id'])
     print(f"rw_code={RW_CODE} (id={RW_ID})  region={REGION_ABBREV} (id={REGION_ID})")
-    df = pd.read_csv(INPUT_CSV)
+    df = read_legacy_dataframe(INPUT_CSV)
     print(f'Loaded {len(df)} rows from {INPUT_CSV}')
     print(f'Columns: {list(df.columns)}')
     missing_required = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -929,9 +989,12 @@ def main(argv=None):
     print(f'  Other fields reclassified: {total_reclassified}')
     remaining_other = listings['other_fields'].apply(len).sum()
     print(f'  Remaining unresolved other fields: {remaining_other}')
-    _ms_dates_added = 0
-    for idx in listings.index[listings['is_manuscript_section'].fillna(False)]:
-        raw = listings.at[idx, 'ms_date_text']
+    _head_dates_added = 0
+    for idx in listings.index:
+        if listings.at[idx, 'is_manuscript_section']:
+            raw = listings.at[idx, 'ms_date_text']
+        else:
+            raw = listings.at[idx, 'head_date_text']
         sub_tokens = _split_ms_date_token(raw)
         if not sub_tokens:
             continue
@@ -947,9 +1010,9 @@ def main(argv=None):
                 print(f'  WARN: parse_date_field({tok!r}) failed for listing idx={idx}: {exc}')
                 continue
             new_dates.append(parsed)
-            _ms_dates_added += 1
+            _head_dates_added += 1
         listings.at[idx, 'parsed_dates'] = new_dates
-    print(f'Step 6.6b: folded {_ms_dates_added} manuscript-row dates into parsed_dates.')
+    print(f'Step 6.6b: folded {_head_dates_added} head/manuscript dates into parsed_dates.')
     date_errors = []
     for idx, row in listings.iterrows():
         for d in row['parsed_dates']:
@@ -1360,7 +1423,7 @@ def main(argv=None):
     shape_lookup = dict(zip(shapes_df['name'].str.upper(), shapes_df['shape_id']))
     all_color_names = sorted({
         c for clist in listings['parsed_colors'] for c in clist
-    })
+    } | {DEFAULT_MARKING_COLOR})
     colors_df = pd.DataFrame({
         'color_id': range(1, len(all_color_names) + 1),
         'name': all_color_names,
@@ -1491,6 +1554,7 @@ def main(argv=None):
     # ======================================================================
     expanded_rows = []
     next_townmark_id = 1
+    default_color_id = color_lookup[DEFAULT_MARKING_COLOR]
     for idx, row in listings.iterrows():
         if row.get('is_latest_merge'):
             continue  # (L) row: no own townmark; date merges into parent (#36)
@@ -1501,8 +1565,8 @@ def main(argv=None):
             r = {
                 'townmark_id': next_townmark_id,
                 'source_listing_idx': idx,
-                'color_name': None,
-                'color_id': None,
+                'color_name': DEFAULT_MARKING_COLOR,
+                'color_id': default_color_id,
                 'is_multi_color_fanout': False,
             }
             expanded_rows.append(r)
@@ -2862,7 +2926,22 @@ def main(argv=None):
             _lines.append("Dates seen: " + ", ".join(dict.fromkeys(_decades)))
         if _lines:
             desc_by_listing[_lidx] = "\n".join(_lines)
+    # marking_lineage.csv is a compare-only sidecar. It is not imported by
+    # woco; it preserves the exact source row -> marking relationship while
+    # source_listing_idx, Page, Chunk, and rolled catalog text are still in
+    # memory. The compare harness expects this exact CSV shape:
+    # v2_key,source_listing_idx,marking_id,marking_type,page,chunk,catalog_txt
+    v2_key_by_listing = {}
+    v2_key_counts = {}
+    for _lidx, _lrow in listings.iterrows():
+        _page = source_key_component(_lrow.get("Page"))
+        _chunk = source_key_component(_lrow.get("Chunk"))
+        _base_key = f"{_page}:{_chunk}"
+        v2_key_counts[_base_key] = v2_key_counts.get(_base_key, 0) + 1
+        _suffix = v2_key_counts[_base_key]
+        v2_key_by_listing[_lidx] = _base_key if _suffix == 1 else f"{_base_key}#{_suffix}"
     marking_rows = []
+    marking_lineage_rows = []
     for kind, src_id, mk_id in emit_order:
         if kind == "TM":
             r = _src_row_by(townmarks_df, "townmark_id", src_id)
@@ -2931,12 +3010,26 @@ def main(argv=None):
             "rate_val": rate_val,
             "post_office": _resolve_int_fk(po_id_by_internal, po_internal),
         })
+        _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
+        _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
+        marking_lineage_rows.append({
+            "v2_key": v2_key_by_listing.get(src_idx, ""),
+            "source_listing_idx": src_idx,
+            "marking_id": mk_id,
+            "marking_type": type_label,
+            "page": source_key_component(_page),
+            "chunk": source_key_component(_chunk),
+            "catalog_txt": catalog_txt,
+        })
     markings_out = pd.DataFrame(marking_rows) if marking_rows else pd.DataFrame(columns=[
         "id", "code", "type", "catalog_txt", "inscription_txt", "desc", "is_manuscript",
         "shape", "lettering", "color", "is_irreg", "width", "height", "date_fmt",
         "impression", "rate_val", "post_office",
     ])
     markings_out = _stamp(markings_out)
+    marking_lineage_out = pd.DataFrame(marking_lineage_rows) if marking_lineage_rows else pd.DataFrame(columns=[
+        "v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt",
+    ])
     _missing_ct = markings_out["catalog_txt"].isna().sum() if len(markings_out) else 0
     if _missing_ct:
         _bad = markings_out[markings_out["catalog_txt"].isna()][["id", "code", "type"]]
@@ -3030,6 +3123,21 @@ def main(argv=None):
         path = os.path.join(OUT_DIR, f"{stem}.csv")
         out.to_csv(path, index=False)
         print(f"  {stem + '.csv':<22s} {len(out):>5d} rows  ->  {path}")
+    _lineage_cols = [
+        "v2_key",
+        "source_listing_idx",
+        "marking_id",
+        "marking_type",
+        "page",
+        "chunk",
+        "catalog_txt",
+    ]
+    _lineage_path = os.path.join(OUT_DIR, "marking_lineage.csv")
+    marking_lineage_out[_lineage_cols].to_csv(_lineage_path, index=False)
+    print(
+        f"  {'marking_lineage.csv':<22s} "
+        f"{len(marking_lineage_out):>5d} rows  ->  {_lineage_path}  (sidecar)"
+    )
     for stem in ("regions", "reference_works"):
         src = os.path.join(INPUT_DIR, f"{stem}.csv")
         dst = os.path.join(OUT_DIR, f"{stem}.csv")

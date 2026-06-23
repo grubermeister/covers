@@ -96,7 +96,6 @@ from common.models import (
 from woco.pagination import MarkingListPagination
 
 from .permissions import (
-    REVIEW_CONTRIBUTION_PERM,
     CanManageReferenceWorks,
     CanReviewContribution,
     IsOwnDeletableContribution,
@@ -105,6 +104,7 @@ from .permissions import (
     _user_is_responsible_for_cover,
     _user_is_responsible_for_marking,
     user_assigned_collection_ids,
+    user_can_review_contributions,
 )
 from .serializers import (
     CitationSerializer,
@@ -145,7 +145,7 @@ def _user_may_review_contribution(user, contribution) -> bool:
         return False
     if user.is_superuser:
         return True
-    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+    if not user_can_review_contributions(user):
         return False
     return contribution.collection_id in user_assigned_collection_ids(user)
 
@@ -164,7 +164,7 @@ class IsResponsibleForRegion(BasePermission):
         return bool(
             user
             and user.is_authenticated
-            and (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM))
+            and (user.is_superuser or user_can_review_contributions(user))
         )
 
     def has_object_permission(self, request, view, obj):
@@ -193,7 +193,7 @@ class CatalogCodeSuggestionView(APIView):
 
     def post(self, request):
         user = request.user
-        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+        if not user_can_review_contributions(user):
             return Response(
                 {"detail": "You do not have permission to generate catalog codes."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -627,7 +627,7 @@ class CoverV2ViewSet(viewsets.ModelViewSet):
         manager hides removed rows.
         """
         user = request.user
-        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+        if not user_can_review_contributions(user):
             return Response(
                 {"detail": "You are not allowed to view the recycle bin."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -926,7 +926,7 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
 
         if not user.is_authenticated:
             return qs.none()
-        if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        if user_can_review_contributions(user):
             region_ids = list(
                 Region.objects.filter(collection__id__in=user_assigned_collection_ids(user)).values_list(
                     "pk", flat=True
@@ -1375,7 +1375,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
         (who/when/why) lives in the marking changelog.
         """
         user = request.user
-        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+        if not user_can_review_contributions(user):
             return Response(
                 {"detail": "You are not allowed to view the recycle bin."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1781,7 +1781,7 @@ class ContributionViewSet(
             if user.is_superuser:
                 return base_qs
             mine = Q(contributor=user)
-            if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+            if user_can_review_contributions(user):
                 assigned_ids = user_assigned_collection_ids(user)
                 if assigned_ids:
                     return base_qs.filter(mine | Q(collection_id__in=assigned_ids)).distinct()
@@ -1790,7 +1790,7 @@ class ContributionViewSet(
         if mode == "editor":
             if user.is_superuser:
                 qs = base_qs
-            elif user.has_perm(REVIEW_CONTRIBUTION_PERM):
+            elif user_can_review_contributions(user):
                 qs = _get_editor_contribution_queryset(user)
             else:
                 return base_qs.none()
@@ -2347,9 +2347,7 @@ class ContributionSubmitView(APIView):
             "saveAsDraft",
             "status",
         }
-        user_can_submit_catalog_code = (
-            request.user.is_superuser or request.user.has_perm(REVIEW_CONTRIBUTION_PERM)
-        )
+        user_can_submit_catalog_code = user_can_review_contributions(request.user)
         if not user_can_submit_catalog_code:
             skip_keys.update(CATALOG_CODE_KEYS)
             # ERD/LRD on Submit New Marking are editor-only (issue #27); the

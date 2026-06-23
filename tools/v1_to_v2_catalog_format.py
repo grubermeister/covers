@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """v1_to_v2_catalog_format -- best-effort convert a v1 tblRawStateData
-cross-section into the v2 pipeline output shape (as in VA_ASCC_CTLG.csv).
+cross-section into the ASCC catalog-row pipeline output shape.
 
-The v2 catalog CSV has exactly these columns, in this order:
+The catalog-row CSV has exactly these columns, in this order:
 
-    Listing,Page,Chunk,Images Above,Type,Manuscript,Default Shape
+    listing_text,catalog_page,chunk_number,image_count,row_type,is_manuscript,default_shape,institutional_owner
 
 Mapping applied per v1 row:
 
-    Listing        <- txtRawStateData (raw listing text, with excess
+    listing_text   <- txtRawStateData (raw listing text, with excess
                       whitespace collapsed: see normalize_listing)
-    Page           <- "" (no v1 equivalent; left blank)
-    Chunk          <- nRawStateDataID
-    Images Above   <- count of tblTownmarkImages rows whose nRawStateDataID
+    catalog_page   <- "" (no v1 equivalent; left blank)
+    chunk_number   <- nRawStateDataID
+    image_count    <- count of tblTownmarkImages rows whose nRawStateDataID
                       matches this row AND whose ynDeleted == 'False'
-    Type           <- "LISTING" (constant for every row)
-    Manuscript     <- "" (no v1 equivalent; left blank)
-    Default Shape  <- "" (no v1 equivalent; left blank)
+    row_type       <- "LISTING" (constant for every row)
+    is_manuscript  <- "" (no v1 equivalent; left blank)
+    default_shape  <- "" (no v1 equivalent; left blank)
 
-This is best-effort: Page / Manuscript / Default Shape are intentionally
-empty because the v1 export carries no clean source for them.
+This is best-effort: catalog_page, is_manuscript, default_shape, and
+institutional_owner are intentionally empty because the v1 export carries no
+clean source for them.
 
 Usage (run from the tools/ directory; exit code 0 on success):
 
@@ -48,6 +49,8 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+from catalog_rows import CANONICAL_COLUMNS
+
 # Matches any run of whitespace (spaces, tabs, newlines, carriage returns).
 # Used to collapse excess whitespace in v1 listing text down to single spaces.
 _WS_RUN = re.compile(r"\s+")
@@ -56,16 +59,8 @@ _WS_RUN = re.compile(r"\s+")
 # cap. Raise it well past anything in the export so DictReader never throws.
 csv.field_size_limit(10 ** 9)
 
-# v2 output header, exact order -- do not reorder.
-V2_COLUMNS = [
-    "Listing",
-    "Page",
-    "Chunk",
-    "Images Above",
-    "Type",
-    "Manuscript",
-    "Default Shape",
-]
+# Catalog-row output header, exact order -- do not reorder.
+V2_COLUMNS = CANONICAL_COLUMNS
 
 # v1 source column names.
 LISTING_COL = "txtRawStateData"
@@ -78,7 +73,7 @@ IMG_ID_COL = "nTownmarkImageID"
 IMG_FILENAME_COL = "txtFilename"
 IMG_ORDER_COL = "nOrder"
 IMG_VIEW_COL = "txtView"
-# Image rows count toward "Images Above" only when ynDeleted is exactly this.
+# Image rows count toward image_count only when ynDeleted is exactly this.
 NOT_DELETED_VALUE = "False"
 
 IMAGE_REF_COLUMNS = [
@@ -194,13 +189,14 @@ def convert(src_path: Path, out_path: Path, image_counts: Counter) -> tuple[int,
                     included_raw_ids.append(raw_id)
                 writer.writerow(
                     {
-                        "Listing": listing,
-                        "Page": "",
-                        "Chunk": raw_id,
-                        "Images Above": image_counts.get(raw_id, 0),
-                        "Type": TYPE_VALUE,
-                        "Manuscript": "",
-                        "Default Shape": "",
+                        "listing_text": listing,
+                        "catalog_page": "",
+                        "chunk_number": raw_id,
+                        "image_count": image_counts.get(raw_id, 0),
+                        "row_type": TYPE_VALUE,
+                        "is_manuscript": "",
+                        "default_shape": "",
+                        "institutional_owner": "",
                     }
                 )
                 written += 1

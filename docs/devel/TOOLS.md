@@ -111,32 +111,58 @@ This drops and recreates the staging database using
 ## ASCC Pipeline Tools
 
 The canonical ASCC PDF-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
-
-Run these scripts from repo root. Their default paths resolve to `tools/wip/`
-based on each script's location, not on the shell cwd:
+Use the state-centered wrapper for demos and normal runs:
 
 ```sh
-uv run python tools/ascc_page_processor.py VA_ASCC_CTLG
-uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
-uv run python tools/ascc_image_extract.py VA_ASCC_CTLG --strict --reconciled-csv tools/wip/cache/VA_ASCC_CTLG_reconciled.csv
-uv run python tools/ascc_data_munger.py --input tools/wip/cache/VA_ASCC_CTLG_reconciled.csv --out-dir tools/wip/out/ --reference-work-code ASCC1
+./woco ascc doctor VA
+./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
-Expected exit code for each successful step: `0`.
+The wrapper preserves the existing `tools/wip/in`, `tools/wip/cache`, and
+`tools/wip/out` layout. For state `VA`, the main handoff files are:
+
+```text
+tools/wip/in/VA.pdf
+tools/wip/cache/VA_ocr_rows.csv
+tools/wip/cache/VA_catalog_rows.csv
+tools/wip/out/va/
+tools/wip/cache/compare/VA/review_ledger_VA.csv
+tools/wip/cache/VA_run.json
+```
+
+`./woco ascc run VA` resumes by default:
+
+- if `tools/wip/cache/VA_catalog_rows.csv` exists, it skips OCR and image-count
+  verification and resumes at munger;
+- if only `tools/wip/cache/VA_ocr_rows.csv` exists, it skips page processing and
+  OCR extraction and resumes at image-count verification;
+- pass `--force` to rebuild OCR rows and catalog rows from the PDF.
+
+Clean generated cache/output files without touching source PDFs or seed CSVs:
+
+```sh
+./woco ascc clean VA
+./woco ascc clean
+```
+
+With a state, `clean` removes generated cache files for that state plus
+`tools/wip/out/<state>/` and `tools/wip/cache/compare/<STATE>/`. Without a
+state, it clears generated contents under `tools/wip/cache/` and
+`tools/wip/out/` for all states while preserving placeholder files.
+
+Expected exit code for each successful command: `0`.
 
 The API-dependent tools, `ascc_page_processor.py` stages `halves` and
 `chunks` plus `ascc_page_extract.py`, default to OpenRouter:
 
 ```sh
-OPENROUTER_API_KEY=<key> uv run python tools/ascc_page_processor.py VA_ASCC_CTLG
-OPENROUTER_API_KEY=<key> uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
+OPENROUTER_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 Use the direct Anthropic Claude API with `--provider anthropic`:
 
 ```sh
-ANTHROPIC_API_KEY=<key> uv run python tools/ascc_page_processor.py VA_ASCC_CTLG --provider anthropic
-ANTHROPIC_API_KEY=<key> uv run python tools/ascc_page_extract.py VA_ASCC_CTLG --provider anthropic
+ANTHROPIC_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf --provider anthropic
 ```
 
 Or select the provider through environment variables:
@@ -145,7 +171,7 @@ Or select the provider through environment variables:
 PIPELINE_LLM_PROVIDER=anthropic \
 PIPELINE_LLM_MODEL=claude-sonnet-4-6 \
 ANTHROPIC_API_KEY=<key> \
-uv run python tools/ascc_page_extract.py VA_ASCC_CTLG
+./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 OpenRouter's default model is `anthropic/claude-sonnet-4.6`. Anthropic's

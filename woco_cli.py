@@ -13,6 +13,10 @@ import sys
 
 def main():
     here = os.path.dirname(os.path.abspath(__file__))
+    if len(sys.argv) > 1 and sys.argv[1] == "ascc":
+        sys.path.insert(0, os.path.join(here, "tools"))
+        from ascc_cli import main as ascc_main
+        raise SystemExit(ascc_main(sys.argv[2:]))
     sys.path.insert(0, os.path.join(here, "backend"))
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "woco.settings")
     from django.core.management import execute_from_command_line
