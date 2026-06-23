@@ -444,6 +444,142 @@ class AsccCompareTests(unittest.TestCase):
         self.assertIn("S4:user_catalog_is_manuscript_differ", reasons["1"])
         self.assertIn("S4:user_catalog_description_differ", reasons["1"])
 
+    def test_stage4_ignores_non_enum_date_format_values(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            paths = self.make_paths(root)
+            paths["compare_dir"].mkdir(parents=True)
+            self.write_stage4_text_fields(
+                paths,
+                [{
+                    "nRawStateDataID": "1",
+                    "post_office/town": "PETERSBURG",
+                    "dates_seen": "1778",
+                    "colors": "BLACK",
+                    "width/height": "",
+                    "rate_val": "",
+                    "shape": "",
+                    "lettering": "",
+                    "date_fmt": "",
+                    "is_manuscript": "TRUE",
+                    "description": "",
+                    "shape_source": "",
+                }],
+            )
+            write_csv(
+                paths["catalog_rows"],
+                stages.V2_COLUMNS,
+                [{
+                    "listing_text": "PETERSBURG(Sept. 21, 1778;Ms;Black) 500",
+                    "catalog_page": "10",
+                    "chunk_number": "31",
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+            write_csv(
+                paths["compare_dir"] / "v1_VA_slice.csv",
+                ["nRawStateDataID", "txtRawStateData"],
+                [{
+                    "nRawStateDataID": "1",
+                    "txtRawStateData": "PETERSBURG(Sept. 21, 1778;Ms;Black) 500",
+                }],
+            )
+            write_csv(
+                paths["compare_dir"] / "v1_VA_L1_parsed.csv",
+                ["nRawStateDataID", "txtTown", "txtDatesSeen", "txtColors", "txtSizes", "width", "height", "txtValue", "txtRatesText", "txtTownmarkShape", "txtTownmarkLettering", "txtTownmarkDateFormat", "ynManuscript", "ynManuscriptTownmarks", "txtOther", "memNotes"],
+                [{
+                    "nRawStateDataID": "1",
+                    "txtTown": "Petersburg",
+                    "txtDatesSeen": "Sept. 21, 1778",
+                    "txtColors": "Black",
+                    "txtSizes": "",
+                    "width": "",
+                    "height": "",
+                    "txtValue": "500",
+                    "txtRatesText": "",
+                    "txtTownmarkShape": "",
+                    "txtTownmarkLettering": "",
+                    "txtTownmarkDateFormat": "Manuscript",
+                    "ynManuscript": "TRUE",
+                    "ynManuscriptTownmarks": "",
+                    "txtOther": "",
+                    "memNotes": "",
+                }],
+            )
+            write_csv(
+                paths["compare_dir"] / "align_VA.csv",
+                ["v1_key", "v2_key", "disposition", "score", "match_reason", "representative_v1_key", "representative_v2_key", "v1_duplicate_index", "v2_duplicate_index"],
+                [{
+                    "v1_key": "1",
+                    "v2_key": "10:31",
+                    "disposition": "matched",
+                    "score": "1.000",
+                    "match_reason": "exact",
+                    "representative_v1_key": "1",
+                    "representative_v2_key": "10:31",
+                    "v1_duplicate_index": "1",
+                    "v2_duplicate_index": "1",
+                }],
+            )
+            write_csv(
+                paths["bundle_dir"] / "post_offices.csv",
+                ["id", "name"],
+                [{"id": "5", "name": "PETERSBURG"}],
+            )
+            write_csv(
+                paths["bundle_dir"] / "colors.csv",
+                ["id", "name"],
+                [{"id": "1", "name": "BLACK"}],
+            )
+            self.write_shape_seeds(paths)
+            write_csv(
+                paths["bundle_dir"] / "markings.csv",
+                ["id", "type", "post_office", "color", "width", "height", "rate_val", "shape", "lettering", "date_fmt", "is_manuscript", "desc"],
+                [{
+                    "id": "100",
+                    "type": "TOWNMARK",
+                    "post_office": "5",
+                    "color": "1",
+                    "width": "",
+                    "height": "",
+                    "rate_val": "",
+                    "shape": "",
+                    "lettering": "",
+                    "date_fmt": "",
+                    "is_manuscript": "True",
+                    "desc": "",
+                }],
+            )
+            write_csv(
+                paths["bundle_dir"] / "dates_seen.csv",
+                ["subject_id", "date"],
+                [{"subject_id": "100", "date": "1778-01-01"}],
+            )
+            write_csv(
+                paths["bundle_dir"] / "marking_lineage.csv",
+                ["v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt"],
+                [{
+                    "v2_key": "10:31",
+                    "source_listing_idx": "0",
+                    "marking_id": "100",
+                    "marking_type": "TOWNMARK",
+                    "page": "10",
+                    "chunk": "31",
+                    "catalog_txt": "",
+                }],
+            )
+
+            out = stages.stage4_fields(paths)
+            rows = {r["field"]: r for r in read_csv(out)}
+
+        self.assertEqual(rows["date_fmt"]["v1_user_value"], "")
+        self.assertEqual(rows["date_fmt"]["verdict"], "agree")
+        self.assertEqual(rows["is_manuscript"]["v1_user_value"], "TRUE")
+
     def test_stage5_flags_orphaned_v1_images(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

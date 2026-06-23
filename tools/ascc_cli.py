@@ -16,6 +16,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,18 @@ class StatePaths:
     media_dir: Path
 
 
+@dataclass(frozen=True)
+class V1StatePaths:
+    state: str
+    catalog_rows: Path
+    slice_rows: Path
+    image_refs: Path
+    bundle_dir: Path
+    report: Path
+    manifest: Path
+    media_dir: Path
+
+
 def state_paths(state: str) -> StatePaths:
     state = normalize_state(state)
     return StatePaths(
@@ -87,6 +100,22 @@ def state_paths(state: str) -> StatePaths:
         compare_dir=WIP_CACHE / "compare" / state,
         compare_ledger=WIP_CACHE / "compare" / state / f"review_ledger_{state}.csv",
         manifest=WIP_CACHE / f"{state}_run.json",
+        media_dir=BACKEND_MEDIA / state.lower(),
+    )
+
+
+def v1_state_paths(state: str) -> V1StatePaths:
+    state = normalize_state(state)
+    cache_dir = WIP_CACHE / "v1" / state
+    bundle_dir = WIP_OUT / f"v1_{state.lower()}"
+    return V1StatePaths(
+        state=state,
+        catalog_rows=cache_dir / "catalog_rows.csv",
+        slice_rows=cache_dir / "slice.csv",
+        image_refs=cache_dir / "image_refs.csv",
+        bundle_dir=bundle_dir,
+        report=bundle_dir / "v1_reconciliation_report.csv",
+        manifest=cache_dir / "run.json",
         media_dir=BACKEND_MEDIA / state.lower(),
     )
 
@@ -168,6 +197,19 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("state")
     add_shared_options(compare, include_import_check=False)
 
+    v1_doctor = sub.add_parser("v1-doctor", help="check v1-only pipeline prerequisites")
+    v1_doctor.add_argument("state")
+    add_v1_options(v1_doctor, include_import_check=False)
+
+    v1_run = sub.add_parser("v1-run", help="build a fresh v2 bundle from v1 exports only")
+    v1_run.add_argument("state")
+    add_v1_options(v1_run, include_import_check=True)
+    v1_run.add_argument(
+        "--load",
+        action="store_true",
+        help="commit import_ascc_bundle --truncate after bundle generation",
+    )
+
     clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
     clean.add_argument("state", nargs="?")
 
@@ -185,6 +227,39 @@ def add_shared_options(parser: argparse.ArgumentParser, include_import_check: bo
             "--import-check",
             choices=("auto", "always", "never"),
             default="auto",
+            help=(
+                "Run import_ascc_bundle as a dry-run truncate check after "
+                "bundle generation. Use never to skip the database check."
+            ),
+        )
+
+
+def add_v1_options(parser: argparse.ArgumentParser, include_import_check: bool) -> None:
+    parser.add_argument("--reference-work", default="ASCC2")
+    parser.add_argument(
+        "--v1-image-root",
+        type=Path,
+        default=None,
+        help=(
+            "directory containing files named by tblTownmarkImages.txtFilename "
+            "(default: V1_IMAGE_ROOT, backups/images/<state-name>, or "
+            "tools/wip/in/v1_images)"
+        ),
+    )
+    parser.add_argument(
+        "--allow-missing-v1-images",
+        action="store_true",
+        help="write missing-image report rows instead of failing the v1 image stage",
+    )
+    if include_import_check:
+        parser.add_argument(
+            "--import-check",
+            choices=("auto", "always", "never"),
+            default="auto",
+            help=(
+                "Run import_ascc_bundle as a dry-run truncate check after "
+                "bundle generation. Use never to skip the database check."
+            ),
         )
 
 
@@ -201,6 +276,10 @@ def main(argv: list[str] | None = None) -> int:
             return command_munge(args)
         if args.command == "compare":
             return command_compare(args)
+        if args.command == "v1-doctor":
+            return command_v1_doctor(args)
+        if args.command == "v1-run":
+            return command_v1_run(args)
         if args.command == "clean":
             return command_clean(args)
     except AsccCliError as exc:
@@ -265,6 +344,37 @@ def command_compare(args) -> int:
     return 0
 
 
+def command_v1_doctor(args) -> int:
+    state = normalize_state(args.state)
+    checks = v1_doctor_checks(
+        state,
+        resolve_v1_image_root(args.v1_image_root, state),
+        args.allow_missing_v1_images,
+    )
+    print_doctor(f"v1 {state}", checks)
+    return 0 if not any(c["required"] and not c["ok"] for c in checks) else 2
+
+
+def command_v1_run(args) -> int:
+    paths = v1_state_paths(args.state)
+    image_root = resolve_v1_image_root(args.v1_image_root, paths.state)
+    require_v1_doctor(paths.state, image_root, args.allow_missing_v1_images)
+    paths.catalog_rows.parent.mkdir(parents=True, exist_ok=True)
+    clean_bundle_dir(paths.bundle_dir)
+    run_command(v1_catalog_cmd(paths, args))
+    run_command(munger_cmd(paths, args))
+    run_command(v1_image_cmd(paths, args, image_root))
+    run_command(v1_overlay_cmd(paths, args, image_root, preserve_images=True))
+    import_result = maybe_import_check(paths, args.import_check)
+    load_result = maybe_load_bundle(paths, bool(args.load))
+    write_v1_run_manifest(paths, args, image_root, import_result, load_result)
+    print()
+    print(f"v1 catalog rows: {paths.catalog_rows}")
+    print(f"v1 bundle:       {paths.bundle_dir}")
+    print(f"v1 manifest:     {paths.manifest}")
+    return 0
+
+
 def command_clean(args) -> int:
     removed = clean_generated(args.state)
     scope = normalize_state(args.state) if args.state else "all states"
@@ -302,6 +412,30 @@ def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, obj
     ]
 
 
+def v1_doctor_checks(
+    state: str,
+    image_root: Path,
+    allow_missing_images: bool,
+) -> list[dict[str, object]]:
+    paths = v1_state_paths(state)
+    db_ok, db_message = check_db()
+    image_required = not allow_missing_images
+    return [
+        check_path("reference works", WIP_IN / "reference_works.csv", True),
+        check_path("regions", WIP_IN / "regions.csv", True),
+        check_path("legacy states", WIP_IN / "tblStates.csv", True),
+        check_path("legacy rows", WIP_IN / "tblRawStateData.csv", True),
+        check_path("legacy images", WIP_IN / "tblTownmarkImages.csv", True),
+        check_path("v1 image root", image_root, image_required),
+        check_item("wip in", WIP_IN.exists(), str(WIP_IN), True),
+        check_item("wip cache", WIP_CACHE.exists(), str(WIP_CACHE), True),
+        check_item("wip out", WIP_OUT.exists(), str(WIP_OUT), True),
+        check_item("database", db_ok, db_message, False),
+        check_item("v1 catalog rows", paths.catalog_rows.exists(), str(paths.catalog_rows), False),
+        check_item("v1 bundle", paths.bundle_dir.exists(), str(paths.bundle_dir), False),
+    ]
+
+
 def check_path(name: str, path: Path, required: bool) -> dict[str, object]:
     return check_item(name, path.exists(), str(path), required)
 
@@ -325,6 +459,20 @@ def print_doctor(state: str, checks: list[dict[str, object]]) -> None:
 def require_doctor(state: str, provider: str | None) -> None:
     failures = [
         c for c in doctor_checks(state, provider=provider)
+        if c["required"] and not c["ok"]
+    ]
+    if failures:
+        details = "; ".join(f"{c['name']}: {c['detail']}" for c in failures)
+        raise AsccCliError(details)
+
+
+def require_v1_doctor(
+    state: str,
+    image_root: Path,
+    allow_missing_images: bool,
+) -> None:
+    failures = [
+        c for c in v1_doctor_checks(state, image_root, allow_missing_images)
         if c["required"] and not c["ok"]
     ]
     if failures:
@@ -392,7 +540,84 @@ def munger_cmd(paths: StatePaths, args) -> list[str]:
         str(paths.bundle_dir),
         "--reference-work-code",
         args.reference_work,
+        "--region-abbrev",
+        paths.state,
     ]
+
+
+def v1_catalog_cmd(paths: V1StatePaths, args) -> list[str]:
+    return [
+        sys.executable,
+        str(TOOLS_DIR / "v1_catalog_rows.py"),
+        paths.state,
+        "--raw",
+        str(WIP_IN / "tblRawStateData.csv"),
+        "--states",
+        str(WIP_IN / "tblStates.csv"),
+        "--images",
+        str(WIP_IN / "tblTownmarkImages.csv"),
+        "--slice-out",
+        str(paths.slice_rows),
+        "--catalog-rows-out",
+        str(paths.catalog_rows),
+        "--image-refs-out",
+        str(paths.image_refs),
+        "--region-abbrev",
+        paths.state,
+    ]
+
+
+def v1_overlay_cmd(
+    paths: V1StatePaths,
+    args,
+    image_root: Path,
+    preserve_images: bool = False,
+) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(TOOLS_DIR / "v1_bundle_overlay.py"),
+        "--state",
+        paths.state,
+        "--slice",
+        str(paths.slice_rows),
+        "--image-refs",
+        str(paths.image_refs),
+        "--bundle-dir",
+        str(paths.bundle_dir),
+        "--v1-image-root",
+        str(image_root),
+        "--media-dir",
+        str(paths.media_dir),
+        "--report",
+        str(paths.report),
+    ]
+    if args.allow_missing_v1_images:
+        cmd.append("--allow-missing-v1-images")
+    if preserve_images:
+        cmd.append("--preserve-images")
+    return cmd
+
+
+def v1_image_cmd(paths: V1StatePaths, args, image_root: Path) -> list[str]:
+    cmd = [
+        sys.executable,
+        str(TOOLS_DIR / "v1_attach_images.py"),
+        "--state",
+        paths.state,
+        "--image-refs",
+        str(paths.image_refs),
+        "--bundle-dir",
+        str(paths.bundle_dir),
+        "--v1-image-root",
+        str(image_root),
+        "--media-dir",
+        str(paths.media_dir),
+        "--report",
+        str(paths.report),
+    ]
+    if args.allow_missing_v1_images:
+        cmd.append("--allow-missing-v1-images")
+    return cmd
 
 
 def compare_cmd(paths: StatePaths, args) -> list[str]:
@@ -458,6 +683,8 @@ def clean_generated_state(state: str) -> int:
                 removed += remove_path(path)
     removed += remove_path(paths.compare_dir)
     removed += remove_path(paths.bundle_dir)
+    removed += remove_path(WIP_CACHE / "v1" / state)
+    removed += remove_path(WIP_OUT / f"v1_{state.lower()}")
     return removed
 
 
@@ -528,29 +755,59 @@ def check_db() -> tuple[bool, str]:
 
 
 def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
+    # State bundles use state-local lookup ids. A clean dry-run answers the
+    # local question: can this generated bundle load into an empty catalog?
+    # Multi-state lookup id reconciliation belongs to merge_ascc_bundles.py.
+    check_kind = "dry-run-truncate"
     if mode == "never":
-        return {"mode": mode, "status": "skipped"}
+        return {"mode": mode, "status": "skipped", "check": check_kind}
     db_ok, db_message = check_db()
     if mode == "auto" and not db_ok:
         print()
         print(f"import dry-run skipped: database {db_message}")
-        return {"mode": mode, "status": "skipped", "reason": db_message}
+        return {
+            "mode": mode,
+            "status": "skipped",
+            "check": check_kind,
+            "reason": db_message,
+        }
     cmd = [
         sys.executable,
         str(REPO_ROOT / "backend" / "manage.py"),
         "import_ascc_bundle",
         str(paths.bundle_dir),
         "--dry-run",
+        "--truncate",
     ]
     run_command(cmd)
-    return {"mode": mode, "status": "passed"}
+    return {"mode": mode, "status": "passed", "check": check_kind}
+
+
+def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
+    check_kind = "truncate-load"
+    if not load:
+        return {"mode": "manual", "status": "skipped", "check": check_kind}
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "backend" / "manage.py"),
+        "import_ascc_bundle",
+        str(paths.bundle_dir),
+        "--truncate",
+    ]
+    run_command(cmd)
+    return {"mode": "load", "status": "passed", "check": check_kind}
 
 
 def count_csv_rows(path: Path) -> int | None:
     if not path.exists():
         return None
     with path.open(newline="") as fh:
-        return max(sum(1 for _ in fh) - 1, 0)
+        reader = csv.reader(fh)
+        try:
+            next(reader)
+        except StopIteration:
+            return 0
+        return sum(1 for _ in reader)
 
 
 def image_status_counts(path: Path) -> dict[str, int]:
@@ -574,7 +831,11 @@ def write_run_manifest(
       "state": "VA",
       "paths": {"catalog_rows": "tools/wip/cache/VA_catalog_rows.csv"},
       "counts": {"catalog_rows": 1596},
-      "import_check": {"mode": "auto", "status": "passed"}
+      "import_check": {
+        "mode": "auto",
+        "status": "passed",
+        "check": "dry-run-truncate"
+      }
     }
     """
     paths.manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -601,6 +862,99 @@ def write_run_manifest(
         },
         "image_status_counts": image_status_counts(paths.image_report),
         "import_check": import_result,
+    }
+    paths.manifest.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def resolve_v1_image_root(value: Path | None, state: str | None = None) -> Path:
+    if value is not None:
+        return Path(value).expanduser()
+    env_value = os.environ.get("V1_IMAGE_ROOT")
+    if env_value:
+        return Path(env_value).expanduser()
+    backup_root = REPO_ROOT / "backups" / "images"
+    if state:
+        state_dir = backup_root / v1_state_image_slug(state)
+        if state_dir.exists():
+            return state_dir
+    if backup_root.exists():
+        return backup_root
+    return WIP_IN / "v1_images"
+
+
+def v1_state_image_slug(state: str) -> str:
+    """Return the backups/images directory slug for a state abbrev.
+
+    The backup image tree is keyed by lower-case state names with spaces
+    replaced by dashes, for example:
+    backups/images/virginia
+    backups/images/west-virginia
+    """
+    state = normalize_state(state)
+    states_path = WIP_IN / "tblStates.csv"
+    if states_path.is_file():
+        csv.field_size_limit(10 ** 9)
+        with states_path.open(newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                if (row.get("txtStateAbv") or "").strip().upper() == state:
+                    name = (row.get("txtState") or "").strip()
+                    if name:
+                        return slugify_v1_image_dir(name)
+    return state.lower()
+
+
+def slugify_v1_image_dir(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", str(value).strip().lower())
+    return slug.strip("-")
+
+
+def write_v1_run_manifest(
+    paths: V1StatePaths,
+    args,
+    image_root: Path,
+    import_result: dict[str, object],
+    load_result: dict[str, object],
+) -> None:
+    """Write tools/wip/cache/v1/<STATE>/run.json.
+
+    Example output shape:
+    {
+      "state": "VA",
+      "source": "v1",
+      "paths": {"catalog_rows": "tools/wip/cache/v1/VA/catalog_rows.csv"},
+      "counts": {"catalog_rows": 1596}
+    }
+    """
+    paths.manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {
+        "state": paths.state,
+        "source": "v1",
+        "mode": "munger-plus-v1-reconciliation",
+        "reference_work": args.reference_work,
+        "v1_image_root": str(image_root),
+        "paths": {
+            "slice": str(paths.slice_rows),
+            "catalog_rows": str(paths.catalog_rows),
+            "image_refs": str(paths.image_refs),
+            "bundle": str(paths.bundle_dir),
+            "image_report": str(paths.report),
+            "reconciliation_report": str(paths.report),
+        },
+        "counts": {
+            "slice": count_csv_rows(paths.slice_rows),
+            "catalog_rows": count_csv_rows(paths.catalog_rows),
+            "image_refs": count_csv_rows(paths.image_refs),
+            "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
+            "bundle_images": count_csv_rows(paths.bundle_dir / "images.csv"),
+            "image_report": count_csv_rows(paths.report),
+            "reconciliation_report": count_csv_rows(paths.report),
+        },
+        "import_check": import_result,
+        "load": load_result,
     }
     paths.manifest.write_text(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",

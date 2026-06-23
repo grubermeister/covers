@@ -83,6 +83,11 @@ LETTERING_ALIASES = {
     "sans serif": "SANS-SERIF",
     "sans serifs": "SANS-SERIF",
 }
+DATE_FMT_CODES = {"MD", "MDD", "YD", "YMD", "YMDD"}
+DATE_FMT_ALIASES = {
+    "MONTHDAY": "MDD",
+    "MONTHDAYBELOW": "MDD",
+}
 
 
 def default_paths(
@@ -1296,7 +1301,18 @@ def _norm_lettering(text: str) -> str:
 
 def _norm_date_fmt(text: str) -> str:
     value = str(text or "").strip().upper()
-    return re.sub(r"[^A-Z0-9]+", "", value)
+    if not value:
+        return ""
+    compact = re.sub(r"[^A-Z0-9]+", "", value)
+    if compact in DATE_FMT_ALIASES:
+        return DATE_FMT_ALIASES[compact]
+    if compact in DATE_FMT_CODES:
+        return compact
+    found = []
+    for token in re.split(r"[^A-Z0-9]+", value):
+        if token in DATE_FMT_CODES:
+            found.append(token)
+    return _join_set(found)
 
 
 def _stored_manuscript_value(row: dict) -> str:

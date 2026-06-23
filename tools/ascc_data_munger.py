@@ -97,6 +97,14 @@ def main(argv=None):
     ap.add_argument("--input-dir", default=WIP_DIR / "in")
     ap.add_argument("--out-dir", default=WIP_DIR / "out")
     ap.add_argument("--reference-work-code", default="ASCC1")
+    ap.add_argument(
+        "--region-abbrev",
+        default=None,
+        help=(
+            "Two-letter catalog region abbreviation. Defaults to the first "
+            "two letters of the input CSV basename for OCR-derived rows."
+        ),
+    )
     args = ap.parse_args(argv)
 
     INPUT_CSV = Path(args.input)
@@ -108,7 +116,16 @@ def main(argv=None):
     # 0. Setup
     # ======================================================================
     # INPUT_CSV / INPUT_DIR / OUT_DIR supplied by main() argparse.
-    REGION_ABBREV = catalog_region_abbrev(INPUT_CSV)
+    REGION_ABBREV = (
+        str(args.region_abbrev).strip().upper()
+        if args.region_abbrev
+        else catalog_region_abbrev(INPUT_CSV)
+    )
+    if not re.fullmatch(r"[A-Z]{2}", REGION_ABBREV):
+        raise ValueError(
+            "region abbrev must be exactly two ASCII letters: "
+            f"{REGION_ABBREV!r}"
+        )
     REFERENCE_WORK_CODE = str(args.reference_work_code).strip()
     _rw_seed = pd.read_csv(os.path.join(INPUT_DIR, 'reference_works.csv'))
     _rw_match = _rw_seed[

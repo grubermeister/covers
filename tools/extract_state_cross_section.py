@@ -38,6 +38,10 @@ The old approved-only status policy remains available:
 
     python3 extract_state_cross_section.py VA --status approved
 
+The v1-only fresh import path uses the not-deleted policy:
+
+    python3 extract_state_cross_section.py VA --status not-deleted
+
 Default output path, for abbreviation VA, is:
 
     wip/in/tblRawStateData_VA_active.csv
@@ -66,6 +70,7 @@ FALSE_VALUE = "FALSE"
 PENDING_VALUE = "Pending"
 STATUS_ACTIVE = "active"
 STATUS_APPROVED = "approved"
+STATUS_NOT_DELETED = "not-deleted"
 
 # Continuation rules mirror the practical family logic in
 # tools/catalog_edition_diff.py. Keep the exact import context small for the
@@ -144,6 +149,8 @@ def is_active_row(row: dict) -> bool:
 
 def row_matches_status(row: dict, status: str) -> bool:
     """Return True when row passes the selected extraction status policy."""
+    if status == STATUS_NOT_DELETED:
+        return (row.get(DELETED_COL) or "").strip().upper() == FALSE_VALUE
     if not is_active_row(row):
         return False
     if status == STATUS_APPROVED:
@@ -283,7 +290,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--status",
-        choices=(STATUS_ACTIVE, STATUS_APPROVED),
+        choices=(STATUS_ACTIVE, STATUS_APPROVED, STATUS_NOT_DELETED),
         default=STATUS_ACTIVE,
         help="Row status policy inside valid families (default: %(default)s)",
     )

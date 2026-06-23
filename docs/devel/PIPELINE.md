@@ -22,6 +22,70 @@ For state `VA`, the wrapper writes `tools/wip/in/VA.pdf`,
 For an explanation of every file produced in `compare/VA/` and what each compare
 stage is checking, see `docs/devel/COMPARE.md`.
 
+## V1-only fresh import path
+
+Use this path when the source of truth is the legacy v1 export, not a v2 OCR
+scan. It reads `tblRawStateData.txtRawStateData`, runs the existing munger, then
+attaches v1 images and reconciles munger output against the v1 split columns
+before any database import. It does not read v2 OCR catalog rows or
+OCR-extracted images. By default, `v1-run` cites `ASCC2`, the sixth edition;
+pass `--reference-work CODE` only when a different citation is intended.
+
+Required inputs in `tools/wip/in/`:
+
+```text
+tblStates.csv
+tblRawStateData.csv
+tblTownmarkImages.csv
+regions.csv
+reference_works.csv
+```
+
+To build and dry-run-check a v1 catalog-text bundle:
+
+```bash
+./woco ascc v1-doctor VA
+./woco ascc v1-run VA
+```
+
+The run writes `tools/wip/cache/v1/VA/catalog_rows.csv`,
+`tools/wip/cache/v1/VA/image_refs.csv`, `tools/wip/out/v1_va/`, and
+`tools/wip/out/v1_va/v1_reconciliation_report.csv` for image and split-column
+reconciliation diagnostics. The default import check runs
+`import_ascc_bundle --dry-run --truncate` when the database is available. To
+commit the fresh load, pass `--load`; this runs `import_ascc_bundle
+--truncate`, so use it only against a database that should be replaced.
+
+This path treats v1 text like OCR text, attaches v1 images, then corrects the
+generated bundle from v1 split columns:
+
+- It reads `txtRawStateData`.
+- It runs the normal munger.
+- It maps `tblTownmarkImages.csv` to `marking_lineage.csv` by raw row id.
+- It writes bundle `images.csv` and copies image files into `backend/media/`.
+- It replaces supported munger-derived bundle values with v1 split-column
+  values for town/post office, inscription, colors, dimensions, shape,
+  lettering, date format, manuscript flag, descriptions, rates, dates, and
+  citations.
+- It records unsupported split-column evidence in `v1_reconciliation_report.csv`
+  instead of importing unsupported values silently.
+
+V1 image files are read from `V1_IMAGE_ROOT`, or from
+`backups/images/<state-name>/` by default when that folder exists. If legacy
+image files are not available yet, pass `--allow-missing-v1-images`; missing
+images are written to the image report instead of aborting the run.
+
+V1 catalog rows are stored under a generic `catalog_rows.csv` name, so
+`v1-run` passes `--region-abbrev STATE` to the munger. Without that explicit
+region, the munger falls back to the first two letters of the filename and
+would treat `catalog_rows.csv` as `CA`.
+
+Some v1 rows glue a prose note directly onto the town listing, for example
+`...1775.Petersburg(...)`. The generated v1 catalog rows trim that prefix only
+when the v1 split town/postmark column identifies the listing town and the
+prefix ends with a period. The original row remains unchanged in
+`slice.csv`.
+
 `./woco ascc run VA` resumes by default. Existing `VA_catalog_rows.csv` skips
 OCR and image-count verification; existing `VA_ocr_rows.csv` skips page
 processing and OCR extraction. Use `--force` to rebuild those files from the
@@ -63,7 +127,8 @@ Every script keys off one basename, e.g. `VA_ASCC_CTLG`. It must:
 ### Seed files (place in `tools/wip/in/` before starting)
 
 - `<BASE>.pdf` -- the state sub-catalog
-- `reference_works.csv` -- **exactly 1 data row** (the catalog being cited); munger raises otherwise
+- `reference_works.csv` -- must contain the row named by `--reference-work`;
+  the normal OCR wrapper defaults to `ASCC1`
 - `regions.csv` -- must contain exactly 1 row matching `REGION_ABBREV`
 
 ---
@@ -287,9 +352,9 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
   directly; do not move chunk PNGs into `wip/in/`.
 - **Media hop:** marking images still need to be copied from
   `wip/cache/<BASE>_images/` to `backend/media/<region>/` before munger/import.
-- **`reference_works.csv` ships with 2 rows** (ASCC1 + ASCC2); the munger requires
-  exactly 1. For the VA baseline we keep ASCC1 (the published 5th edition the scan
-  is from). See `DECISIONS.md`.
+- **`reference_works.csv` may ship with ASCC1 + ASCC2**; the munger selects
+  exactly 1 row by `--reference-work-code`. The normal OCR wrapper defaults to
+  ASCC1. The v1 wrapper defaults to ASCC2, the sixth edition.
 - **Non-numeric valuations abort the munger.** MD's Baltimore Postmaster's
   Provisional row is priced "Rare"; there is no valuation representation for it
   yet, so such rows are provisionally re-typed `LISTING` to `META` in the
@@ -306,4 +371,4 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 | `parse_head` town-heading date peel | `tools/munger/head.py` (code) | local patch, branch `reese/issue-1-va-e2e`, **proposed to Michael** |
 | 4 schema fixes + user id=1 | local MySQL only | local workaround; **Michael fixes migrations** |
 | safe `image_count` overcount correction | `ascc_image_extract.py` | automatic catalog-row correction |
-| keep ASCC1 in `reference_works.csv` | scratch seed | baseline choice |
+| normal OCR wrapper defaults to ASCC1 | CLI | baseline choice |
