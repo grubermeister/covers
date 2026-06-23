@@ -358,6 +358,8 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
     has_adhesive = _coerce_optional_bool(payload, "has_adhesive", False)
     is_institutional = _coerce_optional_bool(payload, "is_institutional", None)
     display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
+    raw_description = payload.get("description")
+    description = raw_description.strip() if isinstance(raw_description, str) else ""
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
 
@@ -368,6 +370,7 @@ def apply_cover_contribution_to_catalog(contrib) -> dict:
         has_adhesive=bool(has_adhesive),
         is_institutional=is_institutional,
         display_submitter_name=bool(display_submitter_name),
+        description=description,
         width=width,
         height=height,
         created_by=actor,
@@ -483,6 +486,11 @@ def _apply_cover_edit(
             _coerce_optional_bool(
                 payload, "display_submitter_name", cover.display_submitter_name
             )
+        )
+    if "description" in payload:
+        raw_description = payload.get("description")
+        cover.description = (
+            raw_description.strip() if isinstance(raw_description, str) else ""
         )
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     if width is not None:
@@ -1067,6 +1075,24 @@ def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
         created_by=actor,
         modified_by=actor,
     )
+
+
+# Form keys carrying a manually-entered marking ERD/LRD (+ granularity), read
+# by _sync_marking_dates_seen below. Setting a marking's date is editor-only
+# (issue #27): the contribution submit handler strips these from a non-editor's
+# submission, exactly as it strips CATALOG_CODE_KEYS. Kept here, next to the
+# code that consumes them, so the key list has one home.
+MARKING_DATE_SUBMIT_KEYS = frozenset({
+    "marking_erd",
+    "marking_erd_granularity",
+    "marking_lrd",
+    "marking_lrd_granularity",
+})
+
+
+def strip_marking_date_keys(data: dict) -> dict:
+    """Drop manually-entered marking date keys (editor-only; issue #27)."""
+    return {k: v for k, v in data.items() if k not in MARKING_DATE_SUBMIT_KEYS}
 
 
 def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:

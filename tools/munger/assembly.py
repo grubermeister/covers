@@ -51,6 +51,16 @@ def resolve_effective_shape(row):
         if s.get('size_shape_code'):
             return s['size_shape_code'].upper(), 'paren_body'
 
+    # 1b. Bare diameter -> circle. A single measured dimension with no shape
+    # code and no second dimension is a circular datestamp diameter: the catalog
+    # writes "27" (not "SL-27") for a round mark, and reserves "WxH" for straight
+    # lines/ovals. Stronger evidence than a section default, so it precedes it
+    # (Issue #38: ADA.MI "(1837-45;27;Red)" was defaulting to SL).
+    for s in row['parsed_sizes']:
+        if (s.get('size_dim1') is not None and s.get('size_dim2') is None
+                and not s.get('size_shape_code')):
+            return 'C', 'bare_diameter'
+
     # 2. Section-level Default Shape
     default = row.get('Default Shape')
     if pd.notna(default) and str(default).strip():

@@ -40,6 +40,11 @@ def is_color_field(field):
 
 BARE_NUMBER_RE = re.compile(r'^\d{1,3}(?:\.\d+)?$')
 
+# Smallest plausible circular-datestamp diameter (mm). A bare number below this
+# in the size slot of an unknown-date listing is a rate (e.g. a 2c drop rate),
+# not a sub-centimetre circle. Town CDS diameters in ASCC run ~15-60mm.
+MIN_BARE_DIAMETER_MM = 13.0
+
 def classify_paren_field(field_text):
     """Classify a single paren field by intrinsic content signals.
     Returns one of: date, ms, size, rate, color, other, empty."""
@@ -88,12 +93,34 @@ def classify_all_fields(paren_fields):
     # If a second 'size' appears and it's a bare number (no shape code, no
     # dateformat, no dimension separator), reclassify it as 'rate'.
     size_seen = False
+    saw_dash = False
     for i, (field, ftype) in enumerate(zip(paren_fields, types)):
-        if ftype == 'size':
-            if size_seen and BARE_NUMBER_RE.match(field.strip()):
+        if ftype != 'size':
+            continue
+        fstrip = field.strip()
+        # A bare-dash placeholder (`-`, `--`) is an *unknown* size, not a real
+        # measurement, so it must not consume the single size slot.
+        if fstrip in ('-', '--'):
+            saw_dash = True
+            continue
+        is_bare = bool(BARE_NUMBER_RE.match(fstrip))
+        if is_bare and saw_dash and not size_seen:
+            # First real number after an unknown-size `--` placeholder. It keeps
+            # the size slot when it's a plausible diameter (Issue #25B, Amelia
+            # "(--;28;...)" -> circle size 28, previously mis-read as a rate),
+            # but a rate-magnitude value stays a rate (PONTIAC
+            # "Same(--;2;Red) Drop rate" -> 2c drop rate, not a 2mm circle).
+            if float(fstrip) < MIN_BARE_DIAMETER_MM:
                 types[i] = 'rate'
             else:
                 size_seen = True
+            continue
+        # Legacy positional rule (unchanged for non-dash listings): the first
+        # size fills the slot; a later bare number is a rate.
+        if size_seen and is_bare:
+            types[i] = 'rate'
+        else:
+            size_seen = True
 
     return types
 
@@ -178,6 +205,25 @@ def triage_other_field(text):
 
     return 'other', None
 
+def _any_manuscript_rate(parsed_rates):
+    """True if any parsed rate token carries the [ms] manuscript bracket."""
+    for group in parsed_rates:
+        tokens = group if isinstance(group, list) else [group]
+        for t in tokens:
+            if isinstance(t, dict) and t.get('rate_is_manuscript'):
+                return True
+    return False
+
+
+def _has_real_size_device(parsed_sizes):
+    """True if any parsed size is a real struck device (a dimension or an
+    explicit shape code), not just an unknown `--` placeholder."""
+    return any(
+        s.get('size_dim1') is not None or s.get('size_shape_code')
+        for s in parsed_sizes
+    )
+
+
 def subparse_fields(row):
     """Apply the appropriate sub-parser to each paren field based on its type.
     Returns parallel lists: parsed_dates, parsed_sizes, parsed_rates, parsed_colors,
@@ -229,6 +275,16 @@ def subparse_fields(row):
                     parsed_colors.extend(parsed)
             else:
                 other_fields.append(field)
+
+    # A manuscript-bracketed annotation ([ms]) with no real handstamp device
+    # (no dimensioned size, no shape code) means the marking itself is
+    # manuscript -- BARRY "(c.1861-63;--;Congressional frank[ms];Black)" is a
+    # handwritten congressional frank, not a struck townmark. A [ms] alongside a
+    # real device (HICKORY CORNERS "...;C-35,NOR;Pd. 3[ms];...") is only a
+    # manuscript *rate* under a struck CDS, so it must NOT promote (Issue #34).
+    if not is_manuscript and _any_manuscript_rate(parsed_rates) \
+            and not _has_real_size_device(parsed_sizes):
+        is_manuscript = True
 
     # Union the optional CSV `Manuscript` column (if present + truthy).
     if _csv_manuscript_truthy(row):

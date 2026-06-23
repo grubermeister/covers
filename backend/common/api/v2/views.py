@@ -45,7 +45,12 @@ from common.catalog_codes import (
     suggest_direct_catalog_code,
     suggest_for_contribution,
 )
-from common.contribution_apply import ContributionApplyError, _parse_int
+from common.contribution_apply import (
+    ContributionApplyError,
+    MARKING_DATE_SUBMIT_KEYS,
+    _parse_int,
+    strip_marking_date_keys,
+)
 from common.audit import (
     build_cover_snapshot,
     build_marking_snapshot,
@@ -1189,8 +1194,17 @@ class MarkingViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options", "trace"]
     search_fields = [
         "code",
+        # Rate/aux keywords ("PAID", "FREE", "DUE", "STEAM", rate amounts) live
+        # as free text in catalog_txt/inscription_txt, so a top-search for
+        # "paid"/"free" already matches here -- no structured rate keyword field
+        # exists. (#40)
+        "catalog_txt",
         "inscription_txt",
         "desc",
+        # `type` holds the stored enum value (TOWNMARK/RATEMARK/AUXMARK), so a
+        # search for "ratemark"/"auxmark"/"townmark" finds all markings of that
+        # class. icontains on the enum value, not the human label. (#40)
+        "type",
         "post_office__post_office_regions__region__name",
         "post_office__name",
         "shape__name",
@@ -2336,6 +2350,10 @@ class ContributionSubmitView(APIView):
         user_can_submit_catalog_code = user_can_review_contributions(request.user)
         if not user_can_submit_catalog_code:
             skip_keys.update(CATALOG_CODE_KEYS)
+            # ERD/LRD on Submit New Marking are editor-only (issue #27); the
+            # same editor role gates both. Drop them from a non-editor's
+            # submission so only an editor can set a marking's date.
+            skip_keys.update(MARKING_DATE_SUBMIT_KEYS)
         for key in data:
             if key in skip_keys:
                 continue
@@ -2437,6 +2455,7 @@ class ContributionSubmitView(APIView):
             submitted_data.update(image_updates)
             if not user_can_submit_catalog_code:
                 existing_sd = strip_catalog_code_keys(existing_sd)
+                existing_sd = strip_marking_date_keys(existing_sd)
             existing_sd.update(submitted_data)
             contrib.submitted_data = existing_sd
             contrib.collection = collection

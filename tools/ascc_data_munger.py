@@ -191,9 +191,33 @@ def main(argv=None):
         (re.compile(r'\(backstamp\)', re.IGNORECASE),    'Backstamp'),
         (re.compile(r'\(no town cds\)', re.IGNORECASE),  'No town cds'),
     ]
+    # Capture-style desc annotations: the desc line is built from the matched
+    # text (group 1) rather than a fixed label, so per-marking specifics are
+    # preserved. Letter-position notation -- ("S"&"D"high), ("D"high) -- records
+    # which inscription letters sit high/low in the strike; capture it verbatim
+    # into desc so editors see it (Issue #33: ANNAPS.MD "S"/"D" high).
+    _DESC_CAPTURE_ANNOTATIONS = [
+        (re.compile(
+            r'\(\s*("[A-Za-z]"(?:\s*[&,]\s*"[A-Za-z]")*\s*(?:high|low)[^)]*?)\s*\)',
+            re.IGNORECASE),
+         lambda m: re.sub(r'\s+', ' ', m.group(1)).strip()),
+        # Named franking privilege (e.g. BARRY "Congressional frank[ms]"): a
+        # free-mail marking whose franking authority belongs in the note
+        # (Issue #34). The [ms] bracket, if any, is dropped from the label.
+        (re.compile(
+            r'\b((?:Congressional|Senatorial|Presidential|Free)\s+frank)\b',
+            re.IGNORECASE),
+         lambda m: m.group(1)),
+    ]
     def _paren_annotation_lines(text):
         s = str(text or '')
-        return [label for pat, label in _DESC_PAREN_ANNOTATIONS if pat.search(s)]
+        lines = [label for pat, label in _DESC_PAREN_ANNOTATIONS if pat.search(s)]
+        for pat, fmt in _DESC_CAPTURE_ANNOTATIONS:
+            for m in pat.finditer(s):
+                line = fmt(m)
+                if line and line not in lines:
+                    lines.append(line)
+        return lines
     df['paren_annotations_desc'] = df['clean_text'].apply(_paren_annotation_lines)
     # Keep has_backstamp as a separate column for any callers that depend on
     # the specific flag (none today, but cheaper than searching for them).
@@ -1069,8 +1093,35 @@ def main(argv=None):
     # ======================================================================
     # Step 7: Relationship Resolution
     # ======================================================================
+    # Line-wrap name repairs: a few catalog town names are split mid-word
+    # across a typeset line break, where the '/' is NOT a town/state separator
+    # (Issue #32). extract_town_root() splits on '/', so "ANNA/POLIS" would
+    # otherwise resolve to town "ANNA" and the backstamp would never file under
+    # Annapolis. Conservative explicit list -- flagged to Ian to confirm/extend;
+    # NOT a general /-repair (that would mangle real "TOWN/STATE" inscriptions).
+    _WRAPPED_NAME_REPAIRS = {
+        'ANNA/POLIS': 'ANNAPOLIS',
+    }
+    if listings['head_name_body'].isin(_WRAPPED_NAME_REPAIRS).any():
+        n_rep = int(listings['head_name_body'].isin(_WRAPPED_NAME_REPAIRS).sum())
+        listings['head_name_body'] = listings['head_name_body'].map(
+            lambda v: _WRAPPED_NAME_REPAIRS.get(v, v) if isinstance(v, str) else v)
+        print(f'Step 7 (pre): repaired {n_rep} line-wrapped town name(s)')
     listings = resolve_relationships(listings)
     listings = roll_up_catalog_text(listings)
+    # Issue #36: (E)/(L) merge. A "(L)" relationship row records a *later
+    # observed date* of its parent (E) marking, not a separate marking (Ian:
+    # Adamsville's (E) Feb-14-1834 and (L) Dec-11-1834 are ONE marking spanning
+    # that range). Flag (L) rows with a resolvable parent so the fan-out emits no
+    # duplicate townmark and dates_seen attaches their date to the parent.
+    _L_REL_RE = re.compile(r'[(\[{]\s*L\s*[)\]}]', re.IGNORECASE)
+    def _is_latest_merge(r):
+        rt = r.get('head_rel_type')
+        return (isinstance(rt, str) and bool(_L_REL_RE.search(rt))
+                and pd.notna(r.get('parent_idx')))
+    listings['is_latest_merge'] = listings.apply(_is_latest_merge, axis=1)
+    print(f"Issue #36: (L) rows merged into parent (E) marking: "
+          f"{int(listings['is_latest_merge'].sum())}")
     print(f'Step 7: Relationship resolution applied to {len(listings)} listings')
     print(f'  Independent entries: {listings["parent_idx"].isna().sum()}')
     print(f'  Resolved from parent: {listings["parent_idx"].notna().sum()}')
@@ -1488,6 +1539,8 @@ def main(argv=None):
     next_townmark_id = 1
     default_color_id = color_lookup[DEFAULT_MARKING_COLOR]
     for idx, row in listings.iterrows():
+        if row.get('is_latest_merge'):
+            continue  # (L) row: no own townmark; date merges into parent (#36)
         colors = row['parsed_colors']
         is_multi_color = len(colors) > 1
 
@@ -1536,12 +1589,20 @@ def main(argv=None):
 
         is_ms = bool(src['is_manuscript'])
 
-        # Dimensions: first parsed_sizes entry (if any)
+        # Dimensions: first parsed_sizes entry that carries real geometry. An
+        # unknown-size `--` placeholder (e.g. the date slot of "(--;30;...)")
+        # parses to an empty size; skipping it keeps the real diameter from
+        # being dropped (Issue #25B). Falls back to the first entry when none
+        # qualify, so normal single-size listings are unaffected.
         width, height = None, None
         is_irreg = None if is_ms else False
         date_format = None
         if src['parsed_sizes']:
-            s = src['parsed_sizes'][0]
+            s = next((z for z in src['parsed_sizes']
+                      if z.get('size_dim1') is not None
+                      or z.get('size_shape_code')
+                      or z.get('size_dateformat')),
+                     src['parsed_sizes'][0])
             width = s.get('size_dim1')
             height = s.get('size_dim2')
             if width is not None and height is None:
@@ -2573,6 +2634,11 @@ def main(argv=None):
         tm_codes = [c for c in _tm_codes_by_lst.get(listing_idx, []) if c]
         rm_codes = [c for c in _rm_codes_by_lst.get(listing_idx, []) if c]
         ax_codes = [c for c in _ax_codes_by_lst.get(listing_idx, []) if c]
+        # Issue #36: a merged (L) row emits no townmark of its own; attach its
+        # later-observed date to the parent (E) marking's townmark code(s) so
+        # the marking spans earliest..latest.
+        if src.get('is_latest_merge'):
+            tm_codes = [c for c in _tm_codes_by_lst.get(src['parent_idx'], []) if c]
         all_codes = tm_codes + rm_codes + ax_codes
         if not all_codes:
             continue
@@ -2589,10 +2655,14 @@ def main(argv=None):
                 elif gran == 'YEAR':
                     obs = _date_cls(d['date_year_start'], 1, 1)
                     obs_rows.append((str(obs), 'YEAR'))
-                elif gran in ('RANGE', 'DECADE'):
+                elif gran == 'RANGE':
                     for yr in (d['date_year_start'], d['date_year_end']):
                         obs = _date_cls(int(yr), 1, 1)
                         obs_rows.append((str(obs), 'YEAR'))
+                # DECADE intentionally emits NO dates_seen row: a decade-level
+                # date ("1850's") is too imprecise to be a "date seen", so the
+                # marking's date field stays blank and the decade is recorded in
+                # the note instead (Issue #26; see desc assembly below).
             except (ValueError, TypeError, KeyError):
                 # Bad date components in source; Step 6 already reports parse errors.
                 continue
@@ -2714,6 +2784,11 @@ def main(argv=None):
         if _frame is not None and len(_frame) and "source_listing_idx" in _frame.columns:
             _emitted_listing_idxs.update(_frame["source_listing_idx"].dropna().astype(int).tolist())
     _expected = set(listings.index.tolist())
+    # (#36) merged (L) rows intentionally emit no marking of their own -- their
+    # later-observed date is folded into the parent (E) marking -- so they are
+    # not expected to appear in the coverage set.
+    if 'is_latest_merge' in listings.columns:
+        _expected -= set(listings.index[listings['is_latest_merge'].fillna(False)].tolist())
     _missing = sorted(_expected - _emitted_listing_idxs)
     if _missing:
         head = _missing[:20]
@@ -2823,13 +2898,15 @@ def main(argv=None):
         _see = _lrow.get('see_clause')
         if _see and isinstance(_see, str) and _see.strip():
             _lines.append(_see.strip())
-        if _lrow.get('is_manuscript_section'):
-            _date_raw = _lrow.get('ms_date_text')
-        else:
-            _date_raw = _lrow.get('head_date_text')
-        _date_desc = format_dates_seen_desc(_date_raw)
-        if _date_desc:
-            _lines.append(_date_desc)
+        # Decade-level dates are dropped from the date field (too imprecise to
+        # be a "date seen") and recorded here instead (Issue #26): "1850's" ->
+        # note line "Dates seen: 1850s".
+        _decades = []
+        for _d in (_lrow.get('parsed_dates') or []):
+            if _d.get('date_granularity') == 'DECADE' and _d.get('date_year_start'):
+                _decades.append(f"{int(_d['date_year_start'])}s")
+        if _decades:
+            _lines.append("Dates seen: " + ", ".join(dict.fromkeys(_decades)))
         if _lines:
             desc_by_listing[_lidx] = "\n".join(_lines)
     # marking_lineage.csv is a compare-only sidecar. It is not imported by

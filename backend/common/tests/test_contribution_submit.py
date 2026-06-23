@@ -213,6 +213,61 @@ class ContributionSubmitMarkingEditTests(TestCase):
         contribution = Contribution.objects.get(pk=response.data["id"])
         self.assertEqual(contribution.submitted_data["catalog_code"], "APMC-VA-M0001")
 
+    def test_contributor_submitted_marking_date_keys_are_stripped(self):
+        # Setting a marking's date is editor-only (issue #27): a contributor's
+        # ERD/LRD must not survive into submitted_data.
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "marking_erd": "1845-01-01",
+                "marking_erd_granularity": "DAY",
+                "marking_lrd": "1850-12-31",
+                "marking_lrd_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        contribution = Contribution.objects.get(pk=response.data["id"])
+        self.assertNotIn("marking_erd", contribution.submitted_data)
+        self.assertNotIn("marking_erd_granularity", contribution.submitted_data)
+        self.assertNotIn("marking_lrd", contribution.submitted_data)
+        self.assertNotIn("marking_lrd_granularity", contribution.submitted_data)
+
+    def test_editor_submitted_marking_dates_are_preserved(self):
+        editor = self._editor("submit-date-editor")
+        self.client.force_authenticate(editor)
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "marking_erd": "1845-01-01",
+                "marking_erd_granularity": "DAY",
+                "marking_lrd": "1850-12-31",
+                "marking_lrd_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        contribution = Contribution.objects.get(pk=response.data["id"])
+        self.assertEqual(contribution.submitted_data["marking_erd"], "1845-01-01")
+        self.assertEqual(contribution.submitted_data["marking_lrd"], "1850-12-31")
+
     def test_direct_marking_suggestion_uses_apmc_without_reference(self):
         editor = User.objects.create_superuser(
             username="direct-editor",

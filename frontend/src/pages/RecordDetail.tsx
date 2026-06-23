@@ -645,6 +645,13 @@ const RecordDetail = () => {
       type: record.type,
       isManuscript: record.isManuscript,
       state: regionsDisplay(record),
+      // Each territory/state becomes a chip linking to a region-filtered
+      // search. The Search page's `state` param matches on region name, and
+      // its filter traverses the post_office_regions M2M. (issue #28)
+      regionTags: record.regions.map((r) => ({
+        label: r.name,
+        to: `/search?state=${encodeURIComponent(r.name)}`,
+      })),
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,

@@ -303,6 +303,8 @@ export interface CoverDetail {
   displaySubmitterName: boolean;
   /** Submitter display name; null unless they opted in (server-gated). */
   submitterName: string | null;
+  /** Free-text description / notes, shown on the public cover detail page. */
+  description: string;
   width: string | null;
   height: string | null;
   datesSeen: CoverDateSeenItem[];
@@ -340,6 +342,7 @@ function mapCoverDetail(data: unknown): CoverDetail | null {
       typeof o.submitter_name === "string" && o.submitter_name
         ? o.submitter_name
         : null,
+    description: typeof o.description === "string" ? o.description : "",
     width: decimalToString(o.width),
     height: decimalToString(o.height),
     datesSeen,
