@@ -45,6 +45,18 @@ BARE_NUMBER_RE = re.compile(r'^\d{1,3}(?:\.\d+)?$')
 # not a sub-centimetre circle. Town CDS diameters in ASCC run ~15-60mm.
 MIN_BARE_DIAMETER_MM = 13.0
 
+
+def _leading_dash_is_unknown_date(paren_fields, types):
+    """True when a leading dash is the date slot, not a size placeholder."""
+    if not paren_fields or paren_fields[0].strip() not in ('-', '--'):
+        return False
+
+    # Decision: only full date/size/rate/color-style rows promote a leading
+    # dash to unknown date. Short rows such as ["--", "28"] keep staging's
+    # size-placeholder behavior so the following diameter is not a rate.
+    tail_types = types[2:]
+    return len(paren_fields) >= 4 and 'rate' in tail_types and 'color' in tail_types
+
 def classify_paren_field(field_text):
     """Classify a single paren field by intrinsic content signals.
     Returns one of: date, ms, size, rate, color, other, empty."""
@@ -83,10 +95,10 @@ def classify_all_fields(paren_fields):
     types = [classify_paren_field(f) for f in paren_fields]
 
     # Positional disambiguation: in semicolon parentheticals, the first field
-    # is the date slot. A bare "--" there means "unknown date", not unknown
-    # size. Later dash fields still use the size parser so forms like "--,YD"
-    # keep their existing unknown-dimension meaning.
-    if paren_fields and paren_fields[0].strip() == '--':
+    # can be an unknown date when the rest of the row has enough context to
+    # prove it. Later dash fields still use the size parser so forms like
+    # "--,YD" keep their existing unknown-dimension meaning.
+    if _leading_dash_is_unknown_date(paren_fields, types):
         types[0] = 'date'
 
     # Positional disambiguation: ASCC entries have at most one size field.
