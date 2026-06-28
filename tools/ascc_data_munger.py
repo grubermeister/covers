@@ -1949,6 +1949,11 @@ def main(argv=None):
     _double_dash   = re.compile(r"-{2,}")
     _multi_space   = re.compile(r"\s+")
     _edge_trim     = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
+    # v1 descriptive entries glue dates and prose to the town name
+    # (e.g. "NEWARK 1854 WITH NEWARK", "WHITE OAK C1862 ON PATRIOTIC
+    # COVER"). Truncate from the first whitespace-delimited token that
+    # contains a digit. Real post office names are purely alphabetic.
+    _digit_tail    = re.compile(r"\s+\S*\d\S*.*$")
     listings['normalized_town'] = (
         listings['resolved_town'].astype('string')
         .str.upper()
@@ -1957,6 +1962,7 @@ def main(argv=None):
         .str.replace(_strip_punct, ' ', regex=True)             # , / = ( ) -> space
         .str.replace(_double_dash, '-', regex=True)             # -- -> -
         .str.replace(_multi_space, ' ', regex=True)             # collapse spaces
+        .str.replace(_digit_tail, '', regex=True)               # NEWARK 1854 ... -> NEWARK
         .str.replace(_edge_trim, '', regex=True)                # trim edges
         .replace('', pd.NA)
     )

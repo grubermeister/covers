@@ -48,6 +48,28 @@ def stamped(row):
 
 
 class V1PipelineTests(unittest.TestCase):
+    def test_v1_overlay_replaces_same_with_parent_townmark_text(self):
+        cases = [
+            ("Same/Wis.", "WATERTOWN/Wis.", "WATERTOWN/Wis."),
+            ("(1)Same/Wis.", "(1)WATERTOWN/Wis.", "WATERTOWN/Wis."),
+            ("Same", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
+            ("The same", "DETROIT / Mich.", "DETROIT / Mich."),
+            ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("(1)BETHANY/Va.", "", "BETHANY/Va."),
+            ("*RICHMOND/VA.", "", "RICHMOND/VA."),
+        ]
+        for inscription, parent_text, expected in cases:
+            with self.subTest(inscription=inscription):
+                self.assertEqual(
+                    v1_bundle_overlay.resolve_same_inscription(
+                        inscription,
+                        parent_text,
+                    ),
+                    expected,
+                )
+
     def test_catalog_rows_include_approve_deleted_when_not_deleted(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

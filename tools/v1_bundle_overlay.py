@@ -115,6 +115,56 @@ def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
 
 
+SAME_PREFIX_RE = re.compile(r"^\s*(?:The\s+)?Same\b", re.IGNORECASE)
+LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+
+
+def strip_inscription_markers(inscription: object) -> str:
+    """Remove catalog-only markers from inscription text."""
+    value = clean(inscription).replace("*", "").strip()
+    while value:
+        stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
+        if stripped == value:
+            return stripped
+        value = stripped
+    return ""
+
+
+def townmark_text_stem(text: object) -> str:
+    """Return the townmark text prefix before a state or device suffix."""
+    value = strip_inscription_markers(text)
+    if "/" in value:
+        return value.split("/", 1)[0].strip()
+    return re.sub(
+        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
+        "",
+        value,
+    ).strip() or value
+
+
+def resolve_same_inscription(inscription: object, parent_text: object) -> str:
+    """Replace a leading Same placeholder with parent townmark text.
+
+    Example input shape:
+    inscription="Same/Wis."
+    parent_text="WATERTOWN/Wis."
+    returned value="WATERTOWN/Wis."
+    """
+    value = strip_inscription_markers(inscription)
+    if not value:
+        return ""
+    match = SAME_PREFIX_RE.match(value)
+    if not match:
+        return value
+    parent = strip_inscription_markers(parent_text)
+    if not parent:
+        return value
+    suffix = value[match.end():]
+    if not suffix.strip():
+        return parent
+    return strip_inscription_markers(townmark_text_stem(parent) + suffix)
+
+
 def truthy(value: object) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "y", "t"}
 
@@ -611,7 +661,11 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    inscription = clean(raw_row.get("txtPostmark")) or clean(raw_row.get("txtTownPostmark"))
+    townmark_text = strip_inscription_markers(raw_row.get("txtTownPostmark"))
+    inscription = (
+        resolve_same_inscription(raw_row.get("txtPostmark"), townmark_text)
+        or townmark_text
+    )
     if inscription:
         for row in townmark_rows:
             row["inscription_txt"] = inscription
