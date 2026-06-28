@@ -3,6 +3,57 @@
 from django.db import migrations, models
 
 
+def purge_disposable_ascc_data(apps, schema_editor):
+    """Delete stale catalog rows before adding additive-import constraints.
+
+    Deploy context:
+      cwd=/srv/woco
+      command=uv run python backend/manage.py migrate
+      expected exit code=0
+
+    This migration intentionally treats the pre-additive ASCC import as
+    disposable bootstrap data. The clean bundle is reloaded after deploy with:
+      uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
+    """
+    model_names = (
+        "SubmissionTransaction",
+        "MarkingVersion",
+        "CoverVersion",
+        "MarkingRecycleBin",
+        "CoverRecycleBin",
+        "Contribution",
+        "CollectionAssignment",
+        "Collection",
+        "Image",
+        "Citation",
+        "DateSeen",
+        "CoverMarking",
+        "CoverValuation",
+        "Cover",
+        "Marking",
+        "PostOfficeRegion",
+        "PostOffice",
+        "ReferenceWork",
+        "Region",
+        "Shape",
+        "Lettering",
+        "Color",
+    )
+    connection = schema_editor.connection
+    is_mysql = connection.vendor == "mysql"
+    with connection.cursor() as cursor:
+        if is_mysql:
+            cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
+        try:
+            for model_name in model_names:
+                model = apps.get_model("common", model_name)
+                table = model._meta.db_table
+                cursor.execute(f"DELETE FROM `{table}`")
+        finally:
+            if is_mysql:
+                cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
+
+
 class Migration(migrations.Migration):
 
     dependencies = [
@@ -10,6 +61,7 @@ class Migration(migrations.Migration):
     ]
 
     operations = [
+        migrations.RunPython(purge_disposable_ascc_data, migrations.RunPython.noop),
         migrations.AddField(
             model_name="region",
             name="code",

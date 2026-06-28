@@ -10,6 +10,7 @@ from common.models import (
     Citation,
     Color,
     Collection,
+    CollectionAssignment,
     Cover,
     CoverMarking,
     CoverValuation,
@@ -300,6 +301,25 @@ class AsccAdditiveImportTests(TestCase):
         self.assertIsNone(marking.shape_id)
         self.assertIsNone(marking.color_id)
         self.assertFalse(marking.is_irreg)
+
+    def test_truncate_recreates_collections_without_stale_assignments(self):
+        call_command("import_ascc_bundle", str(self.bundle), verbosity=0)
+        collection = Collection.objects.get(region__code="USA-VA1")
+        CollectionAssignment.objects.create(
+            user=self.user,
+            collection=collection,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        call_command("import_ascc_bundle", str(self.bundle), truncate=True, verbosity=0)
+
+        self.assertEqual(CollectionAssignment.objects.count(), 0)
+        self.assertEqual(Collection.objects.count(), 2)
+        self.assertTrue(Collection.objects.filter(region__code="USA").exists())
+        self.assertTrue(Collection.objects.filter(region__code="USA-VA1").exists())
+        self.assertEqual(Region.objects.count(), 2)
+        self.assertEqual(Marking.objects.count(), 1)
 
     def test_drop_ascc_state_dry_run_then_delete(self):
         call_command("import_ascc_bundle", str(self.bundle), verbosity=0)

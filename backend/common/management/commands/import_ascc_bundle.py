@@ -59,7 +59,7 @@ from common.admin import (
     RegionResource,
     ShapeResource,
 )
-from common.models import Collection, Region
+from common.models import Collection, CollectionAssignment, Region
 
 
 # Stem -> Resource class. The stem is the CSV basename without extension.
@@ -120,6 +120,11 @@ OPTIONAL_STEMS = frozenset({
     "cover_markings",
     "cover_valuations",
 })
+
+TRUNCATE_EXTRA_MODELS = (
+    CollectionAssignment,
+    Collection,
+)
 
 
 def _load_dataset(path):
@@ -232,10 +237,10 @@ class Command(BaseCommand):
             "--truncate",
             action="store_true",
             help=(
-                "Before importing, delete every row from all 14 ASCC catalog "
-                "tables in reverse dependency order. Incompatible with --only "
-                "(a partial truncate would hit FK constraints). Under --dry-run "
-                "the truncate is rolled back too."
+                "Before importing, delete every row from all ASCC catalog "
+                "tables plus generated Collection wrappers. Incompatible with "
+                "--only (a partial truncate would hit FK constraints). Under "
+                "--dry-run the truncate is rolled back too."
             ),
         )
 
@@ -290,7 +295,7 @@ class Command(BaseCommand):
             with transaction.atomic():
                 if truncate:
                     self.stdout.write(self.style.NOTICE(
-                        "Truncating 14 ASCC catalog tables in reverse dependency order..."
+                        "Truncating ASCC catalog and collection tables..."
                     ))
                     # Raw DELETE FROM with FOREIGN_KEY_CHECKS off (MySQL) so
                     # the wipe bypasses on_delete=PROTECT FKs from outside-
@@ -302,6 +307,12 @@ class Command(BaseCommand):
                         if is_mysql:
                             cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
                         try:
+                            for model in TRUNCATE_EXTRA_MODELS:
+                                table = model._meta.db_table
+                                cursor.execute(f"DELETE FROM `{table}`")
+                                self.stdout.write(
+                                    f"  truncate {table:<18s} deleted={cursor.rowcount}"
+                                )
                             for stem in reversed(ASCC_LOAD_ORDER):
                                 model = RESOURCES[stem]._meta.model
                                 table = model._meta.db_table
