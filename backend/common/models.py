@@ -570,11 +570,13 @@ class Image(TimestampedModel):
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField()
     original_filename = models.CharField(max_length=255)
-    # storage_filename is intentionally NOT unique: a single image file on
-    # disk can be referenced by multiple Image rows (e.g. one per color
-    # fan-out child of a parent marking in the ASCC munger output). Default
-    # destroy only removes the row, leaving the file and any sibling rows
-    # intact -- see ImageViewSet.destroy and the absence of pre_delete
+    # storage_filename alone is intentionally NOT unique: a single image file
+    # on disk can be referenced by different Image rows (e.g. one per color
+    # fan-out child of a parent marking in the ASCC munger output). The
+    # subject-scoped uniqueness constraint below prevents duplicate rows for
+    # the same file on the same subject while preserving cross-subject reuse.
+    # Default destroy only removes the row, leaving the file and any sibling
+    # rows intact -- see ImageViewSet.destroy and the absence of pre_delete
     # signals on this model.
     storage_filename = models.CharField(max_length=255)
     file_checksum = models.CharField(max_length=64)
@@ -604,6 +606,10 @@ class Image(TimestampedModel):
                     | Q(subject_type='COVER', image_view__in=IMAGE_COVER_VIEW_CHOICES)
                 ),
                 name='image_view_matches_subject_type',
+            ),
+            models.UniqueConstraint(
+                fields=['storage_filename', 'subject_type', 'subject_id'],
+                name='image_storage_subject_unique',
             ),
         ]
         permissions = [
@@ -757,6 +763,7 @@ class Region(TimestampedModel):
     model.md domain type: Region
     """
     REGION_TIER_CHOICES = [('COUNTRY', 'Country'), ('TERRITORY', 'Territory'), ('STATE', 'State'), ('PROVINCE', 'Province'), ('COUNTY', 'County'), ('CITY', 'City'), ('DISTRICT', 'District'), ('OTHER', 'Other')]
+    code = models.CharField(max_length=30, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=100, help_text='Canonical region name for the applicable historical period')
     abbrev = models.CharField(max_length=3, help_text='Canonical two or three character abbreviation')
     region_tier = models.CharField(max_length=9, choices=REGION_TIER_CHOICES)
@@ -781,6 +788,7 @@ class PostOffice(TimestampedModel):
 
     model.md domain type: PostOffice
     """
+    code = models.CharField(max_length=40, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=255, help_text='Normalized town name, e.g. Abingdon, Richmond')
 
     class Meta:
@@ -1031,6 +1039,10 @@ class DateSeen(TimestampedModel):
             models.CheckConstraint(
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='dates_seen_subject_type_valid',
+            ),
+            models.UniqueConstraint(
+                fields=['subject_type', 'subject_id', 'date', 'granularity'],
+                name='dates_seen_subject_date_granularity_unique',
             ),
         ]
 

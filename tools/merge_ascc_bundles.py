@@ -57,6 +57,7 @@ DEFAULT_HEADERS = {
         "modified_date",
         "created_by",
         "modified_by",
+        "code",
         "name",
         "abbrev",
         "region_tier",
@@ -80,7 +81,7 @@ DEFAULT_HEADERS = {
         "isbn",
         "url",
     ],
-    "post_offices": ["id", "name"] + AUDIT_TAIL,
+    "post_offices": ["id", "name", "code"] + AUDIT_TAIL,
     "post_office_regions": ["id", "post_office", "region"] + AUDIT_TAIL,
     "markings": [
         "id",
@@ -663,6 +664,8 @@ def check_bundle(bundle_dir: Path) -> list[str]:
     check_unique_values(rows["shapes"], "shapes", "name", errors)
     check_unique_values(rows["reference_works"], "reference_works", "code", errors)
     check_unique_values(rows["regions"], "regions", "name", errors)
+    check_unique_values(rows["regions"], "regions", "code", errors, allow_blank=True)
+    check_unique_values(rows["post_offices"], "post_offices", "code", errors, allow_blank=True)
     check_unique_tuple(
         rows["post_office_regions"],
         "post_office_regions",
@@ -673,6 +676,18 @@ def check_bundle(bundle_dir: Path) -> list[str]:
         rows["cover_markings"],
         "cover_markings",
         ("cover", "marking"),
+        errors,
+    )
+    check_unique_tuple(
+        rows["dates_seen"],
+        "dates_seen",
+        ("subject_type", "subject_id", "date", "granularity"),
+        errors,
+    )
+    check_unique_tuple(
+        rows["images"],
+        "images",
+        ("storage_filename", "subject_type", "subject_id"),
         errors,
     )
     check_unique_values(rows["markings"], "markings", "code", errors, allow_blank=True)

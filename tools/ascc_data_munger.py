@@ -84,6 +84,34 @@ def format_dates_seen_desc(raw_text):
         return None
     return "Dates Seen " + ", ".join(tokens)
 
+
+def assign_post_office_codes(post_offices_df, region_code):
+    """Return a copy with deterministic munger-assigned PostOffice.code values.
+
+    Input columns:
+      post_office_id, name, state_code
+
+    Output example:
+      id,name,code
+      1,ADAMS,USA-MA1-1
+      2,BOSTON,USA-MA1-2
+
+    The caller supplies region_code from tools/wip/in/regions.csv for the
+    catalog region selected by --region-abbrev. The serial follows the current
+    row order, which is already sorted by state_code and normalized_town before
+    UNKNOWN fallback rows are appended.
+    """
+    cleaned_region_code = str(region_code).strip()
+    if not cleaned_region_code:
+        raise ValueError("region code must be nonblank before assigning post office codes")
+    out = post_offices_df.copy()
+    out["code"] = [
+        f"{cleaned_region_code}-{serial}"
+        for serial in range(1, len(out) + 1)
+    ]
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
@@ -139,6 +167,8 @@ def main(argv=None):
     RW_ID   = int(_rw_match.iloc[0]['id'])
     RW_CODE = str(_rw_match.iloc[0]['code']).strip()
     _region_seed = pd.read_csv(os.path.join(INPUT_DIR, 'regions.csv'))
+    if 'code' not in _region_seed.columns:
+        raise ValueError("regions.csv must include a nonblank code column")
     _match = _region_seed[_region_seed['abbrev'].astype(str).str.upper() == REGION_ABBREV]
     if len(_match) != 1:
         raise ValueError(
@@ -146,7 +176,12 @@ def main(argv=None):
             f"(matched {len(_match)}). Adjust INPUT_CSV or regions.csv."
         )
     REGION_ID = int(_match.iloc[0]['id'])
-    print(f"rw_code={RW_CODE} (id={RW_ID})  region={REGION_ABBREV} (id={REGION_ID})")
+    REGION_CODE = str(_match.iloc[0]['code']).strip()
+    if not REGION_CODE:
+        raise ValueError(
+            f"regions.csv row for abbrev={REGION_ABBREV!r} must have a nonblank code."
+        )
+    print(f"rw_code={RW_CODE} (id={RW_ID})  region={REGION_ABBREV} (id={REGION_ID}, code={REGION_CODE})")
     df = read_legacy_dataframe(INPUT_CSV)
     print(f'Loaded {len(df)} rows from {INPUT_CSV}')
     print(f'Columns: {list(df.columns)}')
@@ -1963,6 +1998,7 @@ def main(argv=None):
             lambda sc: unknown_by_state[_nkey(sc)]
         ).values
         print(f'  Assigned {unresolved.sum()} townmarks to UNKNOWN post office(s) across {len(unknown_by_state)} state(s)')
+    post_offices_df = assign_post_office_codes(post_offices_df, REGION_CODE)
     # One junction row per distinct (post office, section region) pair: a
     # post office listed under several catalog sections (e.g. Detroit under
     # Northwest Territory, Indiana Territory, Michigan Territory, and
@@ -2882,6 +2918,7 @@ def main(argv=None):
     post_offices_out = pd.DataFrame({
         "id": _po_src["id"],
         "name": _po_src["name"],
+        "code": _po_src["code"],
     })
     post_offices_out = _stamp(post_offices_out)
     _por_src = post_office_regions_df.copy()
@@ -3102,7 +3139,7 @@ def main(argv=None):
         ("colors",           colors_out,           ["id", "name", "hex_val", "pantone_code"]),
         ("letterings",       letterings_out,       ["id", "name"]),
         ("shapes",           shapes_out,           ["id", "name", "code"]),
-        ("post_offices",         post_offices_out,         ["id", "name"]),
+        ("post_offices",         post_offices_out,         ["id", "name", "code"]),
         ("post_office_regions",  post_office_regions_out,  ["id", "post_office", "region"]),
         ("markings",         markings_out,         [
                                 "id", "code", "type", "catalog_txt", "inscription_txt",

@@ -6,7 +6,7 @@
 
 # **Summary**
 
-This document defines the structural vocabulary for data accessible through WorldCovers. Fourteen tables describe the philatelic domain's persistent state. markings is the central entity \- the catalog entry itself \- unifying town markings, rate markings, and auxiliary markings under a single type discriminator. Each row in markings carries the authoritative catalog text, the physical inscription of the device, and a reference to a row in post\_offices, whose jurisdictional history is recorded in post\_office\_regions against a time-bounded regions hierarchy. covers are conceptually observations of markings, linked through the cover\_markings junction, which also records per-observation positional context. Marking classification is represented through two primary editorial dimensions: shapes and letterings. Both remain provisional editorial vocabularies: their current records preserve catalog usage patterns and known inconsistencies, and therefore do not yet constitute fully orthogonal or exhaustively normalized taxonomies. Curatorial responsibility is expressed through collections, each of which wraps exactly one region and serves as the routing target for contributions submitted within that region. Two junction tables resolve the document's many-to-many associations: cover\_markings (covers to markings) and post\_office\_regions (post offices to regions). The latter exists because a post office is a fixed geographic place whose political jurisdiction can change over time; a marking's effective region context is derived by intersecting the post office's region associations with the marking's aggregated dates\_seen (both those attached directly to the marking and those attached to its associated covers). System-internal tables (submissions, comments, image attachments, audit log, and role assignments) are intentionally not modeled in this document; they live alongside the domain tables in `backend/common/`.
+This document defines the structural vocabulary for data accessible through WorldCovers. Fifteen tables describe the philatelic domain's persistent state. markings is the central entity \- the catalog entry itself \- unifying town markings, rate markings, and auxiliary markings under a single type discriminator. Each row in markings carries the authoritative catalog text, the physical inscription of the device, and a reference to a row in post\_offices, whose jurisdictional history is recorded in post\_office\_regions against a time-bounded regions hierarchy. covers are conceptually observations of markings, linked through the cover\_markings junction, which also records per-observation positional context. Marking classification is represented through two primary editorial dimensions: shapes and letterings. Both remain provisional editorial vocabularies: their current records preserve catalog usage patterns and known inconsistencies, and therefore do not yet constitute fully orthogonal or exhaustively normalized taxonomies. Curatorial responsibility is expressed through collections, each of which wraps exactly one region and serves as the routing target for contributions submitted within that region. Two junction tables resolve the document's many-to-many associations: cover\_markings (covers to markings) and post\_office\_regions (post offices to regions). The latter exists because a post office is a fixed geographic place whose political jurisdiction can change over time; a marking's effective region context is derived by intersecting the post office's region associations with the marking's aggregated dates\_seen (both those attached directly to the marking and those attached to its associated covers). System-internal tables (submissions, comments, audit log, and role assignments) are intentionally not modeled in this document; they live alongside the domain tables in `backend/common/`.
 
 ---
 
@@ -179,6 +179,40 @@ A single date point observed for either a cover or a marking. When attached to a
 * granularity is one of DAY, MONTH, or YEAR.  
 * If granularity is MONTH, the day component of date is synthetic (set to 01).  
 * If granularity is YEAR, the month and day components of date are synthetic (set to 01).
+* The combination of subject\_type, subject\_id, date, and granularity is unique.
+
+*Relationships:*
+
+* Targets exactly one cover or marking.
+
+### images
+
+Polymorphic image metadata for a file attached to either a cover or a marking.
+
+*Fields:*
+
+* display\_order \- Subject-local display position for gallery ordering.
+* file\_checksum \- SHA-256 checksum of the stored file.
+* file\_size\_bytes \- Stored file size in bytes.
+* image\_description (nullable) \- Editorial or contributor description.
+* image\_height \- Pixel height.
+* image\_view \- View type appropriate to the subject.
+* image\_width \- Pixel width.
+* is\_tracing \- Whether the image is a tracing or diagram rather than a photograph.
+* mime\_type \- Stored file MIME type.
+* original\_filename \- Original uploaded or source filename.
+* storage\_filename \- Path below the media root.
+* subject\_id \- Identifier of the imaged resource.
+* subject\_type \- Type of the imaged resource.
+
+*Invariants:*
+
+* subject\_type is one of COVER, or MARKING.
+* subject\_id references exactly one resource of the type specified by subject\_type.
+* image\_view is one of FULL or DETAIL when subject\_type is MARKING.
+* image\_view is one of FRONT, BACK, INTERIOR, or DETAIL when subject\_type is COVER.
+* storage\_filename alone is not unique; the same file may be reused across different subjects.
+* The combination of storage\_filename, subject\_type, and subject\_id is unique.
 
 *Relationships:*
 
@@ -275,10 +309,12 @@ A postal facility identified as a fixed geographic place. Its political jurisdic
 
 *Fields:*
 
+* code \- Editor-assigned reference identifier. Munger-generated values use `{catalog_region_code}-{serial}`, e.g. `USA-MA1-3`.
 * name \- Normalized town name used for filtering and grouping.
 
 *Invariants:*
 
+* code, if set, is unique across all rows in post\_offices.
 * name is the normalized town name (e.g., Abingdon, Richmond).  
 * name is not constrained to be unique. Same-name post offices that fall within a single editor's scope (e.g., two "Princeton"s within Mercer County, NJ) are distinguished by editorial naming convention (e.g., "Princeton City", "Princeton Township") rather than by a database constraint.
 
@@ -341,6 +377,7 @@ A named geographic or administrative area used to organize post offices within a
 
 * established\_date \- First date on which this region definition is considered in force.  
 * defunct\_date (nullable) \- Last date on which this region definition is considered in force.  
+* code \- Editor-assigned reference identifier.
 * name \- Canonical region name for the applicable historical period.  
 * abbrev \- Canonical two or three character abbreviation.  
 * parent\_region\_id (nullable) \- Immediate containing region in the hierarchy.  
@@ -352,6 +389,7 @@ A named geographic or administrative area used to organize post offices within a
 * parent\_region\_id, if set, references exactly one row in regions.  
 * A region cannot parent itself.  
 * If both established\_date and defunct\_date are set, established\_date must be less than or equal to defunct\_date.  
+* code, if set, is unique across all rows in regions.
 * A region with a non-null defunct\_date is considered inactive. A null defunct\_date indicates the region is still considered active within the modeled historical hierarchy.  
 * Region identity is historical rather than purely modern; records with the same name may exist for different periods or different parents.
 
@@ -413,7 +451,7 @@ string pantone\_code
 
 covers {  
 int id PK  
-string code  
+string code
 int color\_id FK  
 decimal width  
 decimal height  
@@ -445,9 +483,26 @@ date date
 string granularity  
 }
 
+images {
+int id PK
+int subject\_id
+string subject\_type
+string original\_filename
+string storage\_filename
+string file\_checksum
+string mime\_type
+int image\_width
+int image\_height
+int file\_size\_bytes
+string image\_view
+string image\_description
+boolean is\_tracing
+int display\_order
+}
+
 letterings {  
 int id PK  
-string code  
+string code
 string name  
 }
 
@@ -472,6 +527,7 @@ decimal rate\_val
 
 post\_offices {  
 int id PK  
+string code
 string name  
 }
 
@@ -496,6 +552,7 @@ string url
 
 regions {  
 int id PK  
+string code
 string name  
 string abbrev  
 string region\_tier  
@@ -515,6 +572,8 @@ markings ||--|{ cover\_markings : "observed on"
 covers ||--o{ cover\_valuations : "valued"  
 covers ||--o{ dates\_seen : "dated"  
 markings ||--o{ dates\_seen : "dated"  
+covers ||--o{ images : "imaged"
+markings ||--o{ images : "imaged"
 shapes o|--o{ markings : "classifies"  
 letterings o|--o{ markings : "classifies"  
 colors o|--o{ markings : "colors"  

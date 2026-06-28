@@ -814,9 +814,9 @@ class CitationAdmin(TimestampedModelAdmin):
 @admin.register(Region)
 class RegionAdmin(TimestampedModelAdmin):
     resource_class = RegionResource
-    list_display = ["name", "abbrev", "region_tier", "parent_region"]
+    list_display = ["code", "name", "abbrev", "region_tier", "parent_region"]
     list_filter = ["region_tier"]
-    search_fields = ["name", "abbrev"]
+    search_fields = ["code", "name", "abbrev"]
     raw_id_fields = ["parent_region"]
     ordering = ["name"]
 
@@ -824,8 +824,8 @@ class RegionAdmin(TimestampedModelAdmin):
 @admin.register(PostOffice)
 class PostOfficeAdmin(TimestampedModelAdmin):
     resource_class = PostOfficeResource
-    list_display = ["name", "region"]
-    search_fields = ["name", "post_office_regions__region__name"]
+    list_display = ["code", "name", "region"]
+    search_fields = ["code", "name", "post_office_regions__region__name"]
     ordering = ["name"]
 
 

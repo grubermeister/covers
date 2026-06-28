@@ -1,8 +1,9 @@
 from django.contrib.auth import get_user_model
+from django.db import IntegrityError
 from django.test import TestCase
 
 from common.api.v2.serializers import MarkingSerializer
-from common.models import Color, Cover, CoverMarking, DateSeen, Marking, PostOffice
+from common.models import Color, Cover, CoverMarking, DateSeen, Image, Marking, PostOffice, Region
 
 
 User = get_user_model()
@@ -115,3 +116,81 @@ class MarkingDateRangeTests(TestCase):
                 for r in rows
             )
         )
+
+    def test_dates_seen_subject_date_granularity_is_unique(self):
+        marking = self._make_marking("ALEXANDRIA VA")
+        self._add_date(DateSeen.SUBJECT_MARKING, marking.pk, "1850-01-01", "YEAR")
+
+        with self.assertRaises(IntegrityError):
+            self._add_date(DateSeen.SUBJECT_MARKING, marking.pk, "1850-01-01", "YEAR")
+
+    def test_region_code_is_unique(self):
+        Region.objects.create(
+            code="USA-VA1",
+            name="Virginia",
+            abbrev="VA",
+            region_tier="STATE",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        with self.assertRaises(IntegrityError):
+            Region.objects.create(
+                code="USA-VA1",
+                name="Virginia Duplicate",
+                abbrev="VD",
+                region_tier="STATE",
+                created_by=self.user,
+                modified_by=self.user,
+            )
+
+    def test_post_office_code_is_unique(self):
+        PostOffice.objects.create(
+            code="USA-VA1-1",
+            name="Alexandria",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        with self.assertRaises(IntegrityError):
+            PostOffice.objects.create(
+                code="USA-VA1-1",
+                name="Alexandria Duplicate",
+                created_by=self.user,
+                modified_by=self.user,
+            )
+
+    def test_image_storage_filename_subject_tuple_is_unique(self):
+        marking = self._make_marking("PETERSBURG VA")
+        Image.objects.create(
+            subject_type=Image.SUBJECT_MARKING,
+            subject_id=marking.pk,
+            original_filename="marking.png",
+            storage_filename="va/marking.png",
+            file_checksum="abc123",
+            mime_type="image/png",
+            image_width=20,
+            image_height=10,
+            file_size_bytes=100,
+            image_view="FULL",
+            uploaded_by=self.user,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        with self.assertRaises(IntegrityError):
+            Image.objects.create(
+                subject_type=Image.SUBJECT_MARKING,
+                subject_id=marking.pk,
+                original_filename="marking.png",
+                storage_filename="va/marking.png",
+                file_checksum="abc123",
+                mime_type="image/png",
+                image_width=20,
+                image_height=10,
+                file_size_bytes=100,
+                image_view="FULL",
+                uploaded_by=self.user,
+                created_by=self.user,
+                modified_by=self.user,
+            )
