@@ -29,7 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
-const DEBOUNCE_MS = 400;
+const DEBOUNCE_MS = 800;
 type SubmissionQueueSortOption = "newest" | "oldest";
 
 /**

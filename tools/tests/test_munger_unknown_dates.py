@@ -75,6 +75,40 @@ class TestUnknownDateFields(unittest.TestCase):
         self.assertEqual(parsed['date_year_end'], 1869)
         self.assertIsNone(parsed['date_error'])
 
+    def test_month_name_year_parses_as_month(self):
+        for raw, month in [
+            ('Mar. 1852', 3),
+            ('March 1852', 3),
+            ('Sep. 1852', 9),
+            ('Sept. 1852', 9),
+            ('September 1852', 9),
+        ]:
+            with self.subTest(raw=raw):
+                parsed = parse_date_field(raw)
+                self.assertEqual(parsed['date_granularity'], 'MONTH')
+                self.assertEqual(parsed['date_month'], month)
+                self.assertEqual(parsed['date_year_start'], 1852)
+                self.assertIsNone(parsed['date_day'])
+
+    def test_numeric_month_year_parses_as_month(self):
+        parsed = parse_date_field('03 1852')
+        self.assertEqual(parsed['date_granularity'], 'MONTH')
+        self.assertEqual(parsed['date_month'], 3)
+        self.assertEqual(parsed['date_year_start'], 1852)
+        self.assertIsNone(parsed['date_day'])
+
+    def test_invalid_numeric_month_year_does_not_fall_back_to_year(self):
+        parsed = parse_date_field('13 1852')
+        self.assertIsNone(parsed['date_granularity'])
+        self.assertEqual(parsed['date_error'], "unparsed date: '13 1852'")
+
+    def test_september_full_date_parses_as_day_not_year(self):
+        parsed = parse_date_field('Sept. 17, 1776')
+        self.assertEqual(parsed['date_granularity'], 'DAY')
+        self.assertEqual(parsed['date_month'], 9)
+        self.assertEqual(parsed['date_day'], 17)
+        self.assertEqual(parsed['date_year_start'], 1776)
+
 
 if __name__ == '__main__':
     unittest.main()

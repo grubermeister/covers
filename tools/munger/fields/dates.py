@@ -2,7 +2,7 @@ import re
 
 MONTHS_PAT = (
     r'(?:\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?'
-    r'|Aug(?:ust)?|Sep(?:t(?:ember)?)?\\.?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b)'
+    r'|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b)'
 )
 
 DATE_FIELD_RE = re.compile(
@@ -28,27 +28,34 @@ MONTH_MAP = {
 }
 
 FULL_DATE_RE = re.compile(
-    r'(' + MONTHS_PAT + r')\.?\s*'
+    r'^\s*(' + MONTHS_PAT + r')\.?\s*'
     r'(\d{1,2})\s*,\s*'
-    r'(\d{4})',
+    r'(\d{4})\s*$',
     re.IGNORECASE
 )
 
 MONTH_YEAR_RE = re.compile(
-    r'(' + MONTHS_PAT + r')\.?\s+'
-    r'(\d{4})',
+    r'^\s*(' + MONTHS_PAT + r')\.?\s+'
+    r'(\d{4})\s*$',
+    re.IGNORECASE
+)
+
+NUMERIC_MONTH_YEAR_RE = re.compile(
+    r'^\s*(0?[1-9]|1[0-2])\s+'
+    r'(\d{4})\s*$',
     re.IGNORECASE
 )
 
 YEAR_RANGE_RE = re.compile(
-    r'c?(\d{4})\s*[-]\s*(\d{2,4})'
+    r'^\s*(?:c\.?\s*)?(\d{4})\s*[-]\s*(\d{2,4})\s*$',
+    re.IGNORECASE
 )
 
-DECADE_RE = re.compile(r"c?(\d{4})'?s", re.IGNORECASE)
+DECADE_RE = re.compile(r"^\s*(?:c\.?\s*)?(\d{4})'?s\s*$", re.IGNORECASE)
 
-BARE_YEAR_RE = re.compile(r'c?(\d{4})$')
+BARE_YEAR_RE = re.compile(r'^\s*(?:c\.?\s*)?(\d{4})\s*$', re.IGNORECASE)
 
-CIRCA_RE = re.compile(r'^c\d', re.IGNORECASE)
+CIRCA_RE = re.compile(r'^c\.?\s*\d|\bc\.?\s*\d', re.IGNORECASE)
 
 def _unknown_date_result(raw):
     """Return the parse shape for a catalog date slot marked unknown.
@@ -75,7 +82,7 @@ def parse_date_field(text):
     is_circa = bool(CIRCA_RE.match(t))
 
     # 1. Full date: Month day, year
-    m = FULL_DATE_RE.search(t)
+    m = FULL_DATE_RE.match(t)
     if m:
         month_str = m.group(1).lower().rstrip('.')
         month = MONTH_MAP.get(month_str)
@@ -93,7 +100,7 @@ def parse_date_field(text):
         }
 
     # 2. Decade: 1850's or 1850s (apostrophe optional)
-    m = DECADE_RE.search(t)
+    m = DECADE_RE.match(t)
     if m:
         base = int(m.group(1))
         return {
@@ -108,7 +115,7 @@ def parse_date_field(text):
         }
 
     # 3. Year range: 1850-53
-    m = YEAR_RANGE_RE.search(t)
+    m = YEAR_RANGE_RE.match(t)
     if m:
         y1 = int(m.group(1))
         y2_str = m.group(2)
@@ -128,7 +135,7 @@ def parse_date_field(text):
         }
 
     # 4. Month + year (no day)
-    m = MONTH_YEAR_RE.search(t)
+    m = MONTH_YEAR_RE.match(t)
     if m:
         month_str = m.group(1).lower().rstrip('.')
         month = MONTH_MAP.get(month_str)
@@ -144,8 +151,24 @@ def parse_date_field(text):
             'date_error': None,
         }
 
-    # 5. Bare year
-    m = BARE_YEAR_RE.search(t.lstrip('c'))
+    # 5. Numeric month + year (no day): 03 1852 -> March 1852.
+    m = NUMERIC_MONTH_YEAR_RE.match(t)
+    if m:
+        month = int(m.group(1))
+        year = int(m.group(2))
+        return {
+            'date_month': month,
+            'date_day': None,
+            'date_year_start': year,
+            'date_year_end': year,
+            'date_granularity': 'MONTH',
+            'date_is_circa': is_circa,
+            'date_raw': t,
+            'date_error': None,
+        }
+
+    # 6. Bare year
+    m = BARE_YEAR_RE.match(t)
     if m:
         year = int(m.group(1))
         return {

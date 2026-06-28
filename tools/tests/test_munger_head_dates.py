@@ -56,6 +56,8 @@ class TestMsDateAtEnd(unittest.TestCase):
             ("Aquia 1811,1849-55", "1811,1849-55"),
             ("Arbor Hill 1850's", "1850's"),
             ("Yorktown 1824,1830,1850", "1824,1830,1850"),
+            ("Yorktown Mar. 1852", "Mar. 1852"),
+            ("Yorktown 03 1852", "03 1852"),
         ]:
             m = MS_DATE_AT_END.search(text)
             self.assertIsNotNone(m, text)
@@ -80,6 +82,18 @@ class TestParseHeadPeel(unittest.TestCase):
                          "1811,1849-55")
         self.assertEqual(format_dates_seen_desc("1811,1849-55"),
                          "Dates Seen 1811, 1849-55")
+
+    def test_peels_month_year_from_town_heading(self):
+        self.assertEqual(_parsed_name("Yorktown Mar. 1852"), "Yorktown")
+        self.assertEqual(_parsed_head_date("Yorktown Mar. 1852"), "Mar. 1852")
+        self.assertEqual(_parsed_name("Yorktown 03 1852"), "Yorktown")
+        self.assertEqual(_parsed_head_date("Yorktown 03 1852"), "03 1852")
+
+    def test_earliest_marker_annotation_does_not_remain_in_heading(self):
+        parsed = parse_head(_head_row("Yorktown(E) Mar. 1852"))
+        self.assertEqual(parsed["head_name_body"], "Yorktown")
+        self.assertEqual(parsed["head_date_text"], "Mar. 1852")
+        self.assertEqual(parsed["head_annotations"], ["E"])
 
 
 if __name__ == '__main__':

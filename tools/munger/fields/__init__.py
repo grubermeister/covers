@@ -317,4 +317,16 @@ def _split_ms_date_token(token):
     parse_date_field understands. `1811,1849-55` -> [`1811`, `1849-55`]."""
     if token is None or (isinstance(token, float)) or token == '--':
         return []
-    return [t.strip() for t in token.split(',') if t.strip()]
+    pieces = [t.strip() for t in str(token).split(',') if t.strip()]
+    out = []
+    for piece in pieces:
+        if (
+            out
+            and re.search(MONTHS_PAT, out[-1], flags=re.IGNORECASE)
+            and not re.search(r"\d{4}", out[-1])
+            and re.match(r"^(?:c\.?\s*)?\d{4}$", piece, flags=re.IGNORECASE)
+        ):
+            out[-1] = out[-1] + ", " + piece
+            continue
+        out.append(piece)
+    return out

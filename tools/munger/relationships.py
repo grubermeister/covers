@@ -3,17 +3,18 @@ import pandas as pd
 
 
 LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
 
 
 def strip_inscription_markers(inscription):
     """Remove catalog-only markers from inscription text."""
     if inscription is None or (isinstance(inscription, float) and pd.isna(inscription)):
         return ''
-    text = str(inscription).replace('*', '').strip()
+    text = CATALOG_DATE_MARKER_RE.sub(' ', str(inscription).replace('*', '')).strip()
     while True:
         cleaned = LEADING_INSCRIPTION_MARKER_RE.sub('', text, count=1).strip()
         if cleaned == text:
-            return cleaned
+            return re.sub(r"\s+", " ", cleaned).strip()
         text = cleaned
 
 
@@ -175,10 +176,11 @@ def resolve_relationships(listings_df):
 def roll_up_catalog_text(listings_df):
     """Populate listings_df['rolled_catalog_text'].
 
-    For independent listings (parent_idx is None): just own clean_text.
-    For child listings (parent_idx set): parent clean_text + every prior
-    sibling's clean_text (same parent, earlier catalog position) + own
-    clean_text, newline-joined in catalog order.
+    For independent listings (parent_idx is None): own clean_text plus all
+    child clean_text lines below it. For child listings (parent_idx set):
+    parent clean_text plus every sibling clean_text for that parent.
+    Duplicate lines are collapsed by normalized-whitespace key, preserving
+    the first original spelling and spacing.
 
     Must run after resolve_relationships(). Mutates listings_df in place
     and returns it.
@@ -187,6 +189,18 @@ def roll_up_catalog_text(listings_df):
         if v is None or (isinstance(v, float) and pd.isna(v)):
             return ''
         return str(v)
+
+    def _dedupe_catalog_lines(lines):
+        """Return first-seen catalog lines after conservative whitespace keys."""
+        out = []
+        seen = set()
+        for line in lines:
+            key = re.sub(r"\s+", " ", _txt(line).strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(_txt(line))
+        return out
 
     n = len(listings_df)
 
@@ -199,9 +213,9 @@ def roll_up_catalog_text(listings_df):
             continue
         children_by_parent.setdefault(pidx, []).append(_txt(row.get('clean_text')))
 
-    # Pass 2: emit rolled text. Children get parent + ALL siblings (incl. self,
-    # incl. siblings that come after them in catalog order). Independents get
-    # their own clean_text plus all of their children below.
+    # Pass 2: emit rolled text. Duplicate catalog text is display/provenance
+    # noise, not evidence that source rows or image-bearing records are
+    # duplicates. De-dupe only this rolled text, after the family is assembled.
     rolled = [None] * n
     for pos in range(n):
         row = listings_df.iloc[pos]
@@ -210,11 +224,11 @@ def roll_up_catalog_text(listings_df):
         if pidx is None or (isinstance(pidx, float) and pd.isna(pidx)):
             own_label = listings_df.index[pos]
             kids = children_by_parent.get(own_label, [])
-            rolled[pos] = '\n'.join([own] + list(kids))
+            rolled[pos] = '\n'.join(_dedupe_catalog_lines([own] + list(kids)))
         else:
             parent_text = _txt(listings_df.loc[pidx, 'clean_text'])
             sibs = children_by_parent.get(pidx, [])
-            rolled[pos] = '\n'.join([parent_text] + list(sibs))
+            rolled[pos] = '\n'.join(_dedupe_catalog_lines([parent_text] + list(sibs)))
 
     listings_df['rolled_catalog_text'] = rolled
     return listings_df

@@ -118,15 +118,16 @@ def clean(value: object) -> str:
 
 SAME_PREFIX_RE = re.compile(r"^\s*(?:The\s+)?Same\b", re.IGNORECASE)
 LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
 
 
 def strip_inscription_markers(inscription: object) -> str:
     """Remove catalog-only markers from inscription text."""
-    value = clean(inscription).replace("*", "").strip()
+    value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription).replace("*", "")).strip()
     while value:
         stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
         if stripped == value:
-            return stripped
+            return clean(stripped)
         value = stripped
     return ""
 

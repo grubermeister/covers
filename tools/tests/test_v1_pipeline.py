@@ -8,16 +8,23 @@ Expected exit code: 0.
 """
 
 import csv
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+import pandas as pd
 from PIL import Image
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
 
 import v1_bundle_overlay
 import v1_attach_images
 import v1_catalog_rows
 import ascc_data_munger
+from munger.relationships import roll_up_catalog_text
 from v1_synthetic_listing import synthetic_desc_lines, synthetic_listing
 
 
@@ -133,6 +140,10 @@ class V1PipelineTests(unittest.TestCase):
             ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
             ("(1)BETHANY/Va.", "", "BETHANY/Va."),
             ("*RICHMOND/VA.", "", "RICHMOND/VA."),
+            ("Wyocena W.T.(E)", "", "Wyocena W.T."),
+            ("(L)", "ALEXANDRIA", ""),
+            ("Same(E)", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
+            ("The same(L)", "DETROIT / Mich.", "DETROIT / Mich."),
         ]
         for inscription, parent_text, expected in cases:
             with self.subTest(inscription=inscription):
@@ -361,6 +372,39 @@ class V1PipelineTests(unittest.TestCase):
         )
         self.assertEqual([r["source_row_id"] for r in refs], ["10"])
 
+    def test_v1_manual_color_split_rollup_dedupes_catalog_text_only(self):
+        listings = pd.DataFrame(
+            [
+                {
+                    "source_listing_idx": 0,
+                    "raw_id": "71",
+                    "clean_text": "RICHMOND (1850;Black) 10",
+                    "parent_idx": None,
+                    "parsed_colors": ["BLACK"],
+                },
+                {
+                    "source_listing_idx": 1,
+                    "raw_id": "72",
+                    "clean_text": " RICHMOND   (1850;Black)   10 ",
+                    "parent_idx": 0,
+                    "parsed_colors": ["RED"],
+                },
+            ]
+        )
+        lineage_rows = [
+            {"chunk": "71", "marking_code": "ASCC1-VA-M1100"},
+            {"chunk": "72", "marking_code": "ASCC1-VA-M1101"},
+        ]
+
+        rolled = roll_up_catalog_text(listings)
+
+        self.assertEqual(len(rolled), 2)
+        self.assertEqual(rolled.loc[0, "rolled_catalog_text"], "RICHMOND (1850;Black) 10")
+        self.assertEqual(rolled.loc[1, "rolled_catalog_text"], "RICHMOND (1850;Black) 10")
+        self.assertEqual(rolled["raw_id"].tolist(), ["71", "72"])
+        self.assertEqual(rolled["parsed_colors"].tolist(), [["BLACK"], ["RED"]])
+        self.assertEqual([row["chunk"] for row in lineage_rows], ["71", "72"])
+
     def test_synthetic_listing_preserves_note_only_rate_text_as_desc(self):
         row = {
             "txtTownPostmark": "Locust Level",
@@ -398,6 +442,22 @@ class V1PipelineTests(unittest.TestCase):
                 ("ASCC6-WV-M2283", "1859-01-01", "YEAR"),
                 ("ASCC6-WV-M2283", "1850-01-01", "YEAR"),
             ],
+        )
+
+    def test_overlay_parses_numeric_month_year_as_month(self):
+        rows = v1_bundle_overlay.parsed_date_rows(
+            "03 1852",
+            ["ASCC6-WV-M2283"],
+            AUDIT,
+        )
+        observed = [
+            (row["subject_id"], row["date"], row["granularity"])
+            for row in rows
+        ]
+
+        self.assertEqual(
+            observed,
+            [("ASCC6-WV-M2283", "1852-03-01", "MONTH")],
         )
 
     def test_munger_handles_synthetic_rates_auxmarks_and_sentinel_dates(self):

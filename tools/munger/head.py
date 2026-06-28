@@ -2,6 +2,8 @@ import re
 
 
 import pandas as pd
+
+from .fields.dates import MONTHS_PAT
 MS_TAIL_AT_END = re.compile(
     # Trailing value: digits, dots, commas, slashes, dashes (slash-tiered
     # values; `100/--`, `--/15.00`, `1500.00`, `--` all match). Requires
@@ -12,11 +14,24 @@ MS_TAIL_AT_END = re.compile(
 
 MS_DASH_AT_END = re.compile(r"[\s/]*(--|---)\s*$")
 
+_MONTH_DATE_UNIT = (
+    r"\*?(?:"
+    r"(?:"
+    + MONTHS_PAT
+    + r")\.?\s+\d{1,2}\s*,\s*\d{4}"
+    r"|(?:"
+    + MONTHS_PAT
+    + r")\.?\s+\d{4}"
+    r"|(?:0?[1-9]|1[0-2])\s+\d{4}"
+    r"|(?:c\.?\s*)?\d{3,4}(?:'?[Ss])?(?:-\d{1,4}(?:'?[Ss])?)?"
+    r")"
+)
+
 MS_DATE_AT_END = re.compile(
     r"[\s,]+"
     r"("
-    r"\*?(?:c\.?)?\d{3,4}(?:'?[Ss])?(?:-\d{1,4}(?:'?[Ss])?)?"
-    r"(?:\s*,\s*\*?(?:c\.?)?\d{3,4}(?:'?[Ss])?(?:-\d{1,4}(?:'?[Ss])?)?)*"
+    + _MONTH_DATE_UNIT +
+    r"(?:\s*,\s*" + _MONTH_DATE_UNIT + r")*"
     r")"
     r"\s*$"
 )

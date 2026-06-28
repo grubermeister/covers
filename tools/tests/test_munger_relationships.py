@@ -17,7 +17,7 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from munger.relationships import resolve_relationships
+from munger.relationships import resolve_relationships, roll_up_catalog_text
 
 
 class ResolveRelationshipsTests(unittest.TestCase):
@@ -86,6 +86,80 @@ class ResolveRelationshipsTests(unittest.TestCase):
 
         self.assertEqual(resolved.loc[1, "resolved_inscription"], "CABOTVILLE / Ms.")
         self.assertNotIn("Same", resolved.loc[1, "resolved_inscription"])
+
+    def test_rollup_dedupes_identical_parent_and_child_text(self):
+        listings = pd.DataFrame(
+            [
+                {"clean_text": "RICHMOND (1850;Black) 10", "parent_idx": None},
+                {"clean_text": "RICHMOND (1850;Black) 10", "parent_idx": 0},
+            ]
+        )
+
+        rolled = roll_up_catalog_text(listings)
+
+        self.assertEqual(
+            rolled.loc[0, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10",
+        )
+        self.assertEqual(
+            rolled.loc[1, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10",
+        )
+
+    def test_rollup_dedupes_identical_sibling_text(self):
+        listings = pd.DataFrame(
+            [
+                {"clean_text": "RICHMOND (1850;Black) 10", "parent_idx": None},
+                {"clean_text": "Same (1851;Blue) 12", "parent_idx": 0},
+                {"clean_text": "Same (1851;Blue) 12", "parent_idx": 0},
+            ]
+        )
+
+        rolled = roll_up_catalog_text(listings)
+
+        self.assertEqual(
+            rolled.loc[0, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10\nSame (1851;Blue) 12",
+        )
+        self.assertEqual(
+            rolled.loc[1, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10\nSame (1851;Blue) 12",
+        )
+        self.assertEqual(
+            rolled.loc[2, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10\nSame (1851;Blue) 12",
+        )
+
+    def test_rollup_preserves_distinct_family_lines_in_order(self):
+        listings = pd.DataFrame(
+            [
+                {"clean_text": "RICHMOND (1850;Black) 10", "parent_idx": None},
+                {"clean_text": "Same (1851;Blue) 12", "parent_idx": 0},
+                {"clean_text": "Same (1852;Red) 15", "parent_idx": 0},
+            ]
+        )
+
+        rolled = roll_up_catalog_text(listings)
+
+        self.assertEqual(
+            rolled.loc[0, "rolled_catalog_text"],
+            "RICHMOND (1850;Black) 10\nSame (1851;Blue) 12\nSame (1852;Red) 15",
+        )
+
+    def test_rollup_preserves_first_source_formatting(self):
+        listings = pd.DataFrame(
+            [
+                {"clean_text": "RICHMOND   (1850;Black) 10", "parent_idx": None},
+                {"clean_text": " RICHMOND (1850;Black)   10 ", "parent_idx": 0},
+            ]
+        )
+
+        rolled = roll_up_catalog_text(listings)
+
+        self.assertEqual(
+            rolled.loc[0, "rolled_catalog_text"],
+            "RICHMOND   (1850;Black) 10",
+        )
 
 
 if __name__ == "__main__":
