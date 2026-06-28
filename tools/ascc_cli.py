@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     v1_run.add_argument(
         "--load",
         action="store_true",
-        help="commit import_ascc_bundle --truncate after bundle generation",
+        help="commit import_ascc_bundle after bundle generation",
     )
 
     clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
@@ -235,7 +235,7 @@ def add_shared_options(parser: argparse.ArgumentParser, include_import_check: bo
 
 
 def add_v1_options(parser: argparse.ArgumentParser, include_import_check: bool) -> None:
-    parser.add_argument("--reference-work", default="ASCC2")
+    parser.add_argument("--reference-work", default="ASCC6")
     parser.add_argument(
         "--v1-image-root",
         type=Path,
@@ -247,9 +247,9 @@ def add_v1_options(parser: argparse.ArgumentParser, include_import_check: bool) 
         ),
     )
     parser.add_argument(
-        "--allow-missing-v1-images",
+        "--strict",
         action="store_true",
-        help="write missing-image report rows instead of failing the v1 image stage",
+        help="fail on missing v1 image files instead of writing report rows",
     )
     if include_import_check:
         parser.add_argument(
@@ -349,7 +349,7 @@ def command_v1_doctor(args) -> int:
     checks = v1_doctor_checks(
         state,
         resolve_v1_image_root(args.v1_image_root, state),
-        args.allow_missing_v1_images,
+        args.strict,
     )
     print_doctor(f"v1 {state}", checks)
     return 0 if not any(c["required"] and not c["ok"] for c in checks) else 2
@@ -358,7 +358,7 @@ def command_v1_doctor(args) -> int:
 def command_v1_run(args) -> int:
     paths = v1_state_paths(args.state)
     image_root = resolve_v1_image_root(args.v1_image_root, paths.state)
-    require_v1_doctor(paths.state, image_root, args.allow_missing_v1_images)
+    require_v1_doctor(paths.state, image_root, args.strict)
     paths.catalog_rows.parent.mkdir(parents=True, exist_ok=True)
     clean_bundle_dir(paths.bundle_dir)
     run_command(v1_catalog_cmd(paths, args))
@@ -415,11 +415,11 @@ def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, obj
 def v1_doctor_checks(
     state: str,
     image_root: Path,
-    allow_missing_images: bool,
+    strict: bool,
 ) -> list[dict[str, object]]:
     paths = v1_state_paths(state)
     db_ok, db_message = check_db()
-    image_required = not allow_missing_images
+    image_required = strict
     return [
         check_path("reference works", WIP_IN / "reference_works.csv", True),
         check_path("regions", WIP_IN / "regions.csv", True),
@@ -469,10 +469,10 @@ def require_doctor(state: str, provider: str | None) -> None:
 def require_v1_doctor(
     state: str,
     image_root: Path,
-    allow_missing_images: bool,
+    strict: bool,
 ) -> None:
     failures = [
-        c for c in v1_doctor_checks(state, image_root, allow_missing_images)
+        c for c in v1_doctor_checks(state, image_root, strict)
         if c["required"] and not c["ok"]
     ]
     if failures:
@@ -591,7 +591,7 @@ def v1_overlay_cmd(
         "--report",
         str(paths.report),
     ]
-    if args.allow_missing_v1_images:
+    if not args.strict:
         cmd.append("--allow-missing-v1-images")
     if preserve_images:
         cmd.append("--preserve-images")
@@ -615,7 +615,7 @@ def v1_image_cmd(paths: V1StatePaths, args, image_root: Path) -> list[str]:
         "--report",
         str(paths.report),
     ]
-    if args.allow_missing_v1_images:
+    if not args.strict:
         cmd.append("--allow-missing-v1-images")
     return cmd
 
@@ -755,10 +755,7 @@ def check_db() -> tuple[bool, str]:
 
 
 def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
-    # State bundles use state-local lookup ids. A clean dry-run answers the
-    # local question: can this generated bundle load into an empty catalog?
-    # Multi-state lookup id reconciliation belongs to merge_ascc_bundles.py.
-    check_kind = "dry-run-truncate"
+    check_kind = "dry-run-additive"
     if mode == "never":
         return {"mode": mode, "status": "skipped", "check": check_kind}
     db_ok, db_message = check_db()
@@ -777,14 +774,13 @@ def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
         "import_ascc_bundle",
         str(paths.bundle_dir),
         "--dry-run",
-        "--truncate",
     ]
     run_command(cmd)
     return {"mode": mode, "status": "passed", "check": check_kind}
 
 
 def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
-    check_kind = "truncate-load"
+    check_kind = "additive-load"
     if not load:
         return {"mode": "manual", "status": "skipped", "check": check_kind}
     cmd = [
@@ -792,7 +788,6 @@ def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
         str(REPO_ROOT / "backend" / "manage.py"),
         "import_ascc_bundle",
         str(paths.bundle_dir),
-        "--truncate",
     ]
     run_command(cmd)
     return {"mode": "load", "status": "passed", "check": check_kind}
@@ -834,7 +829,7 @@ def write_run_manifest(
       "import_check": {
         "mode": "auto",
         "status": "passed",
-        "check": "dry-run-truncate"
+        "check": "dry-run-additive"
       }
     }
     """

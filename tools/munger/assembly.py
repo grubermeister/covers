@@ -35,15 +35,34 @@ SHAPE_CODE_TO_NAME = {
     'PMK':     'Other',
 }
 
-CATALOG_FALLBACK_SHAPE = 'SL'
+NO_PAREN_MANUSCRIPT_MAX_HEAD_CHARS = 24
+
+
+def promote_no_paren_to_manuscript(row):
+    """Return True when a terse no-paren listing is a manuscript marking.
+
+    Rule choice: the no-paren form also covers ordinary parenless handstamps,
+    so promotion is limited to rows whose current head text is 24 characters or
+    less after relationship inheritance. Inherited sizes block promotion.
+    """
+    if row.get('entry_form') != 'no_paren':
+        return False
+    if row.get('is_manuscript'):
+        return False
+    parsed_sizes = row.get('parsed_sizes') or []
+    if parsed_sizes:
+        return False
+    text = str(row.get('seg_head') or row.get('clean_text') or '').strip()
+    return 0 < len(text) <= NO_PAREN_MANUSCRIPT_MAX_HEAD_CHARS
+
 
 def resolve_effective_shape(row):
-    # Priority: paren-body shape code > Default Shape column > catalog-wide SL.
-    # Manuscript-section rows always return None -- they carry no stamped shape.
+    # Priority: paren-body shape code > bare diameter > Default Shape column.
+    # Manuscript rows always return None -- they carry no stamped shape.
     # Returns (effective_code_upper_or_None, source_label).
 
     # Manuscript rows carry no shape attribute; shape_id will be null in output.
-    if row.get('is_manuscript_section'):
+    if row.get('is_manuscript_section') or row.get('is_manuscript'):
         return None, 'manuscript_no_shape'
 
     # 1. Paren-body shape (from parsed_sizes -- use first non-None)
@@ -79,10 +98,10 @@ def resolve_effective_shape(row):
         for code in sorted(SHAPE_CODE_TO_NAME.keys(), key=len, reverse=True):
             if ds.startswith(code):
                 return code, 'default_shape'
-        # Unrecognized default shape -- fall through to catalog default
+        # Unrecognized default shape -- fall through to no_shape
 
-    # 3. Catalog-wide fallback (non-manuscript only)
-    return CATALOG_FALLBACK_SHAPE, 'catalog_fallback'
+    # 3. No catalog evidence for shape.
+    return None, 'no_shape'
 
 def resolve_shape_name(code_upper):
     # Map an ASCC shape code to a seed shape name.

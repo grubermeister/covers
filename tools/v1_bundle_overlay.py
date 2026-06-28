@@ -52,7 +52,6 @@ UNSUPPORTED_COLUMNS = [
     "txtTownmarkColor",
 ]
 IMAGE_COLUMNS = [
-    "image_id",
     "subject_type",
     "subject_id",
     "original_filename",
@@ -70,7 +69,6 @@ IMAGE_COLUMNS = [
     *AUDIT_TAIL,
 ]
 DATE_COLUMNS = [
-    "id",
     "subject_type",
     "subject_id",
     "date",
@@ -78,7 +76,6 @@ DATE_COLUMNS = [
     *AUDIT_TAIL,
 ]
 CITATION_COLUMNS = [
-    "id",
     "reference_work",
     "subject_type",
     "subject_id",
@@ -86,7 +83,6 @@ CITATION_COLUMNS = [
     *AUDIT_TAIL,
 ]
 POST_OFFICE_REGION_COLUMNS = [
-    "id",
     "post_office",
     "region",
     *AUDIT_TAIL,
@@ -117,6 +113,56 @@ def nonblank(value: object) -> bool:
 
 def clean(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+SAME_PREFIX_RE = re.compile(r"^\s*(?:The\s+)?Same\b", re.IGNORECASE)
+LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+
+
+def strip_inscription_markers(inscription: object) -> str:
+    """Remove catalog-only markers from inscription text."""
+    value = clean(inscription).replace("*", "").strip()
+    while value:
+        stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
+        if stripped == value:
+            return stripped
+        value = stripped
+    return ""
+
+
+def townmark_text_stem(text: object) -> str:
+    """Return the townmark text prefix before a state or device suffix."""
+    value = strip_inscription_markers(text)
+    if "/" in value:
+        return value.split("/", 1)[0].strip()
+    return re.sub(
+        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
+        "",
+        value,
+    ).strip() or value
+
+
+def resolve_same_inscription(inscription: object, parent_text: object) -> str:
+    """Replace a leading Same placeholder with parent townmark text.
+
+    Example input shape:
+    inscription="Same/Wis."
+    parent_text="WATERTOWN/Wis."
+    returned value="WATERTOWN/Wis."
+    """
+    value = strip_inscription_markers(inscription)
+    if not value:
+        return ""
+    match = SAME_PREFIX_RE.match(value)
+    if not match:
+        return value
+    parent = strip_inscription_markers(parent_text)
+    if not parent:
+        return value
+    suffix = value[match.end():]
+    if not suffix.strip():
+        return parent
+    return strip_inscription_markers(townmark_text_stem(parent) + suffix)
 
 
 def truthy(value: object) -> bool:
@@ -208,17 +254,17 @@ def build_lineage_maps(lineage_rows: list[dict[str, str]]) -> tuple[dict[str, li
     tm_by_raw = defaultdict(list)
     for row in lineage_rows:
         raw_id = clean(row.get("chunk"))
-        marking_id = clean(row.get("marking_id"))
-        if not raw_id or not marking_id:
+        marking_code = clean(row.get("marking_code") or row.get("marking_id"))
+        if not raw_id or not marking_code:
             continue
-        by_raw[raw_id].append(marking_id)
+        by_raw[raw_id].append(marking_code)
         if clean(row.get("marking_type")).upper() == "TOWNMARK":
-            tm_by_raw[raw_id].append(marking_id)
+            tm_by_raw[raw_id].append(marking_code)
     return dict(by_raw), dict(tm_by_raw)
 
 
 def color_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
-    return {clean(row.get("name")).upper(): clean(row.get("id")) for row in rows}
+    return {clean(row.get("name")).upper(): clean(row.get("name")).upper() for row in rows}
 
 
 def ensure_color(
@@ -231,12 +277,11 @@ def ensure_color(
     key = clean(name).upper()
     if key in lookup:
         return lookup[key]
-    new_id = str(next_int(colors, "id"))
     row = {name: "" for name in fields}
     row.update(audit)
-    row.update({"id": new_id, "name": key, "hex_val": "#FFFFFF", "pantone_code": ""})
+    row.update({"name": key, "hex_val": "#FFFFFF", "pantone_code": ""})
     colors.append(row)
-    return new_id
+    return key
 
 
 def normalized_shape_code(value: object) -> str:
@@ -270,15 +315,15 @@ def normalized_shape_code(value: object) -> str:
 def shape_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
     out = {}
     for row in rows:
-        row_id = clean(row.get("id"))
+        row_name = clean(row.get("name"))
         code = normalized_shape_code(row.get("code"))
         if code:
-            out[code] = row_id
+            out[code] = row_name
         name = clean(row.get("name")).upper()
         prefix = normalized_shape_code(name.split(" - ", 1)[0])
         if prefix:
-            out[prefix] = row_id
-        out[normalized_shape_code(name)] = row_id
+            out[prefix] = row_name
+        out[normalized_shape_code(name)] = row_name
     return out
 
 
@@ -291,7 +336,7 @@ def lettering_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
     out = {}
     for row in rows:
         key = clean(row.get("name")).upper()
-        out[key] = clean(row.get("id"))
+        out[key] = clean(row.get("name"))
     for alias, target in aliases.items():
         if target in out:
             out[alias] = out[target]
@@ -400,7 +445,6 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
         for subject_id in subject_ids:
             for date_text, granularity in observations:
                 row = {
-                    "id": "",
                     "subject_type": "MARKING",
                     "subject_id": subject_id,
                     "date": date_text,
@@ -448,9 +492,32 @@ def source_post_office_regions(
     if found:
         return found
     for row in regions:
-        if nonblank(row.get("id")):
-            return [clean(row.get("id"))]
+        if nonblank(row.get("code")):
+            return [clean(row.get("code"))]
     return []
+
+
+def next_post_office_code(old_code: str, post_offices: list[dict[str, str]], regions: list[dict[str, str]]) -> str:
+    prefix = ""
+    if "-" in old_code:
+        prefix = old_code.rsplit("-", 1)[0] + "-"
+    if not prefix:
+        for region in regions:
+            if nonblank(region.get("code")):
+                prefix = clean(region.get("code")) + "-"
+                break
+    if not prefix:
+        prefix = "V1-"
+    max_serial = 0
+    for row in post_offices:
+        code = clean(row.get("code"))
+        if not code.startswith(prefix):
+            continue
+        try:
+            max_serial = max(max_serial, int(code[len(prefix):]))
+        except ValueError:
+            continue
+    return "{0}{1}".format(prefix, max_serial + 1)
 
 
 def ensure_post_office(
@@ -466,44 +533,49 @@ def ensure_post_office(
     key = clean(town).upper()
     for row in post_offices:
         if clean(row.get("name")).upper() == key:
-            return clean(row.get("id"))
-    new_id = str(next_int(post_offices, "id"))
+            return clean(row.get("code"))
+    new_code = next_post_office_code(old_post_office_id, post_offices, regions)
     po = {name: "" for name in post_office_fields}
     po.update(audit)
-    po.update({"id": new_id, "name": key})
+    po.update({"name": key, "code": new_code})
     post_offices.append(po)
-    next_por_id = next_int(post_office_regions, "id")
     for region_id in source_post_office_regions(old_post_office_id, post_office_regions, regions):
         por = {name: "" for name in por_fields}
         por.update(audit)
-        por.update({"id": str(next_por_id), "post_office": new_id, "region": region_id})
+        por.update({"post_office": new_code, "region": region_id})
         post_office_regions.append(por)
-        next_por_id += 1
-    return new_id
+    return new_code
+
+
+def clone_code(base_code: str, existing_codes: set[str]) -> str:
+    for serial in range(1, len(existing_codes) + 100):
+        suffix = "-C{0}".format(serial)
+        candidate = "{0}{1}".format(base_code[: max(1, 30 - len(suffix))], suffix)
+        if candidate not in existing_codes:
+            return candidate
+    raise RuntimeError("could not allocate clone marking code")
 
 
 def clone_townmark(
     template: dict[str, str],
-    new_id: str,
-    color_id: str,
+    new_code: str,
+    color_name: str,
     raw_id: str,
     markings_fields: list[str],
     lineage_rows: list[dict[str, str]],
 ) -> dict[str, str]:
     clone = {name: template.get(name, "") for name in markings_fields}
-    clone["id"] = new_id
-    clone["color"] = color_id
-    base_code = clean(template.get("code")) or "V1"
-    suffix = "C{0}".format(new_id)
-    clone["code"] = "{0}-{1}".format(base_code[: max(1, 29 - len(suffix))], suffix)
+    clone["code"] = new_code
+    clone["color"] = color_name
     lineage_template = None
     for row in lineage_rows:
-        if clean(row.get("marking_id")) == clean(template.get("id")):
+        if clean(row.get("marking_code") or row.get("marking_id")) == clean(template.get("code")):
             lineage_template = row
             break
     if lineage_template is not None:
         lineage = dict(lineage_template)
-        lineage["marking_id"] = new_id
+        lineage.pop("marking_id", None)
+        lineage["marking_code"] = new_code
         lineage["marking_type"] = "TOWNMARK"
         lineage["chunk"] = raw_id
         lineage_rows.append(lineage)
@@ -529,37 +601,37 @@ def ensure_townmark_colors(
     desired_names = parse_color_field(raw_row.get("txtColors", ""))
     if not desired_names:
         return
-    by_id = {clean(row.get("id")): row for row in markings}
-    tm_ids = [mid for mid in tm_by_raw.get(raw_id, []) if mid in by_id]
-    if not tm_ids:
+    by_code = {clean(row.get("code")): row for row in markings}
+    tm_codes = [code for code in tm_by_raw.get(raw_id, []) if code in by_code]
+    if not tm_codes:
         add_report(report, raw_id, "missing_townmark", "txtColors could not be applied")
         return
-    desired_color_ids = [
+    desired_color_names = [
         ensure_color(name, colors, color_fields, audit) for name in desired_names
     ]
-    next_marking_id = next_int(markings, "id")
-    while len(tm_ids) < len(desired_color_ids):
-        template = by_id[tm_ids[-1]]
-        new_id = str(next_marking_id)
-        next_marking_id += 1
+    existing_codes = {clean(row.get("code")) for row in markings if nonblank(row.get("code"))}
+    while len(tm_codes) < len(desired_color_names):
+        template = by_code[tm_codes[-1]]
+        new_code = clone_code(clean(template.get("code")) or "V1", existing_codes)
+        existing_codes.add(new_code)
         clone = clone_townmark(
             template,
-            new_id,
-            desired_color_ids[len(tm_ids)],
+            new_code,
+            desired_color_names[len(tm_codes)],
             raw_id,
             markings_fields,
             lineage_rows,
         )
         markings.append(clone)
-        by_id[new_id] = clone
-        tm_ids.append(new_id)
-        tm_by_raw.setdefault(raw_id, []).append(new_id)
-        clone_sources[new_id] = clean(template.get("id"))
-    for tm_id, color_id in zip(tm_ids, desired_color_ids):
-        by_id[tm_id]["color"] = color_id
-    for extra_id in tm_ids[len(desired_color_ids):]:
-        deleted_ids.add(extra_id)
-        tm_by_raw[raw_id].remove(extra_id)
+        by_code[new_code] = clone
+        tm_codes.append(new_code)
+        tm_by_raw.setdefault(raw_id, []).append(new_code)
+        clone_sources[new_code] = clean(template.get("code"))
+    for tm_code, color_name in zip(tm_codes, desired_color_names):
+        by_code[tm_code]["color"] = color_name
+    for extra_code in tm_codes[len(desired_color_names):]:
+        deleted_ids.add(extra_code)
+        tm_by_raw[raw_id].remove(extra_code)
 
 
 def apply_row_fields(
@@ -589,7 +661,11 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    inscription = clean(raw_row.get("txtPostmark")) or clean(raw_row.get("txtTownPostmark"))
+    townmark_text = strip_inscription_markers(raw_row.get("txtTownPostmark"))
+    inscription = (
+        resolve_same_inscription(raw_row.get("txtPostmark"), townmark_text)
+        or townmark_text
+    )
     if inscription:
         for row in townmark_rows:
             row["inscription_txt"] = inscription
@@ -698,12 +774,10 @@ def rebuild_dates(
             continue
         for row in existing_by_subject.get(source_id, []):
             clone = dict(row)
-            clone["id"] = ""
             clone["subject_id"] = new_id
             kept.append(clone)
     out = kept + new_rows
-    for idx, row in enumerate(out, start=1):
-        row["id"] = str(idx)
+    for row in out:
         for key, value in audit.items():
             row.setdefault(key, value)
     return out
@@ -717,15 +791,14 @@ def rebuild_citations(
     rows = []
     seen = set()
     for lineage in lineage_rows:
-        marking_id = clean(lineage.get("marking_id"))
-        if not marking_id or marking_id in seen:
+        marking_code = clean(lineage.get("marking_code") or lineage.get("marking_id"))
+        if not marking_code or marking_code in seen:
             continue
-        seen.add(marking_id)
+        seen.add(marking_code)
         row = {
-            "id": str(len(rows) + 1),
             "reference_work": reference_work,
             "subject_type": "MARKING",
-            "subject_id": marking_id,
+            "subject_id": marking_code,
             "citation_detail": "",
         }
         row.update(audit)
@@ -782,7 +855,6 @@ def build_images(
         for subject_id in subject_ids:
             display_order[subject_id] += 1
             row = {
-                "image_id": str(len(rows) + 1),
                 "subject_type": "MARKING",
                 "subject_id": subject_id,
                 "original_filename": basename,
@@ -824,13 +896,10 @@ def reconcile_preserved_images(
             continue
         for source_row in by_subject.get(source_id, []):
             clone = dict(source_row)
-            clone["image_id"] = ""
             clone["subject_id"] = new_id
             rows.append(clone)
     display_order = defaultdict(int)
-    for idx, row in enumerate(rows, start=1):
-        if "image_id" in row:
-            row["image_id"] = str(idx)
+    for row in rows:
         subject_id = clean(row.get("subject_id"))
         if subject_id and "display_order" in row:
             display_order[subject_id] += 1
@@ -908,10 +977,10 @@ def apply_overlay(args: argparse.Namespace) -> int:
             report,
         )
     if deleted_ids:
-        markings = [row for row in markings if clean(row.get("id")) not in deleted_ids]
+        markings = [row for row in markings if clean(row.get("code")) not in deleted_ids]
         lineage_rows = [
             row for row in lineage_rows
-            if clean(row.get("marking_id")) not in deleted_ids
+            if clean(row.get("marking_code") or row.get("marking_id")) not in deleted_ids
         ]
         dates = [row for row in dates if clean(row.get("subject_id")) not in deleted_ids]
         citations = [
@@ -920,11 +989,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
         ]
     by_raw, tm_by_raw = build_lineage_maps(lineage_rows)
 
-    markings_by_id = {clean(row.get("id")): row for row in markings}
+    markings_by_id = {clean(row.get("code")): row for row in markings}
     ratemark_by_raw = defaultdict(list)
     for row in lineage_rows:
         if clean(row.get("marking_type")).upper() == "RATEMARK":
-            ratemark_by_raw[clean(row.get("chunk"))].append(clean(row.get("marking_id")))
+            ratemark_by_raw[clean(row.get("chunk"))].append(clean(row.get("marking_code") or row.get("marking_id")))
     tables = {
         "post_offices": post_offices,
         "post_office_fields": post_office_fields,
@@ -952,8 +1021,8 @@ def apply_overlay(args: argparse.Namespace) -> int:
     if citations:
         reference_work_id = clean(citations[0].get("reference_work"))
     if not reference_work_id and reference_works:
-        reference_work_id = clean(reference_works[0].get("id"))
-    reference_work_id = reference_work_id or "1"
+        reference_work_id = clean(reference_works[0].get("code"))
+    reference_work_id = reference_work_id or "ASCC"
     citations = rebuild_citations(lineage_rows, reference_work_id, audit)
     if args.preserve_images:
         images = reconcile_preserved_images(existing_images, deleted_ids, clone_sources)

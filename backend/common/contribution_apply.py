@@ -121,10 +121,6 @@ def apply_contribution_to_catalog(contrib):
         is_irreg = None
     else:
         shape = _resolve_fk(Shape, payload, "shape_id", "shape")
-        if shape is None:
-            raise ContributionApplyError(
-                "shape is required for non-manuscript markings."
-            )
         lettering = _resolve_lettering(payload)
         is_irreg = _coerce_required_bool(payload, "is_irreg")
 
@@ -225,10 +221,6 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
         is_irreg = None
     else:
         shape = _resolve_fk(Shape, payload, "shape_id", "shape")
-        if shape is None:
-            raise ContributionApplyError(
-                "shape is required for non-manuscript markings."
-            )
         lettering = _resolve_lettering(payload)
         is_irreg = _coerce_required_bool(payload, "is_irreg")
 
@@ -264,9 +256,8 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
     marking.impression = impression
     marking.rate_val = _parse_decimal(payload.get("rate_val"))
     marking.post_office = post_office
-    # Keep the existing color when the submission does not resolve one (mirrors
-    # the create path, which only sets color when present).
-    if color is not None:
+    # Omitted color means "no change"; explicit blank/null means "clear".
+    if _payload_mentions_fk(payload, "color_id", "color"):
         marking.color = color
     marking.modified_by = actor
     marking.full_clean()
@@ -707,6 +698,11 @@ def _resolve_fk(model, payload: dict, id_key: str, name_key: str, *fallback_id_k
     if not name:
         return None
     return model.objects.filter(name__iexact=name).first()
+
+
+def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id_keys: str) -> bool:
+    keys = (id_key, name_key) + fallback_id_keys
+    return any(key in payload for key in keys)
 
 
 def _resolve_lettering(payload: dict) -> Lettering | None:

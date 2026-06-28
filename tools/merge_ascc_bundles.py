@@ -57,6 +57,7 @@ DEFAULT_HEADERS = {
         "modified_date",
         "created_by",
         "modified_by",
+        "code",
         "name",
         "abbrev",
         "region_tier",
@@ -80,7 +81,7 @@ DEFAULT_HEADERS = {
         "isbn",
         "url",
     ],
-    "post_offices": ["id", "name"] + AUDIT_TAIL,
+    "post_offices": ["id", "name", "code"] + AUDIT_TAIL,
     "post_office_regions": ["id", "post_office", "region"] + AUDIT_TAIL,
     "markings": [
         "id",
@@ -442,13 +443,7 @@ def merge_markings(
                 bundle.spec.label,
                 row.get("lettering"),
             )
-            out["color"] = remap_required(
-                maps,
-                "colors",
-                bundle.spec.label,
-                row.get("color"),
-                "markings.color",
-            )
+            out["color"] = remap_optional(maps, "colors", bundle.spec.label, row.get("color"))
             out["post_office"] = remap_required(
                 maps,
                 "post_offices",
@@ -648,7 +643,7 @@ def check_bundle(bundle_dir: Path) -> list[str]:
     check_fk(rows, id_sets, errors, "post_office_regions", "region", "regions")
     check_fk(rows, id_sets, errors, "markings", "shape", "shapes", optional=True)
     check_fk(rows, id_sets, errors, "markings", "lettering", "letterings", optional=True)
-    check_fk(rows, id_sets, errors, "markings", "color", "colors")
+    check_fk(rows, id_sets, errors, "markings", "color", "colors", optional=True)
     check_fk(rows, id_sets, errors, "markings", "post_office", "post_offices")
     check_fk(rows, id_sets, errors, "covers", "color", "colors", optional=True)
     check_fk(rows, id_sets, errors, "cover_valuations", "cover", "covers")
@@ -663,6 +658,8 @@ def check_bundle(bundle_dir: Path) -> list[str]:
     check_unique_values(rows["shapes"], "shapes", "name", errors)
     check_unique_values(rows["reference_works"], "reference_works", "code", errors)
     check_unique_values(rows["regions"], "regions", "name", errors)
+    check_unique_values(rows["regions"], "regions", "code", errors, allow_blank=True)
+    check_unique_values(rows["post_offices"], "post_offices", "code", errors, allow_blank=True)
     check_unique_tuple(
         rows["post_office_regions"],
         "post_office_regions",
@@ -673,6 +670,18 @@ def check_bundle(bundle_dir: Path) -> list[str]:
         rows["cover_markings"],
         "cover_markings",
         ("cover", "marking"),
+        errors,
+    )
+    check_unique_tuple(
+        rows["dates_seen"],
+        "dates_seen",
+        ("subject_type", "subject_id", "date", "granularity"),
+        errors,
+    )
+    check_unique_tuple(
+        rows["images"],
+        "images",
+        ("storage_filename", "subject_type", "subject_id"),
         errors,
     )
     check_unique_values(rows["markings"], "markings", "code", errors, allow_blank=True)

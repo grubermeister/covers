@@ -391,12 +391,8 @@ class CoverContributionApplyFunctionTests(TestCase):
             created_by=self.user,
             modified_by=self.user,
         )
-        # Supply an explicit color. Marking.color is a non-nullable FK with
-        # default=1; without an explicit color_id the apply path falls back to
-        # that default, which assumes a Color with PK=1 exists. That assumption
-        # is not deterministic under TestCase (InnoDB does not roll back the
-        # AUTO_INCREMENT counter, so the fixture color's id drifts above 1), so
-        # this test must pass a real color rather than rely on the default.
+        # Supply an explicit color so this dispatch regression also exercises
+        # the normal color resolution path.
         color = Color.objects.create(
             name="MarkingColor", created_by=self.user, modified_by=self.user
         )
@@ -413,6 +409,63 @@ class CoverContributionApplyFunctionTests(TestCase):
         contrib = _make_cover_contribution(self.user, sd, self.collection)
         result = apply_contribution_to_catalog(contrib)
         self.assertIsInstance(result, Marking)
+
+    def test_marking_create_allows_non_manuscript_without_shape_or_color(self):
+        sd = {
+            "submission_kind": "marking",
+            "type": "TOWNMARK",
+            "state": "VA",
+            "town": "Richmond",
+            "inscription_txt": "RICHMOND VA",
+            "is_manuscript": "false",
+            "is_irreg": "false",
+            "marking_image_metas": [{"storage_filename": "va/no-shape.jpg"}],
+        }
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertIsInstance(marking, Marking)
+        self.assertFalse(marking.is_manuscript)
+        self.assertIsNone(marking.shape_id)
+        self.assertIsNone(marking.color_id)
+        self.assertFalse(marking.is_irreg)
+
+    def test_marking_edit_can_clear_color_without_requiring_shape(self):
+        color = Color.objects.create(
+            name="EditColor",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        marking = Marking.objects.create(
+            type="TOWNMARK",
+            inscription_txt="RICHMOND VA",
+            is_manuscript=False,
+            is_irreg=False,
+            color=color,
+            post_office=self.parent.post_office,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        sd = {
+            "submission_kind": "marking",
+            "edit_marking_id": marking.pk,
+            "type": "TOWNMARK",
+            "state": "VA",
+            "town": "Richmond",
+            "inscription_txt": "RICHMOND VA",
+            "is_manuscript": "false",
+            "is_irreg": "false",
+            "color_id": "",
+            "marking_image_metas": [{"storage_filename": "va/edit-clear-color.jpg"}],
+        }
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        updated = apply_contribution_to_catalog(contrib)
+
+        self.assertEqual(updated.pk, marking.pk)
+        self.assertIsNone(updated.shape_id)
+        self.assertIsNone(updated.color_id)
 
 
 class CoverContributionApproveEndpointTests(APITestCase):

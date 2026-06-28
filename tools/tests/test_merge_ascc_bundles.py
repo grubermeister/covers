@@ -61,9 +61,15 @@ class MergeAsccBundlesTests(unittest.TestCase):
                 "Virginia",
                 "North Carolina",
             ])
+            self.assertEqual([row["code"] for row in regions], [
+                "USA",
+                "USA-VA1",
+                "USA-NC1",
+            ])
             self.assertEqual(regions[1]["parent_region"], "1")
             self.assertEqual(regions[2]["parent_region"], "1")
             self.assertEqual([row["name"] for row in post_offices], ["Richmond", "Raleigh"])
+            self.assertEqual([row["code"] for row in post_offices], ["USA-VA1-1", "USA-NC1-1"])
             self.assertEqual([row["id"] for row in markings], ["1", "2"])
             self.assertEqual([row["post_office"] for row in markings], ["1", "2"])
             self.assertEqual([row["subject_id"] for row in dates_seen], ["1", "2"])
@@ -169,7 +175,7 @@ class MergeAsccBundlesTests(unittest.TestCase):
 
             self.assertIn("colors: duplicate name Black", errors)
 
-    def test_blank_marking_color_fails(self):
+    def test_blank_marking_color_merges_as_blank(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             va = root / "va"
@@ -179,10 +185,12 @@ class MergeAsccBundlesTests(unittest.TestCase):
             rows[0]["color"] = ""
             write_csv(va / "markings.csv", list(rows[0]), rows)
 
-            with self.assertRaisesRegex(MergeError, "VA:markings.color: blank id"):
-                merge_bundles([BundleSpec("VA", va)], out)
+            merge_bundles([BundleSpec("VA", va)], out)
 
-    def test_check_bundle_allows_storage_filename_fanout_same_checksum(self):
+            merged = read_rows(out / "markings.csv")
+            self.assertEqual(merged[0]["color"], "")
+
+    def test_check_bundle_allows_storage_filename_fanout_to_different_subjects(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             bundle = root / "bundle"
@@ -194,13 +202,78 @@ class MergeAsccBundlesTests(unittest.TestCase):
                 "ASCC1-VA-1",
                 "va/va-1.png",
             )
+            marking_rows = read_rows(bundle / "markings.csv")
+            second_marking = dict(marking_rows[0])
+            second_marking["id"] = "2"
+            second_marking["code"] = "ASCC1-VA-2"
+            marking_rows.append(second_marking)
+            write_csv(bundle / "markings.csv", list(marking_rows[0]), marking_rows)
             rows = read_rows(bundle / "images.csv")
             duplicate = dict(rows[0])
             duplicate["image_id"] = "2"
+            duplicate["subject_id"] = "2"
             rows.append(duplicate)
             write_csv(bundle / "images.csv", list(rows[0]), rows)
 
             self.assertEqual(check_bundle(bundle), [])
+
+    def test_check_bundle_rejects_duplicate_region_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "bundle"
+            make_bundle(bundle, "VA", "Virginia", "Richmond", "ASCC1-VA-1", "va/va-1.png")
+            rows = read_rows(bundle / "regions.csv")
+            rows[1]["code"] = rows[0]["code"]
+            write_csv(bundle / "regions.csv", list(rows[0]), rows)
+
+            errors = check_bundle(bundle)
+
+            self.assertIn("regions: duplicate code USA", errors)
+
+    def test_check_bundle_rejects_duplicate_post_office_code(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "bundle"
+            make_bundle(bundle, "VA", "Virginia", "Richmond", "ASCC1-VA-1", "va/va-1.png")
+            rows = read_rows(bundle / "post_offices.csv")
+            rows.append(dict(rows[0], id="2", name="Norfolk"))
+            write_csv(bundle / "post_offices.csv", list(rows[0]), rows)
+
+            errors = check_bundle(bundle)
+
+            self.assertIn("post_offices: duplicate code USA-VA1-1", errors)
+
+    def test_check_bundle_rejects_duplicate_dates_seen_subject_tuple(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "bundle"
+            make_bundle(bundle, "VA", "Virginia", "Richmond", "ASCC1-VA-1", "va/va-1.png")
+            rows = read_rows(bundle / "dates_seen.csv")
+            rows.append(dict(rows[0], id="2"))
+            write_csv(bundle / "dates_seen.csv", list(rows[0]), rows)
+
+            errors = check_bundle(bundle)
+
+            self.assertIn(
+                "dates_seen: duplicate subject_type=MARKING,subject_id=1,date=1850-01-01,granularity=DAY",
+                errors,
+            )
+
+    def test_check_bundle_rejects_duplicate_image_subject_tuple(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "bundle"
+            make_bundle(bundle, "VA", "Virginia", "Richmond", "ASCC1-VA-1", "va/va-1.png")
+            rows = read_rows(bundle / "images.csv")
+            rows.append(dict(rows[0], image_id="2"))
+            write_csv(bundle / "images.csv", list(rows[0]), rows)
+
+            errors = check_bundle(bundle)
+
+            self.assertIn(
+                "images: duplicate storage_filename=va/va-1.png,subject_type=MARKING,subject_id=1",
+                errors,
+            )
 
 
 def make_bundle(path, abbrev, region_name, post_office, marking_code, storage_filename):
@@ -220,6 +293,7 @@ def make_bundle(path, abbrev, region_name, post_office, marking_code, storage_fi
         "modified_date",
         "created_by",
         "modified_by",
+        "code",
         "name",
         "abbrev",
         "region_tier",
@@ -229,6 +303,7 @@ def make_bundle(path, abbrev, region_name, post_office, marking_code, storage_fi
     ], [
         row({
             "id": "1",
+            "code": "USA",
             "name": "United States of America",
             "abbrev": "USA",
             "region_tier": "COUNTRY",
@@ -238,6 +313,7 @@ def make_bundle(path, abbrev, region_name, post_office, marking_code, storage_fi
         }),
         row({
             "id": "2",
+            "code": f"USA-{abbrev}1",
             "name": region_name,
             "abbrev": abbrev,
             "region_tier": "STATE",
@@ -275,8 +351,8 @@ def make_bundle(path, abbrev, region_name, post_office, marking_code, storage_fi
             "url": "",
         }),
     ])
-    write_csv(path / "post_offices.csv", ["id", "name"] + list(AUDIT), [
-        row({"id": "1", "name": post_office}),
+    write_csv(path / "post_offices.csv", ["id", "name", "code"] + list(AUDIT), [
+        row({"id": "1", "name": post_office, "code": f"USA-{abbrev}1-1"}),
     ])
     write_csv(path / "post_office_regions.csv", ["id", "post_office", "region"] + list(AUDIT), [
         row({"id": "1", "post_office": "1", "region": "2"}),

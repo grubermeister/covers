@@ -23,7 +23,7 @@ from munger.classify import (
     detect_fragment,
     detect_structural_anatomy,
 )
-from munger.assembly import LETTERING_SEEDS, resolve_effective_shape
+from munger.assembly import LETTERING_SEEDS, promote_no_paren_to_manuscript, resolve_effective_shape
 from munger.fields import _split_ms_date_token, classify_all_fields, subparse_fields
 from munger.fields.dates import parse_date_field
 from munger.head import parse_head, parse_manuscript_row
@@ -703,6 +703,7 @@ def _relationship_frame(rows: list[dict], key_col: str, text_col: str, order_col
     df = resolve_relationships(df)
     df = roll_up_catalog_text(df)
     _inherit_relationship_attributes(df)
+    _promote_no_paren_manuscripts(df)
     _resolve_text_shapes(df)
     return df
 
@@ -793,6 +794,14 @@ def _resolve_text_shapes(df: pd.DataFrame) -> None:
     )
     df["effective_shape_code"] = shape_resolution["effective_shape_code"]
     df["shape_source"] = shape_resolution["shape_source"]
+
+
+def _promote_no_paren_manuscripts(df: pd.DataFrame) -> None:
+    for pos, row in df.iterrows():
+        if not promote_no_paren_to_manuscript(row):
+            continue
+        df.iat[pos, df.columns.get_loc("is_manuscript")] = True
+        df.iat[pos, df.columns.get_loc("parsed_colors")] = []
 
 
 def _is_manuscript_section_row(row) -> bool:
@@ -1054,7 +1063,7 @@ def _align_row(left, right, disposition, score, reason, rep_v1, rep_v2, v1_dup, 
 def _parsed_text_field_values(row) -> dict:
     shape = row.get("effective_shape_code", "")
     shape_source = row.get("shape_source", "")
-    if shape_source == "catalog_fallback":
+    if shape_source in {"catalog_fallback", "no_shape"}:
         shape = ""
     return {
         "post_office/town": _norm_town(row.get("resolved_town", "")),
@@ -1096,13 +1105,34 @@ def _v1_field_values(row: dict, text_fields: dict | None = None) -> dict:
 def _aggregate_v2_fields(out_dir: Path) -> dict:
     markings = read_csv(out_dir / "markings.csv")
     dates = read_csv(out_dir / "dates_seen.csv")
-    offices = {r["id"]: r.get("name", "") for r in read_csv(out_dir / "post_offices.csv")}
-    colors_by_id = {r["id"]: r.get("name", "") for r in read_csv(out_dir / "colors.csv")}
-    shapes_by_id = {r["id"]: r.get("name", "") or r.get("code", "") for r in read_csv(out_dir / "shapes.csv")}
-    letterings_by_id = {r["id"]: r.get("name", "") for r in read_csv(out_dir / "letterings.csv")}
+    offices = {
+        r.get("code") or r.get("id", ""): r.get("name", "")
+        for r in read_csv(out_dir / "post_offices.csv")
+    }
+    colors_by_name = {
+        r.get("code") or r.get("id") or r.get("name", ""): r.get("name", "")
+        for r in read_csv(out_dir / "colors.csv")
+    }
+    shapes_by_name = {
+        r.get("id") or r.get("name", ""): r.get("name", "") or r.get("code", "")
+        for r in read_csv(out_dir / "shapes.csv")
+    }
+    for row in read_csv(out_dir / "shapes.csv"):
+        if row.get("name"):
+            shapes_by_name[row["name"]] = row.get("name", "") or row.get("code", "")
+    letterings_by_name = {
+        r.get("id") or r.get("name", ""): r.get("name", "")
+        for r in read_csv(out_dir / "letterings.csv")
+    }
+    for row in read_csv(out_dir / "letterings.csv"):
+        if row.get("name"):
+            letterings_by_name[row["name"]] = row.get("name", "")
     lineage = read_csv(out_dir / "marking_lineage.csv")
-    by_marking = {r["id"]: r for r in markings}
-    keys_by_marking = {r["marking_id"]: r["v2_key"] for r in lineage}
+    by_marking = {r.get("code") or r.get("id", ""): r for r in markings}
+    keys_by_marking = {
+        r.get("marking_code") or r.get("marking_id", ""): r["v2_key"]
+        for r in lineage
+    }
     mids_by_key = defaultdict(list)
     for mid, key in keys_by_marking.items():
         mids_by_key[key].append(mid)
@@ -1123,13 +1153,13 @@ def _aggregate_v2_fields(out_dir: Path) -> dict:
         date_vals = []
         for mid in mids:
             m = by_marking.get(mid, {})
-            letterings.append(letterings_by_id.get(m.get("lettering", ""), m.get("lettering", "")))
+            letterings.append(letterings_by_name.get(m.get("lettering", ""), m.get("lettering", "")))
             manuscript_values.append(_norm_bool(m.get("is_manuscript", "")))
             descriptions.append(m.get("desc", ""))
             if m.get("type") == "TOWNMARK":
                 town.append(offices.get(m.get("post_office", ""), ""))
-                colors.append(colors_by_id.get(m.get("color", ""), m.get("color", "")))
-                shapes.append(shapes_by_id.get(m.get("shape", ""), m.get("shape", "")))
+                colors.append(colors_by_name.get(m.get("color", ""), m.get("color", "")))
+                shapes.append(shapes_by_name.get(m.get("shape", ""), m.get("shape", "")))
                 date_fmts.append(m.get("date_fmt", ""))
                 if m.get("width") or m.get("height"):
                     sizes.append(f"{m.get('width', '')} x {m.get('height', '')}")
@@ -1483,7 +1513,10 @@ def _represented_v2_image_keys(out_dir: Path) -> set[str]:
     if not lineage_path.exists() or not images_path.exists():
         return set()
     lineage = read_csv(lineage_path)
-    key_by_mid = {r["marking_id"]: r["v2_key"] for r in lineage}
+    key_by_mid = {
+        r.get("marking_code") or r.get("marking_id", ""): r["v2_key"]
+        for r in lineage
+    }
     return {key_by_mid.get(r.get("subject_id", ""), "") for r in read_csv(images_path)} - {""}
 
 

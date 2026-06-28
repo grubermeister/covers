@@ -2,13 +2,57 @@ import re
 import pandas as pd
 
 
+LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+
+
+def strip_inscription_markers(inscription):
+    """Remove catalog-only markers from inscription text."""
+    if inscription is None or (isinstance(inscription, float) and pd.isna(inscription)):
+        return ''
+    text = str(inscription).replace('*', '').strip()
+    while True:
+        cleaned = LEADING_INSCRIPTION_MARKER_RE.sub('', text, count=1).strip()
+        if cleaned == text:
+            return cleaned
+        text = cleaned
+
+
 def extract_town_root(inscription):
     """Town root = everything before the first '/', or whole string if no '/'."""
     if inscription is None or (isinstance(inscription, float) and pd.isna(inscription)):
         return ''
+    inscription = strip_inscription_markers(inscription)
     if '/' in inscription:
         return inscription.split('/')[0]
     return inscription
+
+
+def parent_townmark_text_for_same(parent_inscription, parent_town, suffix=''):
+    """Return parent inscription text to use when catalog text says Same.
+
+    Bare Same inherits the full parent townmark inscription. Same with a suffix
+    such as /VA or C.H./VA uses the parent inscription stem so the suffix can
+    replace or extend the location text without copying the word Same.
+    """
+    parent_text = ''
+    if parent_inscription is not None and not (
+        isinstance(parent_inscription, float) and pd.isna(parent_inscription)
+    ):
+        parent_text = str(parent_inscription).strip()
+    if not parent_text:
+        parent_text = str(parent_town or '').strip()
+    suffix_text = str(suffix or '').strip()
+    if not suffix_text:
+        return parent_text
+    if '/' in parent_text:
+        return extract_town_root(parent_text).strip() or parent_text
+    stem = re.sub(
+        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
+        "",
+        parent_text,
+    ).strip()
+    return stem or parent_text
+
 
 def resolve_relationships(listings_df):
     """Walk listings in catalog order, resolve inheritance.
@@ -41,10 +85,14 @@ def resolve_relationships(listings_df):
 
         if pd.isna(row['head_rel_type']) or row['head_rel_type'] is None:
             # --- Independent entry ---
-            inscription = row['head_name_body']
-            if inscription is None or (isinstance(inscription, float) and pd.isna(inscription)):
+            raw_inscription = row['head_name_body']
+            if raw_inscription is None or (
+                isinstance(raw_inscription, float) and pd.isna(raw_inscription)
+            ):
                 warnings.append('independent_no_name')
                 inscription = ''
+            else:
+                inscription = strip_inscription_markers(raw_inscription)
 
             town = extract_town_root(inscription)
 
@@ -61,7 +109,7 @@ def resolve_relationships(listings_df):
                 warnings.append('orphan_rel')
                 # Best-effort: use own name body if any
                 _nb = row['head_name_body']
-                fallback = '' if (_nb is None or (isinstance(_nb, float) and pd.isna(_nb))) else (_nb or '')
+                fallback = strip_inscription_markers(_nb)
                 parent_idx[pos] = None
                 prev_sibling_idx[pos] = None
                 resolved_inscription[pos] = fallback
@@ -83,20 +131,31 @@ def resolve_relationships(listings_df):
 
                 if rel == 'Same' and pd.notna(name_body):
                     # Different device, same town: reconstruct inscription.
+                    # Same is a catalog placeholder, never inscription text.
+                    # Use the parent inscription stem, not the normalized
+                    # post-office name, so punctuation and spelling stay tied
+                    # to the parent townmark text.
                     # When name_body does not start with '/' the source had
                     # a literal space between 'Same' and the name body
                     # (e.g. 'Same C.H./Va.') that parse_head stripped; put
                     # one space back to avoid 'ACCOMACKC.H./VA.'.
+                    parent_text = parent_townmark_text_for_same(
+                        p_inscription,
+                        p_town,
+                        name_body,
+                    )
                     if not name_body.startswith('/'):
                         warnings.append('same_name_body_no_slash')
                         sep = ' '
                     else:
                         sep = ''
-                    resolved_inscription[pos] = p_town + sep + name_body
+                    resolved_inscription[pos] = strip_inscription_markers(
+                        parent_text + sep + name_body
+                    )
                     resolved_town[pos] = p_town
                 else:
                     # Same device (Same w/o name, (L), (E)): inherit
-                    resolved_inscription[pos] = p_inscription
+                    resolved_inscription[pos] = strip_inscription_markers(p_inscription)
                     resolved_town[pos] = p_town
 
                 # Cross-section check

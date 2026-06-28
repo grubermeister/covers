@@ -24,11 +24,9 @@ class Color(TimestampedModel):
 
     model.md domain type: Color
     Seed values: BLACK, BLUE, RED, GREEN, BROWN, ORANGE, PURPLE, MAGENTA,
-    VIOLET (plus catalog compounds such as BROWN-RED and RED-ORANGE). BLACK is
-    seeded as id 1 and is the Marking.color default (see the field below); the
-    canonical color rows are supplied by the import pipeline, so a bare database
-    (e.g. a fresh test DB) has none and callers that create a marking must
-    supply an explicit color rather than rely on the default=1.
+    VIOLET (plus catalog compounds such as BROWN-RED and RED-ORANGE). The
+    canonical color rows are supplied by the import pipeline. Marking.color may
+    be null when the catalog entry does not identify a color.
     """
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=50, unique=True)
@@ -195,7 +193,7 @@ class Marking(TimestampedModel):
     is_manuscript = models.BooleanField()
     shape = models.ForeignKey('Shape', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     lettering = models.ForeignKey('Lettering', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
-    color = models.ForeignKey(Color, on_delete=models.PROTECT, default=1, related_name='markings')
+    color = models.ForeignKey(Color, on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     is_irreg = models.BooleanField(null=True, blank=True)
     width = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
     height = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
@@ -235,7 +233,7 @@ class Marking(TimestampedModel):
             models.CheckConstraint(
                 check=(
                     Q(is_manuscript=True, lettering__isnull=True, shape__isnull=True, is_irreg__isnull=True)
-                    | Q(is_manuscript=False, shape__isnull=False, is_irreg__isnull=False)
+                    | Q(is_manuscript=False, is_irreg__isnull=False)
                 ),
                 name='marking_manuscript_consistency',
             ),
@@ -251,8 +249,6 @@ class Marking(TimestampedModel):
             if self.is_irreg is not None:
                 raise ValidationError({'is_irreg': 'Must be null when is_manuscript is true.'})
         else:
-            if self.shape_id is None:
-                raise ValidationError({'shape': 'Required when is_manuscript is false.'})
             if self.is_irreg is None:
                 self.is_irreg = False
 
@@ -570,11 +566,13 @@ class Image(TimestampedModel):
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField()
     original_filename = models.CharField(max_length=255)
-    # storage_filename is intentionally NOT unique: a single image file on
-    # disk can be referenced by multiple Image rows (e.g. one per color
-    # fan-out child of a parent marking in the ASCC munger output). Default
-    # destroy only removes the row, leaving the file and any sibling rows
-    # intact -- see ImageViewSet.destroy and the absence of pre_delete
+    # storage_filename alone is intentionally NOT unique: a single image file
+    # on disk can be referenced by different Image rows (e.g. one per color
+    # fan-out child of a parent marking in the ASCC munger output). The
+    # subject-scoped uniqueness constraint below prevents duplicate rows for
+    # the same file on the same subject while preserving cross-subject reuse.
+    # Default destroy only removes the row, leaving the file and any sibling
+    # rows intact -- see ImageViewSet.destroy and the absence of pre_delete
     # signals on this model.
     storage_filename = models.CharField(max_length=255)
     file_checksum = models.CharField(max_length=64)
@@ -604,6 +602,10 @@ class Image(TimestampedModel):
                     | Q(subject_type='COVER', image_view__in=IMAGE_COVER_VIEW_CHOICES)
                 ),
                 name='image_view_matches_subject_type',
+            ),
+            models.UniqueConstraint(
+                fields=['storage_filename', 'subject_type', 'subject_id'],
+                name='image_storage_subject_unique',
             ),
         ]
         permissions = [
@@ -757,6 +759,7 @@ class Region(TimestampedModel):
     model.md domain type: Region
     """
     REGION_TIER_CHOICES = [('COUNTRY', 'Country'), ('TERRITORY', 'Territory'), ('STATE', 'State'), ('PROVINCE', 'Province'), ('COUNTY', 'County'), ('CITY', 'City'), ('DISTRICT', 'District'), ('OTHER', 'Other')]
+    code = models.CharField(max_length=30, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=100, help_text='Canonical region name for the applicable historical period')
     abbrev = models.CharField(max_length=3, help_text='Canonical two or three character abbreviation')
     region_tier = models.CharField(max_length=9, choices=REGION_TIER_CHOICES)
@@ -781,6 +784,7 @@ class PostOffice(TimestampedModel):
 
     model.md domain type: PostOffice
     """
+    code = models.CharField(max_length=40, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=255, help_text='Normalized town name, e.g. Abingdon, Richmond')
 
     class Meta:
@@ -1032,6 +1036,10 @@ class DateSeen(TimestampedModel):
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='dates_seen_subject_type_valid',
             ),
+            models.UniqueConstraint(
+                fields=['subject_type', 'subject_id', 'date', 'granularity'],
+                name='dates_seen_subject_date_granularity_unique',
+            ),
         ]
 
     def __str__(self):
@@ -1054,6 +1062,12 @@ class CoverValuation(TimestampedModel):
         verbose_name = 'Cover Valuation'
         verbose_name_plural = 'Cover Valuations'
         ordering = ['-appraisal_date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cover', 'appraisal_date'],
+                name='cover_valuation_cover_appraisal_date_unique',
+            ),
+        ]
 
     def __str__(self):
         return f'Cover #{self.cover_id} - ${self.amt} ({self.appraisal_date})'
@@ -1159,6 +1173,10 @@ class Citation(TimestampedModel):
             models.CheckConstraint(
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='citation_subject_type_valid',
+            ),
+            models.UniqueConstraint(
+                fields=['reference_work', 'subject_type', 'subject_id', 'citation_detail'],
+                name='citation_reference_subject_detail_unique',
             ),
         ]
 

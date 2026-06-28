@@ -9,6 +9,7 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 from rest_framework.test import APIClient
 
+from common.audit import restore_marking_from_snapshot
 from common.models import (
     Citation,
     Collection,
@@ -274,6 +275,31 @@ class MarkingBackupRestoreCommandTests(TestCase):
         self.assertEqual(len(history.data["events"]), 1)
         self.assertEqual(len(history.data["versions"]), 1)
         self.assertEqual(len(history.data["approved_versions"]), 1)
+
+    def test_snapshot_restore_preserves_null_marking_color(self):
+        snapshot = {
+            "code": self.marking.code,
+            "type": self.marking.type,
+            "catalog_txt": self.marking.catalog_txt,
+            "inscription_txt": self.marking.inscription_txt,
+            "desc": self.marking.desc,
+            "post_office_id": self.marking.post_office_id,
+            "shape_id": self.marking.shape_id,
+            "lettering_id": self.marking.lettering_id,
+            "color_id": None,
+            "is_manuscript": self.marking.is_manuscript,
+            "impression": self.marking.impression,
+            "is_irreg": self.marking.is_irreg,
+            "width": self.marking.width,
+            "height": self.marking.height,
+            "date_fmt": self.marking.date_fmt,
+            "rate_val": self.marking.rate_val,
+        }
+
+        restore_marking_from_snapshot(self.marking, snapshot, self.editor)
+
+        self.marking.refresh_from_db()
+        self.assertIsNone(self.marking.color_id)
 
     def test_restore_marking_is_idempotent(self):
         backup_path = self._backup()
