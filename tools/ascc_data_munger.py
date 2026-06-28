@@ -1469,7 +1469,7 @@ def main(argv=None):
     shape_lookup = dict(zip(shapes_df['name'].str.upper(), shapes_df['shape_id']))
     all_color_names = sorted({
         c for clist in listings['parsed_colors'] for c in clist
-    })
+    } | {DEFAULT_MARKING_COLOR})
     colors_df = pd.DataFrame({
         'color_id': range(1, len(all_color_names) + 1),
         'name': all_color_names,
@@ -1603,6 +1603,7 @@ def main(argv=None):
     # ======================================================================
     expanded_rows = []
     next_townmark_id = 1
+    default_color_id = color_lookup[DEFAULT_MARKING_COLOR]
     for idx, row in listings.iterrows():
         if row.get('is_latest_merge'):
             continue  # (L) row: no own townmark; date merges into parent (#36)
@@ -1613,8 +1614,8 @@ def main(argv=None):
             r = {
                 'townmark_id': next_townmark_id,
                 'source_listing_idx': idx,
-                'color_name': None,
-                'color_id': None,
+                'color_name': DEFAULT_MARKING_COLOR,
+                'color_id': default_color_id,
                 'is_multi_color_fanout': False,
             }
             expanded_rows.append(r)
@@ -3068,6 +3069,17 @@ def main(argv=None):
             "v2_key": v2_key_by_listing.get(src_idx, ""),
             "source_listing_idx": src_idx,
             "marking_code": marking_code,
+            "marking_type": type_label,
+            "page": source_key_component(_page),
+            "chunk": source_key_component(_chunk),
+            "catalog_txt": catalog_txt,
+        })
+        _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
+        _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
+        marking_lineage_rows.append({
+            "v2_key": v2_key_by_listing.get(src_idx, ""),
+            "source_listing_idx": src_idx,
+            "marking_id": mk_id,
             "marking_type": type_label,
             "page": source_key_component(_page),
             "chunk": source_key_component(_chunk),
