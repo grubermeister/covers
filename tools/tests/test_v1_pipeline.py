@@ -17,6 +17,8 @@ from PIL import Image
 import v1_bundle_overlay
 import v1_attach_images
 import v1_catalog_rows
+import ascc_data_munger
+from v1_synthetic_listing import synthetic_desc_lines, synthetic_listing
 
 
 AUDIT = {
@@ -45,6 +47,78 @@ def stamped(row):
     out = dict(row)
     out.update(AUDIT)
     return out
+
+
+def write_munger_seeds(root):
+    input_dir = root / "in"
+    input_dir.mkdir()
+    write_csv(
+        input_dir / "reference_works.csv",
+        [
+            "id",
+            "created_date",
+            "modified_date",
+            "created_by",
+            "modified_by",
+            "code",
+            "title",
+            "authorship",
+            "publisher",
+            "publication_year",
+            "edition",
+            "volume",
+            "isbn",
+            "url",
+        ],
+        [{
+            "id": "1",
+            "created_date": AUDIT["created_date"],
+            "modified_date": AUDIT["modified_date"],
+            "created_by": "1",
+            "modified_by": "1",
+            "code": "ASCC6",
+            "title": "American Stampless Cover Catalog",
+            "authorship": "",
+            "publisher": "",
+            "publication_year": "2026",
+            "edition": "6",
+            "volume": "",
+            "isbn": "",
+            "url": "",
+        }],
+    )
+    write_csv(
+        input_dir / "regions.csv",
+        [
+            "id",
+            "created_date",
+            "modified_date",
+            "created_by",
+            "modified_by",
+            "code",
+            "name",
+            "abbrev",
+            "region_tier",
+            "parent_region",
+            "established_date",
+            "defunct_date",
+        ],
+        [{
+            "id": "48",
+            "created_date": AUDIT["created_date"],
+            "modified_date": AUDIT["modified_date"],
+            "created_by": "1",
+            "modified_by": "1",
+            "code": "USA-WV1",
+            "name": "West Virginia",
+            "abbrev": "WV",
+            "region_tier": "STATE",
+            "parent_region": "",
+            "established_date": "1863-06-20",
+            "defunct_date": "",
+        }],
+    )
+    return input_dir
 
 
 class V1PipelineTests(unittest.TestCase):
@@ -173,6 +247,353 @@ class V1PipelineTests(unittest.TestCase):
             catalog_rows[2]["listing_text"],
             "Petersburg(Feb. 1, 1770;Ms;Black) 1,000",
         )
+
+    def test_blank_raw_rows_are_synthesized_and_image_refs_included(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            states = root / "tblStates.csv"
+            raw = root / "tblRawStateData.csv"
+            images = root / "tblTownmarkImages.csv"
+            slice_out = root / "slice.csv"
+            catalog_out = root / "catalog_rows.csv"
+            refs_out = root / "image_refs.csv"
+            raw_fields = [
+                "nRawStateDataID",
+                "nStateID",
+                "approve_status",
+                "ynDeleted",
+                "txtRawStateData",
+                "txtTown",
+                "txtPostmark",
+                "txtTownPostmark",
+                "nEarliestUseDay",
+                "txtEarliestUseMonth",
+                "txtEarliestUseYear",
+                "ynManuscript",
+                "ynManuscriptTownmarks",
+                "txtRates",
+                "txtTownmarkColor",
+            ]
+            write_csv(states, ["nStateID", "txtStateAbv"], [{"nStateID": "48", "txtStateAbv": "WV"}])
+            write_csv(
+                raw,
+                raw_fields,
+                [
+                    {
+                        "nRawStateDataID": "10",
+                        "nStateID": "48",
+                        "approve_status": "Approved",
+                        "ynDeleted": "FALSE",
+                        "txtRawStateData": "",
+                        "txtTown": "Falls Church",
+                        "txtPostmark": "",
+                        "txtTownPostmark": "Falls Church",
+                        "nEarliestUseDay": "15",
+                        "txtEarliestUseMonth": "3",
+                        "txtEarliestUseYear": "1854",
+                        "ynManuscript": "True",
+                        "ynManuscriptTownmarks": "",
+                        "txtRates": "Paid 3 [ms.]",
+                        "txtTownmarkColor": "Black",
+                    },
+                    {
+                        "nRawStateDataID": "11",
+                        "nStateID": "48",
+                        "approve_status": "Approved",
+                        "ynDeleted": "FALSE",
+                        "txtRawStateData": "RICHMOND (1850;Black) 10",
+                        "txtTown": "Richmond",
+                        "txtPostmark": "",
+                        "txtTownPostmark": "Richmond",
+                        "nEarliestUseDay": "",
+                        "txtEarliestUseMonth": "",
+                        "txtEarliestUseYear": "",
+                        "ynManuscript": "",
+                        "ynManuscriptTownmarks": "",
+                        "txtRates": "",
+                        "txtTownmarkColor": "",
+                    },
+                    {
+                        "nRawStateDataID": "12",
+                        "nStateID": "48",
+                        "approve_status": "Approved",
+                        "ynDeleted": "FALSE",
+                        "txtRawStateData": "",
+                        "txtTown": "",
+                        "txtPostmark": "",
+                        "txtTownPostmark": "",
+                        "nEarliestUseDay": "",
+                        "txtEarliestUseMonth": "",
+                        "txtEarliestUseYear": "",
+                        "ynManuscript": "",
+                        "ynManuscriptTownmarks": "",
+                        "txtRates": "Use on #U10 envelope",
+                        "txtTownmarkColor": "Black",
+                    },
+                ],
+            )
+            write_csv(
+                images,
+                ["nRawStateDataID", "ynDeleted", "nTownmarkImageID", "txtFilename", "nOrder", "txtView"],
+                [
+                    {"nRawStateDataID": "10", "ynDeleted": "False", "nTownmarkImageID": "100", "txtFilename": "a.png", "nOrder": "1", "txtView": "front"},
+                    {"nRawStateDataID": "12", "ynDeleted": "False", "nTownmarkImageID": "101", "txtFilename": "b.png", "nOrder": "1", "txtView": "front"},
+                ],
+            )
+
+            rc = v1_catalog_rows.main([
+                "WV",
+                "--raw", str(raw),
+                "--states", str(states),
+                "--images", str(images),
+                "--slice-out", str(slice_out),
+                "--catalog-rows-out", str(catalog_out),
+                "--image-refs-out", str(refs_out),
+            ])
+            catalog_rows = read_csv(catalog_out)
+            refs = read_csv(refs_out)
+
+        self.assertEqual(rc, 0)
+        self.assertEqual([r["chunk_number"] for r in catalog_rows], ["10", "11"])
+        self.assertEqual(
+            catalog_rows[0]["listing_text"],
+            "Falls Church(Mar. 15, 1854;Ms;Paid 3 [ms];BLACK) --",
+        )
+        self.assertEqual([r["source_row_id"] for r in refs], ["10"])
+
+    def test_synthetic_listing_preserves_note_only_rate_text_as_desc(self):
+        row = {
+            "txtTownPostmark": "Locust Level",
+            "nEarliestUseDay": "16",
+            "txtEarliestUseMonth": "4",
+            "txtEarliestUseYear": "1861",
+            "txtRates": "Use on #U10 envelope",
+            "txtTownmarkColor": "Black",
+        }
+
+        self.assertEqual(
+            synthetic_listing(row),
+            "Locust Level(Apr. 16, 1861;BLACK) --",
+        )
+        self.assertEqual(
+            synthetic_desc_lines(row),
+            ["Rate note: Use on #U10 envelope"],
+        )
+
+    def test_overlay_dedupes_decade_endpoint_dates(self):
+        rows = v1_bundle_overlay.parsed_date_rows(
+            "1857, 1859, 1850s",
+            ["ASCC6-WV-M2283"],
+            AUDIT,
+        )
+        observed = [
+            (row["subject_id"], row["date"], row["granularity"])
+            for row in rows
+        ]
+
+        self.assertEqual(
+            observed,
+            [
+                ("ASCC6-WV-M2283", "1857-01-01", "YEAR"),
+                ("ASCC6-WV-M2283", "1859-01-01", "YEAR"),
+                ("ASCC6-WV-M2283", "1850-01-01", "YEAR"),
+            ],
+        )
+
+    def test_munger_handles_synthetic_rates_auxmarks_and_sentinel_dates(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            source_rows = [
+                {
+                    "nRawStateDataID": "1",
+                    "txtTownPostmark": "Falls Church",
+                    "nEarliestUseDay": "15",
+                    "txtEarliestUseMonth": "3",
+                    "txtEarliestUseYear": "1854",
+                    "ynManuscript": "True",
+                    "txtRates": "Paid 3 [ms]",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "2",
+                    "txtTownPostmark": "LEWISBURG/Va.",
+                    "txtDatesSeen": "1700 - 1900",
+                    "txtRates": "PAID",
+                    "txtTownmarkShape": "Circle",
+                    "nWidth": "31",
+                    "txtTownmarkColor": "Red",
+                },
+                {
+                    "nRawStateDataID": "3",
+                    "txtTownPostmark": "Locust Level",
+                    "nEarliestUseDay": "16",
+                    "txtEarliestUseMonth": "4",
+                    "txtEarliestUseYear": "1861",
+                    "txtRates": "Use on #U10 envelope",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "4",
+                    "txtTownPostmark": "Forks of Potomac",
+                    "nEarliestUseDay": "18",
+                    "txtEarliestUseMonth": "10",
+                    "txtEarliestUseYear": "c1860",
+                    "nLatestUseYear": "1860",
+                    "txtLatestUseYear": "c1860",
+                    "ynManuscript": "True",
+                    "txtTownmarkColor": "Black",
+                },
+            ]
+            catalog_rows = [
+                {
+                    "listing_text": synthetic_listing(row),
+                    "catalog_page": "0",
+                    "chunk_number": row["nRawStateDataID"],
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }
+                for row in source_rows
+            ]
+            write_csv(
+                catalog_rows_path,
+                list(catalog_rows[0].keys()),
+                catalog_rows,
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            dates = read_csv(out_dir / "dates_seen.csv")
+
+        falls_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK" and row["catalog_txt"].startswith("Falls Church")
+        ]
+        lewisburg_auxmarks = [
+            row for row in markings
+            if row["type"] == "AUXMARK" and row["catalog_txt"].startswith("LEWISBURG")
+        ]
+        locust_children = [
+            row for row in markings
+            if row["type"] in {"RATEMARK", "AUXMARK"}
+            and row["catalog_txt"].startswith("Locust Level")
+        ]
+        self.assertEqual(len(falls_ratemarks), 1)
+        self.assertEqual(falls_ratemarks[0]["inscription_txt"], "Paid 3")
+        self.assertEqual(falls_ratemarks[0]["is_manuscript"], "True")
+        self.assertEqual(falls_ratemarks[0]["rate_val"], "3.0")
+        self.assertEqual(len(lewisburg_auxmarks), 1)
+        self.assertEqual(lewisburg_auxmarks[0]["inscription_txt"], "PAID")
+        self.assertEqual(locust_children, [])
+        forks = [
+            row for row in markings
+            if row["type"] == "TOWNMARK"
+            and row["catalog_txt"].startswith("Forks of Potomac")
+        ]
+        self.assertEqual(len(forks), 1)
+        fork_dates = [
+            row for row in dates
+            if row["subject_id"] == forks[0]["code"]
+        ]
+        self.assertEqual(
+            [(row["date"], row["granularity"]) for row in fork_dates],
+            [("1860-01-01", "YEAR")],
+        )
+        self.assertNotIn("1700-01-01", {row["date"] for row in dates})
+        self.assertNotIn("1900-01-01", {row["date"] for row in dates})
+        self.assertIn("1861-04-16", {row["date"] for row in dates})
+
+    def test_overlay_uses_townmark_color_for_blank_text_fanout(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            bundle = root / "bundle"
+            slice_path = root / "slice.csv"
+            refs_path = root / "image_refs.csv"
+            report_path = bundle / "v1_reconciliation_report.csv"
+
+            write_csv(
+                slice_path,
+                [
+                    "nRawStateDataID",
+                    "txtRawStateData",
+                    "txtTownPostmark",
+                    "txtTownmarkColor",
+                ],
+                [{
+                    "nRawStateDataID": "183756",
+                    "txtRawStateData": "",
+                    "txtTownPostmark": "BERKELEY SPRINGS, Va.",
+                    "txtTownmarkColor": "Black,Red",
+                }],
+            )
+            write_csv(
+                refs_path,
+                [
+                    "source_row_id",
+                    "townmark_image_id",
+                    "source_filename",
+                    "storage_filename",
+                    "display_order",
+                    "image_view",
+                    "image_description",
+                    "is_tracing",
+                ],
+                [],
+            )
+            write_csv(bundle / "reference_works.csv", ["code"], [{"code": "ASCC2"}])
+            write_csv(bundle / "regions.csv", ["code", "name"], [{"code": "USA-WV1", "name": "West Virginia"}])
+            write_csv(bundle / "post_offices.csv", ["name", "code", *AUDIT], [stamped({"name": "BERKELEY SPRINGS", "code": "USA-WV1-5"})])
+            write_csv(bundle / "post_office_regions.csv", ["post_office", "region", *AUDIT], [stamped({"post_office": "USA-WV1-5", "region": "USA-WV1"})])
+            write_csv(
+                bundle / "colors.csv",
+                ["name", "hex_val", "pantone_code", *AUDIT],
+                [
+                    stamped({"name": "BLACK", "hex_val": "#000000", "pantone_code": ""}),
+                    stamped({"name": "RED", "hex_val": "#FF0000", "pantone_code": ""}),
+                ],
+            )
+            write_csv(bundle / "letterings.csv", ["name", *AUDIT], [])
+            write_csv(bundle / "shapes.csv", ["name", "code", *AUDIT], [])
+            write_csv(
+                bundle / "markings.csv",
+                ["code", "type", "is_manuscript", "color", "post_office", *AUDIT],
+                [stamped({"code": "ASCC2-WV-M1100", "type": "TOWNMARK", "is_manuscript": "False", "color": "BLACK", "post_office": "USA-WV1-5"})],
+            )
+            write_csv(
+                bundle / "marking_lineage.csv",
+                ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
+                [{"v2_key": "0:183756", "source_listing_idx": "0", "marking_code": "ASCC2-WV-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "183756", "catalog_txt": "BERKELEY SPRINGS"}],
+            )
+            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
+            write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
+
+            rc = v1_bundle_overlay.main([
+                "--state", "WV",
+                "--slice", str(slice_path),
+                "--image-refs", str(refs_path),
+                "--bundle-dir", str(bundle),
+                "--v1-image-root", str(root / "images"),
+                "--media-dir", str(root / "media" / "wv"),
+                "--report", str(report_path),
+                "--preserve-images",
+            ])
+            markings = read_csv(bundle / "markings.csv")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(markings), 2)
+        self.assertEqual({row["color"] for row in markings}, {"BLACK", "RED"})
 
     def test_overlay_applies_v1_fields_and_attaches_images(self):
         with tempfile.TemporaryDirectory() as td:

@@ -57,6 +57,9 @@ from munger.text_utils import strip_dot_leaders
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
+DEFAULT_MARKING_COLOR = "BLACK"
+
+
 def source_key_component(value):
     """Return the Page/Chunk component used in marking_lineage.csv keys."""
     if value is None or pd.isna(value):
@@ -2748,6 +2751,11 @@ def main(argv=None):
     dates_seen_df = pd.DataFrame(ds_rows) if ds_rows else pd.DataFrame(
         columns=['marking_code', 'date', 'granularity']
     )
+    if len(dates_seen_df):
+        dates_seen_df = dates_seen_df.drop_duplicates(
+            subset=['marking_code', 'date', 'granularity'],
+            keep='first',
+        ).reset_index(drop=True)
     print(f'dates_seen_df: {len(dates_seen_df)} rows (subject_type=MARKING)')
 
     # ======================================================================

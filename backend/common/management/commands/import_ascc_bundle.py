@@ -38,10 +38,13 @@ Usage:
     python manage.py import_ascc_bundle ./out/ --only markings,covers
     python manage.py import_ascc_bundle ./out/ --dry-run
 """
+import csv
+import json
 import os
 import tablib
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
+from import_export.results import RowResult
 
 from common.admin import (
     CitationResource,
@@ -200,6 +203,85 @@ def _summarize_errors(result, max_errors=5):
     return out
 
 
+def _skip_report_path(directory, option_value):
+    """Return the CSV path used for skipped row diagnostics."""
+    if option_value:
+        return option_value
+    return os.path.join(directory, "import_ascc_bundle_skips.csv")
+
+
+def _source_row_key(row_values):
+    """Return the most useful natural key visible in an import row."""
+    if not isinstance(row_values, dict):
+        return ""
+    for key in (
+        "code",
+        "name",
+        "subject_id",
+        "cover",
+        "cover_code",
+        "marking",
+        "marking_code",
+        "post_office",
+        "region",
+        "reference_work",
+    ):
+        value = str(row_values.get(key) or "").strip()
+        if value:
+            return f"{key}={value}"
+    return ""
+
+
+def _dataset_rows(dataset):
+    """Return import rows exactly as they appeared in the source CSV."""
+    headers = list(dataset.headers or [])
+    return [dict(zip(headers, row)) for row in dataset]
+
+
+def _append_skipped_rows(skipped_rows, stem, result, dataset):
+    """Append skipped row diagnostics from a django-import-export result."""
+    source_rows = _dataset_rows(dataset)
+    for row_number, row_result in enumerate(result.rows, start=1):
+        if row_result.import_type != RowResult.IMPORT_TYPE_SKIP:
+            continue
+        row_values = {}
+        if row_number <= len(source_rows):
+            row_values = source_rows[row_number - 1]
+        if not row_values:
+            row_values = row_result.row_values or {}
+        skipped_rows.append({
+            "stem": stem,
+            "row_number": row_number,
+            "source_key": _source_row_key(row_values),
+            "object_id": row_result.object_id or "",
+            "object_repr": row_result.object_repr or "",
+            "row_values_json": json.dumps(
+                row_values,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            ),
+        })
+
+
+def _write_skip_report(path, rows):
+    """Write skipped import rows to a CSV report."""
+    fieldnames = [
+        "stem",
+        "row_number",
+        "source_key",
+        "object_id",
+        "object_repr",
+        "row_values_json",
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+
+
 class Command(BaseCommand):
     help = "Load an ASCC CSV bundle into the catalog in dependency order via Resource classes."
 
@@ -243,6 +325,14 @@ class Command(BaseCommand):
                 "--dry-run the truncate is rolled back too."
             ),
         )
+        parser.add_argument(
+            "--skip-report",
+            default=None,
+            help=(
+                "Path for skipped-row diagnostics. Defaults to "
+                "<directory>/import_ascc_bundle_skips.csv."
+            ),
+        )
 
     def handle(self, *args, **options):
         directory = options["directory"]
@@ -283,6 +373,8 @@ class Command(BaseCommand):
             raise CommandError(f"Missing CSV: {path}")
 
         totals = {"new": 0, "update": 0, "skip": 0, "invalid": 0, "error": 0}
+        skipped_rows = []
+        skip_report = _skip_report_path(directory, options["skip_report"])
         is_mysql = connection.vendor == "mysql"
 
         # Single outer transaction covers truncate + every per-stem import.
@@ -334,6 +426,7 @@ class Command(BaseCommand):
 
                     dataset = _load_dataset(path)
                     resource = RESOURCES[stem]()
+                    resource._meta.store_row_values = True
 
                     try:
                         # Always pass dry_run=False to django-import-export.
@@ -367,6 +460,8 @@ class Command(BaseCommand):
                     totals["skip"] += skip
                     totals["invalid"] += invalid
                     totals["error"] += error
+                    if skip:
+                        _append_skipped_rows(skipped_rows, stem, result, dataset)
 
                     self.stdout.write(
                         f"  {stem:<18s}  new={new:>5d}  update={update:>5d}  "
@@ -406,6 +501,8 @@ class Command(BaseCommand):
             ))
             raise
 
+        _write_skip_report(skip_report, skipped_rows)
+
         self.stdout.write("")
         summary = (
             f"Done. new={totals['new']}  update={totals['update']}  "
@@ -415,3 +512,4 @@ class Command(BaseCommand):
         if dry_run:
             summary = "[DRY RUN] " + summary
         self.stdout.write(self.style.SUCCESS(summary))
+        self.stdout.write(f"Skipped-row report: {skip_report} ({len(skipped_rows)} row(s))")

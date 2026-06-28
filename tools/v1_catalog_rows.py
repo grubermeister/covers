@@ -38,6 +38,7 @@ from v1_to_v2_catalog_format import (
     normalize_listing,
     write_image_refs,
 )
+from v1_synthetic_listing import synthetic_listing
 
 
 CATALOG_PAGE_VALUE = "0"
@@ -95,8 +96,9 @@ def strip_glued_context_prefix(listing: str, row: dict[str, str]) -> str:
 def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[str]]:
     """Write a v1 slice as munger-safe catalog rows.
 
-    Returns (rows_written, included_raw_ids). included_raw_ids contains only
-    source rows whose normalized txtRawStateData is non-empty.
+    Returns (rows_written, included_raw_ids). included_raw_ids contains source
+    rows whose txtRawStateData is non-empty or whose v1 split columns can be
+    synthesized into munger-safe listing text.
     """
     rows = []
     included_raw_ids = []
@@ -113,6 +115,8 @@ def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[s
         for row in reader:
             listing = normalize_listing(row.get(RAW_TEXT_COL))
             listing = strip_glued_context_prefix(listing, row)
+            if not listing:
+                listing = synthetic_listing(row)
             if not listing:
                 continue
             raw_id = (row.get(RAW_ID_COL) or "").strip()

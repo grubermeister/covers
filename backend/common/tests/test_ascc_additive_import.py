@@ -1,4 +1,5 @@
 import csv
+import json
 import tempfile
 from pathlib import Path
 
@@ -268,6 +269,41 @@ class AsccAdditiveImportTests(TestCase):
         self.assertEqual(PostOffice.objects.count(), 1)
         self.assertEqual(CoverValuation.objects.count(), 1)
         self.assertEqual(Marking.objects.get().inscription_txt, "MANUAL EDIT")
+
+    def test_reimport_writes_skipped_row_report(self):
+        call_command("import_ascc_bundle", str(self.bundle), verbosity=0)
+
+        report_path = self.bundle / "skips.csv"
+        call_command(
+            "import_ascc_bundle",
+            str(self.bundle),
+            skip_report=str(report_path),
+            verbosity=0,
+        )
+        rows = list(csv.DictReader(report_path.open(newline="", encoding="utf-8")))
+
+        self.assertTrue(rows)
+        self.assertIn("markings", {row["stem"] for row in rows})
+        marking_rows = [
+            row for row in rows
+            if row["stem"] == "markings"
+            and row["source_key"] == "code=ASCC1-VA-M1001"
+        ]
+        self.assertEqual(len(marking_rows), 1)
+        self.assertEqual(
+            json.loads(marking_rows[0]["row_values_json"])["code"],
+            "ASCC1-VA-M1001",
+        )
+        date_rows = [
+            row for row in rows
+            if row["stem"] == "dates_seen"
+            and row["source_key"] == "subject_id=ASCC1-VA-M1001"
+        ]
+        self.assertEqual(len(date_rows), 1)
+        self.assertEqual(
+            json.loads(date_rows[0]["row_values_json"])["subject_id"],
+            "ASCC1-VA-M1001",
+        )
 
     def test_import_allows_marking_with_blank_shape_and_color(self):
         path = self.bundle / "markings.csv"

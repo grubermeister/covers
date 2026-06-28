@@ -34,11 +34,15 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
-from munger.fields.colors import parse_color_field
 from munger.fields.dates import FULL_DATE_RE, parse_date_field
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
+from v1_synthetic_listing import (
+    color_tokens as v1_color_tokens,
+    has_synthetic_listing_evidence,
+    synthetic_desc_lines,
+)
 
 
 AUDIT_TAIL = ["created_date", "modified_date", "created_by", "modified_by"]
@@ -47,9 +51,6 @@ REPORT_COLUMNS = ["raw_id", "issue", "detail"]
 UNSUPPORTED_COLUMNS = [
     "txtTownmarkFraming",
     "txtTownmarkRateLocation",
-    "txtTownmarkRateText",
-    "txtTownmarkRateValue",
-    "txtTownmarkColor",
 ]
 IMAGE_COLUMNS = [
     "subject_type",
@@ -245,7 +246,7 @@ def load_raw_rows(slice_path: Path) -> dict[str, dict[str, str]]:
     return {
         clean(row.get(RAW_ID_COL)): row
         for row in rows
-        if nonblank(row.get(RAW_ID_COL)) and nonblank(row.get(RAW_TEXT_COL))
+        if nonblank(row.get(RAW_ID_COL)) and has_synthetic_listing_evidence(row)
     }
 
 
@@ -408,6 +409,7 @@ def split_date_tokens(value: object) -> list[str]:
 
 def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str]) -> list[dict[str, str]]:
     rows = []
+    seen = set()
     for token in split_date_tokens(value):
         parsed = parse_date_field(token)
         if parsed.get("date_error") or parsed.get("date_granularity") == "UNKNOWN":
@@ -444,6 +446,10 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
             continue
         for subject_id in subject_ids:
             for date_text, granularity in observations:
+                key = (subject_id, date_text, granularity)
+                if key in seen:
+                    continue
+                seen.add(key)
                 row = {
                     "subject_type": "MARKING",
                     "subject_id": subject_id,
@@ -453,6 +459,24 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                 row.update(audit)
                 rows.append(row)
     return rows
+
+
+def dedupe_date_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return date rows without duplicate subject/date/granularity tuples."""
+    out = []
+    seen = set()
+    for row in rows:
+        key = (
+            clean(row.get("subject_type")),
+            clean(row.get("subject_id")),
+            clean(row.get("date")),
+            clean(row.get("granularity")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
 
 
 def parsed_rate_values(value: object) -> list[str]:
@@ -596,15 +620,13 @@ def ensure_townmark_colors(
     clone_sources: dict[str, str],
     report: list[dict[str, str]],
 ) -> None:
-    if not nonblank(raw_row.get("txtColors")):
-        return
-    desired_names = parse_color_field(raw_row.get("txtColors", ""))
+    desired_names = v1_color_tokens(raw_row)
     if not desired_names:
         return
     by_code = {clean(row.get("code")): row for row in markings}
     tm_codes = [code for code in tm_by_raw.get(raw_id, []) if code in by_code]
     if not tm_codes:
-        add_report(report, raw_id, "missing_townmark", "txtColors could not be applied")
+        add_report(report, raw_id, "missing_townmark", "v1 colors could not be applied")
         return
     desired_color_names = [
         ensure_color(name, colors, color_fields, audit) for name in desired_names
@@ -723,7 +745,11 @@ def apply_row_fields(
             row["is_manuscript"] = manuscript
             if not row.get("is_irreg"):
                 row["is_irreg"] = "False"
-    desc_lines = [raw_row.get("txtOther", ""), raw_row.get("memNotes", "")]
+    desc_lines = [
+        raw_row.get("txtOther", ""),
+        raw_row.get("memNotes", ""),
+        *synthetic_desc_lines(raw_row),
+    ]
     if any(nonblank(value) for value in desc_lines):
         for row in townmark_rows:
             row["desc"] = append_desc(row.get("desc"), desc_lines)
@@ -780,7 +806,7 @@ def rebuild_dates(
     for row in out:
         for key, value in audit.items():
             row.setdefault(key, value)
-    return out
+    return dedupe_date_rows(out)
 
 
 def rebuild_citations(
