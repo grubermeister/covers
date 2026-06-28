@@ -53,7 +53,11 @@ const SORT_FIELD_COLUMN: Record<SortField, string> = {
   latest: "latest_seen",
 };
 
-const DEFAULT_SORT: SortEntry[] = [{ field: "state", dir: "asc" }];
+const DEFAULT_SORT: SortEntry[] = [
+  { field: "state", dir: "asc" },
+  { field: "town", dir: "asc" },
+  { field: "earliest", dir: "asc" },
+];
 
 function parseSortParam(raw: string | null): SortEntry[] {
   if (raw === null) return [...DEFAULT_SORT];
@@ -97,8 +101,19 @@ function orderingParamForSort(entries: SortEntry[]): string {
     const col = SORT_FIELD_COLUMN[e.field];
     cols.push((e.dir === "desc" ? "-" : "") + col);
     used.add(col);
+    // Inject is_manuscript right after region so handstamps sort before
+    // manuscripts within each region.
+    if (col === "post_office__post_office_regions__region__name" && !used.has("is_manuscript")) {
+      cols.push("is_manuscript");
+      used.add("is_manuscript");
+    }
   }
-  for (const tb of ["post_office__post_office_regions__region__name", "post_office__name"]) {
+  for (const tb of [
+    "post_office__post_office_regions__region__name",
+    "is_manuscript",
+    "post_office__name",
+    "earliest_seen",
+  ]) {
     if (!used.has(tb)) {
       cols.push(tb);
       used.add(tb);

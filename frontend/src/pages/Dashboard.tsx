@@ -1931,8 +1931,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       <h3 className="text-sm font-semibold text-foreground">Removed Markings</h3>
                       {removedMarkings.length === 0 ? (
                         <p className="text-sm text-muted-foreground">
-                          No removed markings in your assigned regions. Markings you remove from
-                          the catalog appear here; open one to restore it.
+                          No removed markings found.
                         </p>
                       ) : (
                         <ul className="space-y-3">
@@ -1986,8 +1985,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       <h3 className="text-sm font-semibold text-foreground">Removed Covers</h3>
                       {removedCovers.length === 0 ? (
                         <p className="text-sm text-muted-foreground">
-                          No removed covers in your assigned regions. Covers you remove from the
-                          catalog appear here; open one to restore it.
+                          No removed covers found.
                         </p>
                       ) : (
                         <ul className="space-y-3">

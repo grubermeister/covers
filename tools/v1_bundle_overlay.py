@@ -117,7 +117,8 @@ def clean(value: object) -> str:
 
 
 SAME_PREFIX_RE = re.compile(r"^\s*(?:The\s+)?Same\b", re.IGNORECASE)
-LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
+LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*\d(?:\.\d)?\s*\))\s*")
+TRAILING_INSCRIPTION_MARKER_RE = re.compile(r"\s*(?:\(\s*\d(?:\.\d)?\s*\))\s*$")
 CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
 
 
@@ -126,6 +127,7 @@ def strip_inscription_markers(inscription: object) -> str:
     value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription).replace("*", "")).strip()
     while value:
         stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
+        stripped = TRAILING_INSCRIPTION_MARKER_RE.sub("", stripped, count=1).strip()
         if stripped == value:
             return clean(stripped)
         value = stripped

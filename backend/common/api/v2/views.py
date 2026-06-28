@@ -1218,6 +1218,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "post_office__name",
         "code",
         "type",
+        "is_manuscript",
         # Physical/editorial fields
         "shape__name",
         "lettering__name",
@@ -1232,6 +1233,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
     ]
     ordering = [
         "post_office__post_office_regions__region__name",
+        "is_manuscript",
         "post_office__name",
         "earliest_seen",
     ]
