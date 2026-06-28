@@ -207,7 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     v1_run.add_argument(
         "--load",
         action="store_true",
-        help="commit import_ascc_bundle --truncate after bundle generation",
+        help="commit import_ascc_bundle after bundle generation",
     )
 
     clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
@@ -755,10 +755,7 @@ def check_db() -> tuple[bool, str]:
 
 
 def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
-    # State bundles use state-local lookup ids. A clean dry-run answers the
-    # local question: can this generated bundle load into an empty catalog?
-    # Multi-state lookup id reconciliation belongs to merge_ascc_bundles.py.
-    check_kind = "dry-run-truncate"
+    check_kind = "dry-run-additive"
     if mode == "never":
         return {"mode": mode, "status": "skipped", "check": check_kind}
     db_ok, db_message = check_db()
@@ -777,14 +774,13 @@ def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
         "import_ascc_bundle",
         str(paths.bundle_dir),
         "--dry-run",
-        "--truncate",
     ]
     run_command(cmd)
     return {"mode": mode, "status": "passed", "check": check_kind}
 
 
 def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
-    check_kind = "truncate-load"
+    check_kind = "additive-load"
     if not load:
         return {"mode": "manual", "status": "skipped", "check": check_kind}
     cmd = [
@@ -792,7 +788,6 @@ def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
         str(REPO_ROOT / "backend" / "manage.py"),
         "import_ascc_bundle",
         str(paths.bundle_dir),
-        "--truncate",
     ]
     run_command(cmd)
     return {"mode": "load", "status": "passed", "check": check_kind}
@@ -834,7 +829,7 @@ def write_run_manifest(
       "import_check": {
         "mode": "auto",
         "status": "passed",
-        "check": "dry-run-truncate"
+        "check": "dry-run-additive"
       }
     }
     """

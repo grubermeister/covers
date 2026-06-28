@@ -21,6 +21,7 @@ from import_export.admin import ImportExportModelAdmin
 from import_export.widgets import CharWidget, ForeignKeyWidget, Widget
 from django.db.models import CharField as DjangoCharField, TextField as DjangoTextField
 from django.utils.dateparse import parse_datetime
+from django.core.exceptions import ValidationError
 
 from common.auth_resources import (
     CollectionAssignmentResource as AuthCollectionAssignmentResource,
@@ -183,6 +184,12 @@ class TimestampedModelResource(resources.ModelResource):
 
     class Meta:
         abstract = True
+        skip_unchanged = True
+
+    def skip_row(self, instance, original, row, import_validation_errors=None):
+        if instance.pk is not None and original is not None:
+            return True
+        return super().skip_row(instance, original, row, import_validation_errors)
 
     @classmethod
     def widget_from_django_field(cls, f, default=Widget):
@@ -196,86 +203,171 @@ class TimestampedModelResource(resources.ModelResource):
         return super().widget_from_django_field(f, default=default)
 
 
+class PolymorphicSubjectResourceMixin:
+    """Resolve CSV subject_id codes to DB PKs before import-export matching."""
+
+    def before_import(self, dataset, **kwargs):
+        super().before_import(dataset, **kwargs)
+        self._marking_pk_by_code = dict(
+            Marking.all_objects.exclude(code__isnull=True).values_list('code', 'pk')
+        )
+        self._cover_pk_by_code = dict(
+            Cover.all_objects.exclude(code__isnull=True).values_list('code', 'pk')
+        )
+
+    def before_import_row(self, row, **kwargs):
+        super().before_import_row(row, **kwargs)
+        subject_type = row.get('subject_type')
+        subject_code = row.get('subject_id')
+        if subject_code in (None, ''):
+            return
+        if subject_type == 'MARKING':
+            try:
+                row['subject_id'] = str(self._marking_pk_by_code[subject_code])
+            except KeyError as exc:
+                raise ValueError(f"Unknown MARKING subject code: {subject_code}") from exc
+        elif subject_type == 'COVER':
+            try:
+                row['subject_id'] = str(self._cover_pk_by_code[subject_code])
+            except KeyError as exc:
+                raise ValueError(f"Unknown COVER subject code: {subject_code}") from exc
+
+
 # ========== RESOURCES ==========
 
 class ColorResource(TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = Color
+        import_id_fields = ['name']
 
 
 class MarkingResource(TimestampedModelResource):
+    shape = fields.Field(
+        column_name='shape',
+        attribute='shape',
+        widget=ForeignKeyWidget(Shape, 'name'),
+    )
+    lettering = fields.Field(
+        column_name='lettering',
+        attribute='lettering',
+        widget=ForeignKeyWidget(Lettering, 'name'),
+    )
+    color = fields.Field(
+        column_name='color',
+        attribute='color',
+        widget=ForeignKeyWidget(Color, 'name'),
+    )
+    post_office = fields.Field(
+        column_name='post_office',
+        attribute='post_office',
+        widget=ForeignKeyWidget(PostOffice, 'code'),
+    )
+
     class Meta(TimestampedModelResource.Meta):
         model = Marking
+        import_id_fields = ['code']
 
 
 class ShapeResource(TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = Shape
-        import_id_fields = ['id']
+        import_id_fields = ['name']
 
 
 class LetteringResource(TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = Lettering
-        import_id_fields = ['id']
+        import_id_fields = ['name']
 
 
 class RegionResource(TimestampedModelResource):
     parent_region = fields.Field(
         column_name='parent_region',
         attribute='parent_region',
-        widget=ForeignKeyWidget(Region, 'id'),
+        widget=ForeignKeyWidget(Region, 'code'),
     )
 
     class Meta(TimestampedModelResource.Meta):
         model = Region
-        import_id_fields = ['id']
+        import_id_fields = ['code']
 
 
 class PostOfficeResource(TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = PostOffice
-        import_id_fields = ['id']
+        import_id_fields = ['code']
 
 
 class PostOfficeRegionResource(TimestampedModelResource):
     post_office = fields.Field(
         column_name='post_office',
         attribute='post_office',
-        widget=ForeignKeyWidget(PostOffice, 'id'),
+        widget=ForeignKeyWidget(PostOffice, 'code'),
     )
     region = fields.Field(
         column_name='region',
         attribute='region',
-        widget=ForeignKeyWidget(Region, 'id'),
+        widget=ForeignKeyWidget(Region, 'code'),
     )
 
     class Meta(TimestampedModelResource.Meta):
         model = PostOfficeRegion
-        import_id_fields = ['id']
+        import_id_fields = ['post_office', 'region']
 
 
 class CoverResource(TimestampedModelResource):
+    color = fields.Field(
+        column_name='color',
+        attribute='color',
+        widget=ForeignKeyWidget(Color, 'name'),
+    )
+
     class Meta(TimestampedModelResource.Meta):
         model = Cover
+        import_id_fields = ['code']
 
 
-class DateSeenResource(TimestampedModelResource):
+class DateSeenResource(PolymorphicSubjectResourceMixin, TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = DateSeen
+        import_id_fields = ['subject_type', 'subject_id', 'date', 'granularity']
 
 
 class CoverValuationResource(TimestampedModelResource):
+    cover = fields.Field(
+        column_name='cover',
+        attribute='cover',
+        widget=ForeignKeyWidget(Cover, 'code'),
+    )
+
+    def before_import_row(self, row, **kwargs):
+        super().before_import_row(row, **kwargs)
+        if row.get('appraisal_date') in (None, ''):
+            raise ValidationError({'appraisal_date': 'Required for additive import.'})
+
     class Meta(TimestampedModelResource.Meta):
         model = CoverValuation
+        import_id_fields = ['cover', 'appraisal_date']
 
 
 class CoverMarkingResource(TimestampedModelResource):
+    cover = fields.Field(
+        column_name='cover',
+        attribute='cover',
+        widget=ForeignKeyWidget(Cover, 'code'),
+    )
+    marking = fields.Field(
+        column_name='marking',
+        attribute='marking',
+        widget=ForeignKeyWidget(Marking, 'code'),
+    )
+
     class Meta(TimestampedModelResource.Meta):
         model = CoverMarking
+        import_id_fields = ['cover', 'marking']
 
 
-class ImageResource(TimestampedModelResource):
+class ImageResource(PolymorphicSubjectResourceMixin, TimestampedModelResource):
     uploaded_by = fields.Field(
         column_name='uploaded_by',
         attribute='uploaded_by',
@@ -284,25 +376,25 @@ class ImageResource(TimestampedModelResource):
 
     class Meta(TimestampedModelResource.Meta):
         model = Image
-        import_id_fields = ['image_id']
+        import_id_fields = ['storage_filename', 'subject_type', 'subject_id']
 
 
 class ReferenceWorkResource(TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = ReferenceWork
-        import_id_fields = ['id']
+        import_id_fields = ['code']
 
 
-class CitationResource(TimestampedModelResource):
+class CitationResource(PolymorphicSubjectResourceMixin, TimestampedModelResource):
     reference_work = fields.Field(
         column_name='reference_work',
         attribute='reference_work',
-        widget=ForeignKeyWidget(ReferenceWork, 'id'),
+        widget=ForeignKeyWidget(ReferenceWork, 'code'),
     )
 
     class Meta(TimestampedModelResource.Meta):
         model = Citation
-        import_id_fields = ['id']
+        import_id_fields = ['reference_work', 'subject_type', 'subject_id', 'citation_detail']
 
 
 class CollectionAssignmentResource(resources.ModelResource):

@@ -32,16 +32,14 @@ def _src_row_by(frame, key, internal_id):
 AUDIT_TAIL = ["created_date", "modified_date", "created_by", "modified_by"]
 
 INT_COLS = {
-    "colors":           ["id", "created_by", "modified_by"],
-    "letterings":       ["id", "created_by", "modified_by"],
-    "shapes":           ["id", "created_by", "modified_by"],
-    "post_offices":         ["id", "created_by", "modified_by"],
-    "post_office_regions":  ["id", "post_office", "region", "created_by", "modified_by"],
-    "markings":         ["id", "shape", "lettering", "color", "post_office",
-                         "created_by", "modified_by"],
-    "dates_seen":       ["id", "subject_id", "created_by", "modified_by"],
-    "citations":        ["id", "reference_work", "subject_id",
-                         "created_by", "modified_by"],
+    "colors": ["created_by", "modified_by"],
+    "letterings": ["created_by", "modified_by"],
+    "shapes": ["created_by", "modified_by"],
+    "post_offices": ["created_by", "modified_by"],
+    "post_office_regions": ["created_by", "modified_by"],
+    "markings": ["created_by", "modified_by"],
+    "dates_seen": ["created_by", "modified_by"],
+    "citations": ["created_by", "modified_by"],
 }
 
 def _cast_int_columns(frame, int_cols):

@@ -23,7 +23,6 @@ import hashlib
 import pandas as pd
 import re
 import os
-import shutil
 import mimetypes
 from pathlib import Path
 from PIL import Image as PILImage
@@ -1706,8 +1705,7 @@ def main(argv=None):
         # serial number (1-based, incremented across all fan-out rows in Step
         # 8.3). This is an intermediate join key: townmarks_df codes are
         # referenced as marking_code in dates_seen during construction; it is
-        # resolved to the integer marking_id at emit time (Step 10) and never
-        # appears in the final markings.csv.
+        # resolved to the final Marking.code at emit time (Step 10).
         code = f"{RW_CODE}-{REGION_ABBREV}-M{int(fan_row['townmark_id'])}"
 
         return {
@@ -2887,52 +2885,53 @@ def main(argv=None):
     print(f"Assigned marking ids: 1..{_next_marking_id - 1} ({len(emit_order)} markings)")
     _po_src = post_offices_df.reset_index(drop=True).copy()
     _po_src.insert(0, "id", range(1, len(_po_src) + 1))
-    po_id_by_internal = dict(zip(_po_src["post_office_id"], _po_src["id"]))
+    po_code_by_internal = dict(zip(_po_src["post_office_id"], _po_src["code"]))
     _colors_src = colors_df.reset_index(drop=True).copy()
     _colors_src.insert(0, "id", range(1, len(_colors_src) + 1))
-    color_id_by_internal = dict(zip(_colors_src["color_id"], _colors_src["id"])) if "color_id" in _colors_src.columns else {}
+    color_name_by_internal = dict(zip(_colors_src["color_id"], _colors_src["name"])) if "color_id" in _colors_src.columns else {}
     _letterings_src = letterings_df.reset_index(drop=True).copy()
     _letterings_src.insert(0, "id", range(1, len(_letterings_src) + 1))
-    lettering_id_by_internal = dict(zip(_letterings_src["lettering_id"], _letterings_src["id"])) if "lettering_id" in _letterings_src.columns else {}
+    lettering_name_by_internal = dict(zip(_letterings_src["lettering_id"], _letterings_src["name"])) if "lettering_id" in _letterings_src.columns else {}
     _shapes_src = shapes_df.reset_index(drop=True).copy()
     _shapes_src.insert(0, "id", range(1, len(_shapes_src) + 1))
     shape_id_by_internal = dict(zip(_shapes_src["shape_id"], _shapes_src["id"])) if "shape_id" in _shapes_src.columns else {}
+    shape_name_by_internal = dict(zip(_shapes_src["shape_id"], _shapes_src["name"])) if "shape_id" in _shapes_src.columns else {}
+    region_code_by_id = {
+        int(row["id"]): str(row["code"]).strip()
+        for _, row in _region_seed.iterrows()
+        if pd.notna(row.get("id")) and pd.notna(row.get("code")) and str(row.get("code")).strip()
+    }
     colors_out = pd.DataFrame({
-        "id": _colors_src["id"],
         "name": _colors_src["name"],
         "hex_val": _colors_src["hex_val"] if "hex_val" in _colors_src.columns else None,
         "pantone_code": _colors_src["pantone_code"] if "pantone_code" in _colors_src.columns else None,
     })
     colors_out = _stamp(colors_out)
     letterings_out = pd.DataFrame({
-        "id": _letterings_src["id"],
         "name": _letterings_src["name"],
     })
     letterings_out = _stamp(letterings_out)
     shapes_out = pd.DataFrame({
-        "id": _shapes_src["id"],
         "name": _shapes_src["name"],
         "code": pd.NA,
     })
     shapes_out = _stamp(shapes_out)
     post_offices_out = pd.DataFrame({
-        "id": _po_src["id"],
         "name": _po_src["name"],
         "code": _po_src["code"],
     })
     post_offices_out = _stamp(post_offices_out)
     _por_src = post_office_regions_df.copy()
-    _por_src["post_office_export_id"] = _por_src["post_office_id"].map(po_id_by_internal)
-    _missing_por = _por_src["post_office_export_id"].isna().sum()
+    _por_src["post_office_export_code"] = _por_src["post_office_id"].map(po_code_by_internal)
+    _missing_por = _por_src["post_office_export_code"].isna().sum()
     if _missing_por:
         raise ValueError(
             f"{_missing_por} post_office_regions rows reference an unknown "
             f"post_office_id; check Step 8.8 fan-out vs. Step 10 id assignment."
         )
     post_office_regions_out = pd.DataFrame({
-        "id": _por_src["post_office_region_id"].astype(int).values,
-        "post_office": _por_src["post_office_export_id"].astype(int).values,
-        "region": _por_src["region_id"].astype(int).values,
+        "post_office": _por_src["post_office_id"].map(po_code_by_internal).values,
+        "region": _por_src["region_id"].astype(int).map(region_code_by_id).values,
     })
     post_office_regions_out = _stamp(post_office_regions_out)
     # source_listing_idx -> rolled catalog text (shared by all fan-outs of a listing).
@@ -2966,8 +2965,8 @@ def main(argv=None):
     # marking_lineage.csv is a compare-only sidecar. It is not imported by
     # woco; it preserves the exact source row -> marking relationship while
     # source_listing_idx, Page, Chunk, and rolled catalog text are still in
-    # memory. The compare harness expects this exact CSV shape:
-    # v2_key,source_listing_idx,marking_id,marking_type,page,chunk,catalog_txt
+    # memory. The compare and v1 harnesses expect this exact CSV shape:
+    # v2_key,source_listing_idx,marking_code,marking_type,page,chunk,catalog_txt
     v2_key_by_listing = {}
     v2_key_counts = {}
     for _lidx, _lrow in listings.iterrows():
@@ -2979,6 +2978,7 @@ def main(argv=None):
         v2_key_by_listing[_lidx] = _base_key if _suffix == 1 else f"{_base_key}#{_suffix}"
     marking_rows = []
     marking_lineage_rows = []
+    marking_code_by_id = {}
     for kind, src_id, mk_id in emit_order:
         if kind == "TM":
             r = _src_row_by(townmarks_df, "townmark_id", src_id)
@@ -3012,6 +3012,7 @@ def main(argv=None):
         is_ms = bool(r.get("is_manuscript"))
         shape_int = r.get("shape_id")
         shape_id = _resolve_int_fk(shape_id_by_internal, shape_int)
+        shape_name = _resolve_int_fk(shape_name_by_internal, shape_int)
         # Marking invariant: when is_manuscript is False, shape is required.
         # If no shape resolved, fall back to "SL - Straight Line" (default
         # handstamp form for text-only inscriptions without a bracket cue).
@@ -3019,91 +3020,91 @@ def main(argv=None):
             _sl = _shapes_src[_shapes_src["name"] == "SL - Straight Line"]
             if len(_sl):
                 shape_id = int(_sl.iloc[0]["id"])
+                shape_name = str(_sl.iloc[0]["name"])
         is_irreg_val = r.get("is_irregular")
         if not is_ms and (is_irreg_val is None or (isinstance(is_irreg_val, float) and pd.isna(is_irreg_val))):
             is_irreg_val = False
         # desc: only townmarks carry annotations (Backstamp, See-clause);
         # ratemarks and auxmarks inherit them implicitly via their parent.
         desc_val = desc_by_listing.get(src_idx) if kind == "TM" else None
+        marking_code = f"{RW_CODE}-{REGION_ABBREV}-M{mk_id + 1000}"
+        marking_code_by_id[mk_id] = marking_code
         marking_rows.append({
-            "id": mk_id,
             # Code numbering starts at 1001 (offset 1000 from mk_id) so the
             # printed code series doesn't overlap with the low integer IDs
             # used by hand-assigned codes elsewhere in the catalog.
-            "code": f"{RW_CODE}-{REGION_ABBREV}-M{mk_id + 1000}",
+            "code": marking_code,
             "type": type_label,
             "catalog_txt": catalog_txt,
             "inscription_txt": r.get("inscription_text"),
             "desc": desc_val,
             "is_manuscript": is_ms,
-            "shape": shape_id,
-            "lettering": _resolve_int_fk(lettering_id_by_internal, r.get("lettering_id")),
-            "color": _resolve_int_fk(color_id_by_internal, r.get("color_id")),
+            "shape": shape_name,
+            "lettering": _resolve_int_fk(lettering_name_by_internal, r.get("lettering_id")),
+            "color": _resolve_int_fk(color_name_by_internal, r.get("color_id")),
             "is_irreg": is_irreg_val,
             "width": r.get("width"),
             "height": r.get("height"),
             "date_fmt": date_fmt,
             "impression": r.get("impression"),
             "rate_val": rate_val,
-            "post_office": _resolve_int_fk(po_id_by_internal, po_internal),
+            "post_office": _resolve_int_fk(po_code_by_internal, po_internal),
         })
         _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
         _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
         marking_lineage_rows.append({
             "v2_key": v2_key_by_listing.get(src_idx, ""),
             "source_listing_idx": src_idx,
-            "marking_id": mk_id,
+            "marking_code": marking_code,
             "marking_type": type_label,
             "page": source_key_component(_page),
             "chunk": source_key_component(_chunk),
             "catalog_txt": catalog_txt,
         })
     markings_out = pd.DataFrame(marking_rows) if marking_rows else pd.DataFrame(columns=[
-        "id", "code", "type", "catalog_txt", "inscription_txt", "desc", "is_manuscript",
+        "code", "type", "catalog_txt", "inscription_txt", "desc", "is_manuscript",
         "shape", "lettering", "color", "is_irreg", "width", "height", "date_fmt",
         "impression", "rate_val", "post_office",
     ])
     markings_out = _stamp(markings_out)
     marking_lineage_out = pd.DataFrame(marking_lineage_rows) if marking_lineage_rows else pd.DataFrame(columns=[
-        "v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt",
+        "v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt",
     ])
     _missing_ct = markings_out["catalog_txt"].isna().sum() if len(markings_out) else 0
     if _missing_ct:
-        _bad = markings_out[markings_out["catalog_txt"].isna()][["id", "code", "type"]]
+        _bad = markings_out[markings_out["catalog_txt"].isna()][["code", "type"]]
         raise ValueError(
             f"{_missing_ct} markings emitted with null catalog_txt; "
             f"first offenders:\n{_bad.head(10).to_string(index=False)}"
         )
-    _tm_code_to_mid = {}
+    _source_code_to_marking_code = {}
     if townmarks_df is not None and len(townmarks_df) and "townmark_id" in townmarks_df.columns and "code" in townmarks_df.columns:
         for _, _r in townmarks_df.iterrows():
             _mid = marking_id_by_tm.get(_r["townmark_id"])
             if _mid is not None:
-                _tm_code_to_mid[_r["code"]] = _mid
+                _source_code_to_marking_code[_r["code"]] = marking_code_by_id[_mid]
     if ratemarks_df is not None and len(ratemarks_df) and "ratemark_id" in ratemarks_df.columns and "code" in ratemarks_df.columns:
         for _, _r in ratemarks_df.iterrows():
             _mid = marking_id_by_rm.get(_r["ratemark_id"])
             if _mid is not None:
-                _tm_code_to_mid[_r["code"]] = _mid
+                _source_code_to_marking_code[_r["code"]] = marking_code_by_id[_mid]
     if auxmarks_df is not None and len(auxmarks_df) and "auxmark_id" in auxmarks_df.columns and "code" in auxmarks_df.columns:
         for _, _r in auxmarks_df.iterrows():
             _mid = marking_id_by_ax.get(_r["auxmark_id"])
             if _mid is not None:
-                _tm_code_to_mid[_r["code"]] = _mid
+                _source_code_to_marking_code[_r["code"]] = marking_code_by_id[_mid]
     _ds = dates_seen_df.copy() if dates_seen_df is not None else pd.DataFrame(columns=["marking_code", "date", "granularity"])
     if len(_ds) and "marking_code" in _ds.columns:
-        _ds["subject_id"] = _ds["marking_code"].map(_tm_code_to_mid)
+        _ds["subject_id"] = _ds["marking_code"].map(_source_code_to_marking_code)
         _ds = _ds[_ds["subject_id"].notna()].reset_index(drop=True)
-        _ds["subject_id"] = _ds["subject_id"].astype(int)
         dates_seen_out = pd.DataFrame({
-            "id": range(1, len(_ds) + 1),
             "subject_type": "MARKING",
             "subject_id": _ds["subject_id"],
             "date": _ds["date"],
             "granularity": _ds["granularity"],
         })
     else:
-        dates_seen_out = pd.DataFrame(columns=["id", "subject_type", "subject_id", "date", "granularity"])
+        dates_seen_out = pd.DataFrame(columns=["subject_type", "subject_id", "date", "granularity"])
     dates_seen_out = _stamp(dates_seen_out)
     cit_rows = []
     for kind, src_id, mk_id in emit_order:
@@ -3125,31 +3126,30 @@ def main(argv=None):
             except (TypeError, ValueError):
                 page_str = str(page).strip()
         cit_rows.append({
-            "reference_work": RW_ID,
+            "reference_work": RW_CODE,
             "subject_type": "MARKING",
-            "subject_id": mk_id,
+            "subject_id": marking_code_by_id[mk_id],
             "citation_detail": page_str,
         })
     citations_out = pd.DataFrame(cit_rows) if cit_rows else pd.DataFrame(
         columns=["reference_work", "subject_type", "subject_id", "citation_detail"]
     )
-    citations_out.insert(0, "id", range(1, len(citations_out) + 1))
     citations_out = _stamp(citations_out)
     GENERATED = [
-        ("colors",           colors_out,           ["id", "name", "hex_val", "pantone_code"]),
-        ("letterings",       letterings_out,       ["id", "name"]),
-        ("shapes",           shapes_out,           ["id", "name", "code"]),
-        ("post_offices",         post_offices_out,         ["id", "name", "code"]),
-        ("post_office_regions",  post_office_regions_out,  ["id", "post_office", "region"]),
+        ("colors",           colors_out,           ["name", "hex_val", "pantone_code"]),
+        ("letterings",       letterings_out,       ["name"]),
+        ("shapes",           shapes_out,           ["name", "code"]),
+        ("post_offices",         post_offices_out,         ["name", "code"]),
+        ("post_office_regions",  post_office_regions_out,  ["post_office", "region"]),
         ("markings",         markings_out,         [
-                                "id", "code", "type", "catalog_txt", "inscription_txt",
+                                "code", "type", "catalog_txt", "inscription_txt",
                                 "desc", "is_manuscript", "shape", "lettering", "color",
                                 "is_irreg", "width", "height", "date_fmt", "impression",
                                 "rate_val", "post_office",
                              ]),
-        ("dates_seen",       dates_seen_out,       ["id", "subject_type", "subject_id", "date", "granularity"]),
+        ("dates_seen",       dates_seen_out,       ["subject_type", "subject_id", "date", "granularity"]),
         ("citations",        citations_out,        [
-                                "id", "reference_work", "subject_type", "subject_id",
+                                "reference_work", "subject_type", "subject_id",
                                 "citation_detail",
                              ]),
     ]
@@ -3163,7 +3163,7 @@ def main(argv=None):
     _lineage_cols = [
         "v2_key",
         "source_listing_idx",
-        "marking_id",
+        "marking_code",
         "marking_type",
         "page",
         "chunk",
@@ -3178,7 +3178,20 @@ def main(argv=None):
     for stem in ("regions", "reference_works"):
         src = os.path.join(INPUT_DIR, f"{stem}.csv")
         dst = os.path.join(OUT_DIR, f"{stem}.csv")
-        shutil.copyfile(src, dst)
+        seed = pd.read_csv(src)
+        if stem == "regions":
+            code_by_id = {
+                int(row["id"]): str(row["code"]).strip()
+                for _, row in seed.iterrows()
+                if pd.notna(row.get("id")) and pd.notna(row.get("code")) and str(row.get("code")).strip()
+            }
+            seed = seed.drop(columns=["id"])
+            seed["parent_region"] = seed["parent_region"].map(
+                lambda value: "" if pd.isna(value) or value == "" else code_by_id[int(value)]
+            )
+        else:
+            seed = seed.drop(columns=["id"])
+        seed.to_csv(dst, index=False)
         _row_count = sum(1 for _ in open(dst, "r", encoding="utf-8")) - 1
         print(f"  {stem + '.csv':<22s} {_row_count:>5d} rows  ->  {dst}  (passthrough)")
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
@@ -3188,21 +3201,23 @@ def main(argv=None):
     # Step 11: Images Table Assembly
     # ======================================================================
     IMAGES_SUBDIR = region_media_slug(REGION_ABBREV)  # e.g. 'va'
-    pm_to_final_id = marking_id_by_tm
+    pm_to_final_code = {
+        townmark_id: marking_code_by_id[marking_id]
+        for townmark_id, marking_id in marking_id_by_tm.items()
+    }
     image_rows = []
-    next_image_id = 1
     # Driven by per-source-listing image_file_refs computed in Step 8.25.
     # Every townmark (including each color-fanout sibling) gets its own
     # image rows pointing at the same on-disk files: same original_filename
-    # and storage_filename, different subject_id, new image_id per row.
+    # and storage_filename, different subject_id.
     for _, pm in townmarks_df.sort_values('townmark_id').iterrows():
         src_idx = int(pm['source_listing_idx'])
         refs = listings.loc[src_idx, 'image_file_refs']
         if not refs:
             continue
-        final_marking_id = pm_to_final_id.get(pm['townmark_id'])
-        if final_marking_id is None:
-            print(f'WARNING: no marking_id for townmark_id={pm["townmark_id"]}; skipping.')
+        final_marking_code = pm_to_final_code.get(pm['townmark_id'])
+        if final_marking_code is None:
+            print(f'WARNING: no marking_code for townmark_id={pm["townmark_id"]}; skipping.')
             continue
         for display_order, (page, chunk, counter) in enumerate(refs, start=1):
             fname = image_filename(IMAGES_SUBDIR, page, chunk, counter)
@@ -3216,9 +3231,8 @@ def main(argv=None):
             with PILImage.open(disk_path) as im:
                 img_w, img_h = im.size
             image_rows.append({
-                'image_id': next_image_id,
                 'subject_type': 'MARKING',
-                'subject_id': int(final_marking_id),
+                'subject_id': final_marking_code,
                 'original_filename': fname,
                 'storage_filename': f'{IMAGES_SUBDIR}/{fname}',
                 'file_checksum': hashlib.sha256(data).hexdigest(),
@@ -3237,9 +3251,8 @@ def main(argv=None):
                 'display_order': display_order,
                 'uploaded_by': AUDIT_USER_ID,
             })
-            next_image_id += 1
     _img_cols = [
-        'image_id', 'subject_type', 'subject_id', 'original_filename',
+        'subject_type', 'subject_id', 'original_filename',
         'storage_filename', 'file_checksum', 'mime_type', 'image_width',
         'image_height', 'file_size_bytes', 'image_view', 'image_description',
         'is_tracing', 'display_order', 'uploaded_by',
@@ -3250,7 +3263,7 @@ def main(argv=None):
         else pd.DataFrame(columns=_img_cols)
     )
     images_out = _stamp(images_out)
-    _img_counts = images_out.groupby('subject_id')['image_id'].count()
+    _img_counts = images_out.groupby('subject_id')['storage_filename'].count()
     # Per-townmark validation: every townmark must have one image row per
     # ref in its source listing's image_file_refs (post flow-down). This
     # asserts both the flow-down arithmetic (counts match the flowed
@@ -3262,19 +3275,19 @@ def main(argv=None):
         expected = len(refs) if refs else 0
         if expected == 0:
             continue
-        mid = pm_to_final_id.get(pm['townmark_id'])
-        if mid is None:
+        mcode = pm_to_final_code.get(pm['townmark_id'])
+        if mcode is None:
             continue
-        actual = int(_img_counts.get(mid, 0))
+        actual = int(_img_counts.get(mcode, 0))
         if expected != actual:
             raise AssertionError(
-                f'Image count mismatch for marking_id={mid} '
+                f'Image count mismatch for marking_code={mcode} '
                 f'(townmark_id={pm["townmark_id"]}, '
                 f'source_listing_idx={src_idx}): '
                 f'expected {expected}, emitted {actual}'
             )
     _img_int_cols = [
-        'image_id', 'subject_id', 'image_width', 'image_height',
+        'image_width', 'image_height',
         'file_size_bytes', 'display_order', 'uploaded_by',
         'created_by', 'modified_by',
     ]

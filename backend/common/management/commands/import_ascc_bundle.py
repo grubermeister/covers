@@ -1,8 +1,6 @@
 """
-Load an ASCC bundle (a directory of Django-shape CSVs produced by
-tools/apmc_data_munger.ipynb) into the catalog tables in dependency
-order using the django-import-export Resource classes registered in
-common.admin.
+Load an ASCC bundle into the catalog tables in dependency order using the
+django-import-export Resource classes registered in common.admin.
 
 Expected layout:
     <directory>/
@@ -27,18 +25,13 @@ Expected layout:
     been imported. A bundle that omits those CSVs entirely still loads
     cleanly. (When --allow-missing is set, ANY stem may be absent.)
 
-    dates_seen.csv is polymorphic: each row carries subject_type
-    (COVER | MARKING) and subject_id (the Cover or Marking pk). The
-    munger now emits MARKING-scoped rows anchored to the listing's
-    markings (one DateSeen per parsed date per marking in the
-    listing), since under the new policy there is no auto-created
-    Cover to anchor dates to.
+    dates_seen.csv, citations.csv, and images.csv are polymorphic: each row
+    carries subject_type (COVER | MARKING), and subject_id contains the
+    Cover.code or Marking.code. Resource hooks resolve those codes to PKs.
 
-Each CSV is in "Django shape": every row carries an explicit `id`,
-audit columns (created_date, modified_date, created_by, modified_by),
-and integer FK columns referencing the parent table's `id`. There is
-no per-row transformation in this command -- the Resource classes
-handle parsing, FK resolution, and persistence.
+Each CSV is in natural-key import shape: Django auto-assigns primary keys,
+audit columns are preserved, and FK columns use names/codes instead of
+integer IDs. Re-importing an existing natural-key row skips it.
 
 Usage:
     python manage.py import_ascc_bundle ./tools/wip/out/
@@ -46,8 +39,6 @@ Usage:
     python manage.py import_ascc_bundle ./out/ --dry-run
 """
 import os
-import sys
-
 import tablib
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction

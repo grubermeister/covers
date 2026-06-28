@@ -1066,6 +1066,12 @@ class CoverValuation(TimestampedModel):
         verbose_name = 'Cover Valuation'
         verbose_name_plural = 'Cover Valuations'
         ordering = ['-appraisal_date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cover', 'appraisal_date'],
+                name='cover_valuation_cover_appraisal_date_unique',
+            ),
+        ]
 
     def __str__(self):
         return f'Cover #{self.cover_id} - ${self.amt} ({self.appraisal_date})'
@@ -1171,6 +1177,10 @@ class Citation(TimestampedModel):
             models.CheckConstraint(
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='citation_subject_type_valid',
+            ),
+            models.UniqueConstraint(
+                fields=['reference_work', 'subject_type', 'subject_id', 'citation_detail'],
+                name='citation_reference_subject_detail_unique',
             ),
         ]
 

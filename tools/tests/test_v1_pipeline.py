@@ -233,23 +233,22 @@ class V1PipelineTests(unittest.TestCase):
                     "is_tracing": "False",
                 }],
             )
-            write_csv(bundle / "reference_works.csv", ["id", "code"], [{"id": "1", "code": "ASCC1"}])
-            write_csv(bundle / "regions.csv", ["id", "name"], [{"id": "46", "name": "Virginia"}])
-            write_csv(bundle / "post_offices.csv", ["id", "name", *AUDIT], [stamped({"id": "5", "name": "RICHMOND"})])
-            write_csv(bundle / "post_office_regions.csv", ["id", "post_office", "region", *AUDIT], [stamped({"id": "1", "post_office": "5", "region": "46"})])
+            write_csv(bundle / "reference_works.csv", ["code"], [{"code": "ASCC1"}])
+            write_csv(bundle / "regions.csv", ["code", "name"], [{"code": "USA-VA1", "name": "Virginia"}])
+            write_csv(bundle / "post_offices.csv", ["name", "code", *AUDIT], [stamped({"name": "RICHMOND", "code": "USA-VA1-5"})])
+            write_csv(bundle / "post_office_regions.csv", ["post_office", "region", *AUDIT], [stamped({"post_office": "USA-VA1-5", "region": "USA-VA1"})])
             write_csv(
                 bundle / "colors.csv",
-                ["id", "name", "hex_val", "pantone_code", *AUDIT],
+                ["name", "hex_val", "pantone_code", *AUDIT],
                 [
-                    stamped({"id": "1", "name": "BLACK", "hex_val": "#000000", "pantone_code": ""}),
-                    stamped({"id": "2", "name": "BLUE", "hex_val": "#0000FF", "pantone_code": ""}),
-                    stamped({"id": "3", "name": "RED", "hex_val": "#FF0000", "pantone_code": ""}),
+                    stamped({"name": "BLACK", "hex_val": "#000000", "pantone_code": ""}),
+                    stamped({"name": "BLUE", "hex_val": "#0000FF", "pantone_code": ""}),
+                    stamped({"name": "RED", "hex_val": "#FF0000", "pantone_code": ""}),
                 ],
             )
-            write_csv(bundle / "letterings.csv", ["id", "name", *AUDIT], [stamped({"id": "1", "name": "Italic"})])
-            write_csv(bundle / "shapes.csv", ["id", "name", "code", *AUDIT], [stamped({"id": "1", "name": "C - Circle", "code": "C"})])
+            write_csv(bundle / "letterings.csv", ["name", *AUDIT], [stamped({"name": "Italic"})])
+            write_csv(bundle / "shapes.csv", ["name", "code", *AUDIT], [stamped({"name": "C - Circle", "code": "C"})])
             marking_fields = [
-                "id",
                 "code",
                 "type",
                 "catalog_txt",
@@ -272,20 +271,20 @@ class V1PipelineTests(unittest.TestCase):
                 bundle / "markings.csv",
                 marking_fields,
                 [
-                    stamped({"id": "100", "code": "ASCC1-VA-M1100", "type": "TOWNMARK", "catalog_txt": "RICHMOND", "inscription_txt": "RICHMOND", "desc": "", "is_manuscript": "False", "shape": "", "lettering": "", "color": "1", "is_irreg": "False", "width": "", "height": "", "date_fmt": "", "impression": "Normal", "rate_val": "", "post_office": "5"}),
-                    stamped({"id": "101", "code": "ASCC1-VA-M1101", "type": "RATEMARK", "catalog_txt": "RICHMOND", "inscription_txt": "PAID", "desc": "", "is_manuscript": "False", "shape": "1", "lettering": "", "color": "1", "is_irreg": "False", "width": "", "height": "", "date_fmt": "", "impression": "Normal", "rate_val": "", "post_office": "5"}),
+                    stamped({"code": "ASCC1-VA-M1100", "type": "TOWNMARK", "catalog_txt": "RICHMOND", "inscription_txt": "RICHMOND", "desc": "", "is_manuscript": "False", "shape": "", "lettering": "", "color": "BLACK", "is_irreg": "False", "width": "", "height": "", "date_fmt": "", "impression": "Normal", "rate_val": "", "post_office": "USA-VA1-5"}),
+                    stamped({"code": "ASCC1-VA-M1101", "type": "RATEMARK", "catalog_txt": "RICHMOND", "inscription_txt": "PAID", "desc": "", "is_manuscript": "False", "shape": "C - Circle", "lettering": "", "color": "BLACK", "is_irreg": "False", "width": "", "height": "", "date_fmt": "", "impression": "Normal", "rate_val": "", "post_office": "USA-VA1-5"}),
                 ],
             )
             write_csv(
                 bundle / "marking_lineage.csv",
-                ["v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt"],
+                ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [
-                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
-                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "101", "marking_type": "RATEMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
+                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC1-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
+                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC1-VA-M1101", "marking_type": "RATEMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
                 ],
             )
-            write_csv(bundle / "dates_seen.csv", ["id", "subject_type", "subject_id", "date", "granularity", *AUDIT], [])
-            write_csv(bundle / "citations.csv", ["id", "reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [stamped({"id": "1", "reference_work": "1", "subject_type": "MARKING", "subject_id": "100", "citation_detail": "0"})])
+            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [stamped({"reference_work": "ASCC1", "subject_type": "MARKING", "subject_id": "ASCC1-VA-M1100", "citation_detail": "0"})])
             write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
 
             rc = v1_bundle_overlay.main([
@@ -308,12 +307,12 @@ class V1PipelineTests(unittest.TestCase):
         townmarks = [r for r in markings if r["type"] == "TOWNMARK"]
         ratemarks = [r for r in markings if r["type"] == "RATEMARK"]
         self.assertEqual(len(townmarks), 2)
-        self.assertEqual({r["color"] for r in townmarks}, {"2", "3"})
+        self.assertEqual({r["color"] for r in townmarks}, {"BLUE", "RED"})
         self.assertEqual({r["inscription_txt"] for r in townmarks}, {"PETERSBURG"})
         self.assertEqual({r["width"] for r in townmarks}, {"26"})
         self.assertEqual({r["height"] for r in townmarks}, {"27"})
-        self.assertEqual({r["shape"] for r in townmarks}, {"1"})
-        self.assertEqual({r["lettering"] for r in townmarks}, {"1"})
+        self.assertEqual({r["shape"] for r in townmarks}, {"C - Circle"})
+        self.assertEqual({r["lettering"] for r in townmarks}, {"Italic"})
         self.assertEqual({r["date_fmt"] for r in townmarks}, {"YD"})
         self.assertEqual({r["rate_val"] for r in ratemarks}, {"3"})
         self.assertEqual(len(dates), 3)
@@ -359,20 +358,20 @@ class V1PipelineTests(unittest.TestCase):
             )
             write_csv(
                 bundle / "marking_lineage.csv",
-                ["v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt"],
+                ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [
-                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
-                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "101", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
-                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "102", "marking_type": "RATEMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
+                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
+                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1101", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
+                    {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1102", "marking_type": "RATEMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
                 ],
             )
             write_csv(
                 bundle / "markings.csv",
-                ["id", "type", "is_manuscript", *AUDIT],
+                ["code", "type", "is_manuscript", *AUDIT],
                 [
-                    stamped({"id": "100", "type": "TOWNMARK", "is_manuscript": "False"}),
-                    stamped({"id": "101", "type": "TOWNMARK", "is_manuscript": "False"}),
-                    stamped({"id": "102", "type": "RATEMARK", "is_manuscript": "False"}),
+                    stamped({"code": "ASCC2-VA-M1100", "type": "TOWNMARK", "is_manuscript": "False"}),
+                    stamped({"code": "ASCC2-VA-M1101", "type": "TOWNMARK", "is_manuscript": "False"}),
+                    stamped({"code": "ASCC2-VA-M1102", "type": "RATEMARK", "is_manuscript": "False"}),
                 ],
             )
             write_csv(bundle / "images.csv", v1_attach_images.IMAGE_COLUMNS, [])
@@ -389,7 +388,7 @@ class V1PipelineTests(unittest.TestCase):
             report = read_csv(report_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual([r["subject_id"] for r in images], ["100", "101"])
+        self.assertEqual([r["subject_id"] for r in images], ["ASCC2-VA-M1100", "ASCC2-VA-M1101"])
         self.assertEqual({r["image_width"] for r in images}, {"4"})
         self.assertEqual({r["image_height"] for r in images}, {"5"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/marking.png"})
@@ -438,39 +437,38 @@ class V1PipelineTests(unittest.TestCase):
                     "is_tracing": "False",
                 }],
             )
-            write_csv(bundle / "reference_works.csv", ["id", "code"], [{"id": "1", "code": "ASCC2"}])
-            write_csv(bundle / "regions.csv", ["id", "name"], [{"id": "46", "name": "Virginia"}])
-            write_csv(bundle / "post_offices.csv", ["id", "name", *AUDIT], [stamped({"id": "5", "name": "RICHMOND"})])
-            write_csv(bundle / "post_office_regions.csv", ["id", "post_office", "region", *AUDIT], [stamped({"id": "1", "post_office": "5", "region": "46"})])
+            write_csv(bundle / "reference_works.csv", ["code"], [{"code": "ASCC2"}])
+            write_csv(bundle / "regions.csv", ["code", "name"], [{"code": "USA-VA1", "name": "Virginia"}])
+            write_csv(bundle / "post_offices.csv", ["name", "code", *AUDIT], [stamped({"name": "RICHMOND", "code": "USA-VA1-5"})])
+            write_csv(bundle / "post_office_regions.csv", ["post_office", "region", *AUDIT], [stamped({"post_office": "USA-VA1-5", "region": "USA-VA1"})])
             write_csv(
                 bundle / "colors.csv",
-                ["id", "name", "hex_val", "pantone_code", *AUDIT],
+                ["name", "hex_val", "pantone_code", *AUDIT],
                 [
-                    stamped({"id": "1", "name": "BLACK", "hex_val": "#000000", "pantone_code": ""}),
-                    stamped({"id": "2", "name": "BLUE", "hex_val": "#0000FF", "pantone_code": ""}),
+                    stamped({"name": "BLACK", "hex_val": "#000000", "pantone_code": ""}),
+                    stamped({"name": "BLUE", "hex_val": "#0000FF", "pantone_code": ""}),
                 ],
             )
-            write_csv(bundle / "letterings.csv", ["id", "name", *AUDIT], [])
-            write_csv(bundle / "shapes.csv", ["id", "name", "code", *AUDIT], [])
+            write_csv(bundle / "letterings.csv", ["name", *AUDIT], [])
+            write_csv(bundle / "shapes.csv", ["name", "code", *AUDIT], [])
             write_csv(
                 bundle / "markings.csv",
-                ["id", "code", "type", "is_manuscript", "color", "post_office", *AUDIT],
-                [stamped({"id": "100", "code": "ASCC2-VA-M1100", "type": "TOWNMARK", "is_manuscript": "False", "color": "1", "post_office": "5"})],
+                ["code", "type", "is_manuscript", "color", "post_office", *AUDIT],
+                [stamped({"code": "ASCC2-VA-M1100", "type": "TOWNMARK", "is_manuscript": "False", "color": "BLACK", "post_office": "USA-VA1-5"})],
             )
             write_csv(
                 bundle / "marking_lineage.csv",
-                ["v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt"],
-                [{"v2_key": "0:71", "source_listing_idx": "0", "marking_id": "100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"}],
+                ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
+                [{"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"}],
             )
-            write_csv(bundle / "dates_seen.csv", ["id", "subject_type", "subject_id", "date", "granularity", *AUDIT], [])
-            write_csv(bundle / "citations.csv", ["id", "reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
             write_csv(
                 bundle / "images.csv",
                 v1_bundle_overlay.IMAGE_COLUMNS,
                 [{
-                    "image_id": "1",
                     "subject_type": "MARKING",
-                    "subject_id": "100",
+                    "subject_id": "ASCC2-VA-M1100",
                     "original_filename": "kept.png",
                     "storage_filename": "va/kept.png",
                     "file_checksum": "abc",
@@ -507,8 +505,8 @@ class V1PipelineTests(unittest.TestCase):
             report = read_csv(report_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual({r["color"] for r in markings}, {"1", "2"})
-        self.assertEqual({r["subject_id"] for r in images}, {"100", "101"})
+        self.assertEqual({r["color"] for r in markings}, {"BLACK", "BLUE"})
+        self.assertEqual({r["subject_id"] for r in images}, {"ASCC2-VA-M1100", "ASCC2-VA-M1100-C1"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/kept.png"})
         self.assertIn("missing_image_file", {r["issue"] for r in report})
         self.assertIn("unsupported_column", {r["issue"] for r in report})
@@ -552,18 +550,17 @@ class V1PipelineTests(unittest.TestCase):
                 ],
                 [],
             )
-            write_csv(bundle / "reference_works.csv", ["id", "code"], [{"id": "1", "code": "ASCC2"}])
-            write_csv(bundle / "regions.csv", ["id", "name"], [{"id": "46", "name": "Virginia"}])
-            write_csv(bundle / "post_offices.csv", ["id", "name", *AUDIT], [stamped({"id": "5", "name": "ALEXANDRIA"})])
-            write_csv(bundle / "post_office_regions.csv", ["id", "post_office", "region", *AUDIT], [stamped({"id": "1", "post_office": "5", "region": "46"})])
-            write_csv(bundle / "colors.csv", ["id", "name", "hex_val", "pantone_code", *AUDIT], [stamped({"id": "1", "name": "BLACK", "hex_val": "#000000", "pantone_code": ""})])
-            write_csv(bundle / "letterings.csv", ["id", "name", *AUDIT], [])
-            write_csv(bundle / "shapes.csv", ["id", "name", "code", *AUDIT], [])
+            write_csv(bundle / "reference_works.csv", ["code"], [{"code": "ASCC2"}])
+            write_csv(bundle / "regions.csv", ["code", "name"], [{"code": "USA-VA1", "name": "Virginia"}])
+            write_csv(bundle / "post_offices.csv", ["name", "code", *AUDIT], [stamped({"name": "ALEXANDRIA", "code": "USA-VA1-5"})])
+            write_csv(bundle / "post_office_regions.csv", ["post_office", "region", *AUDIT], [stamped({"post_office": "USA-VA1-5", "region": "USA-VA1"})])
+            write_csv(bundle / "colors.csv", ["name", "hex_val", "pantone_code", *AUDIT], [stamped({"name": "BLACK", "hex_val": "#000000", "pantone_code": ""})])
+            write_csv(bundle / "letterings.csv", ["name", *AUDIT], [])
+            write_csv(bundle / "shapes.csv", ["name", "code", *AUDIT], [])
             write_csv(
                 bundle / "markings.csv",
-                ["id", "code", "type", "catalog_txt", "inscription_txt", "desc", "is_manuscript", "shape", "lettering", "color", "is_irreg", "width", "height", "date_fmt", "impression", "rate_val", "post_office", *AUDIT],
+                ["code", "type", "catalog_txt", "inscription_txt", "desc", "is_manuscript", "shape", "lettering", "color", "is_irreg", "width", "height", "date_fmt", "impression", "rate_val", "post_office", *AUDIT],
                 [stamped({
-                    "id": "42",
                     "code": "ASCC2-VA-M1042",
                     "type": "TOWNMARK",
                     "catalog_txt": "Alex=(Alexandria)(E)(July 19, 1776;Ms;Black) 500\n(L)(Aug. 1776) 500",
@@ -572,23 +569,23 @@ class V1PipelineTests(unittest.TestCase):
                     "is_manuscript": "False",
                     "shape": "",
                     "lettering": "",
-                    "color": "1",
+                    "color": "BLACK",
                     "is_irreg": "False",
                     "width": "",
                     "height": "",
                     "date_fmt": "",
                     "impression": "Normal",
                     "rate_val": "",
-                    "post_office": "5",
+                    "post_office": "USA-VA1-5",
                 })],
             )
             write_csv(
                 bundle / "marking_lineage.csv",
-                ["v2_key", "source_listing_idx", "marking_id", "marking_type", "page", "chunk", "catalog_txt"],
-                [{"v2_key": "0:40", "source_listing_idx": "39", "marking_id": "42", "marking_type": "TOWNMARK", "page": "0", "chunk": "40", "catalog_txt": "Alex=(Alexandria)"}],
+                ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
+                [{"v2_key": "0:40", "source_listing_idx": "39", "marking_code": "ASCC2-VA-M1042", "marking_type": "TOWNMARK", "page": "0", "chunk": "40", "catalog_txt": "Alex=(Alexandria)"}],
             )
-            write_csv(bundle / "dates_seen.csv", ["id", "subject_type", "subject_id", "date", "granularity", *AUDIT], [])
-            write_csv(bundle / "citations.csv", ["id", "reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
             write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
 
             rc = v1_bundle_overlay.main([

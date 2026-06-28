@@ -375,7 +375,7 @@ class AsccCliTests(unittest.TestCase):
         self.assertIn("--bundle-dir", commands[3])
         self.assertNotIn("ascc_page_extract.py", " ".join(" ".join(c) for c in commands))
 
-    def test_load_bundle_uses_truncate_without_dry_run(self):
+    def test_load_bundle_uses_additive_import_without_dry_run(self):
         with tempfile.TemporaryDirectory() as td:
             with _PatchedRoots(td):
                 paths = ascc_cli.v1_state_paths("VA")
@@ -384,15 +384,15 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"mode": "load", "status": "passed", "check": "truncate-load"},
+            {"mode": "load", "status": "passed", "check": "additive-load"},
         )
         cmd = run_command.call_args.args[0]
         self.assertEqual(cmd[2], "import_ascc_bundle")
         self.assertEqual(cmd[3], str(paths.bundle_dir))
-        self.assertEqual(cmd[-1], "--truncate")
+        self.assertNotIn("--truncate", cmd)
         self.assertNotIn("--dry-run", cmd)
 
-    def test_import_check_uses_truncate_dry_run(self):
+    def test_import_check_uses_additive_dry_run(self):
         with tempfile.TemporaryDirectory() as td:
             with _PatchedRoots(td):
                 paths = ascc_cli.state_paths("VA")
@@ -402,13 +402,14 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(
             result,
-            {"mode": "always", "status": "passed", "check": "dry-run-truncate"},
+            {"mode": "always", "status": "passed", "check": "dry-run-additive"},
         )
         run_command.assert_called_once()
         cmd = run_command.call_args.args[0]
         self.assertEqual(cmd[2], "import_ascc_bundle")
         self.assertEqual(cmd[3], str(paths.bundle_dir))
-        self.assertEqual(cmd[-2:], ["--dry-run", "--truncate"])
+        self.assertEqual(cmd[-1], "--dry-run")
+        self.assertNotIn("--truncate", cmd)
 
     def test_count_csv_rows_handles_quoted_multiline_cells(self):
         with tempfile.TemporaryDirectory() as td:
