@@ -441,11 +441,11 @@ class ColorAdmin(TimestampedModelAdmin):
     search_fields = ['name', 'hex_val']
     actions = ['delete_colors_keep_listings']
 
-    @admin.action(description='Delete selected colors (re-default markings to BLACK)')
+    @admin.action(description='Delete selected colors (clear marking color)')
     def delete_colors_keep_listings(self, request, queryset):
         """
         Delete Color records while preserving Marking listings. Markings whose
-        color FK points to a deleted color are re-pointed at color_id=1 (BLACK).
+        color FK points to a deleted color have color cleared to null.
         """
         from django.db import transaction
 
@@ -455,14 +455,14 @@ class ColorAdmin(TimestampedModelAdmin):
             for color in queryset:
                 if color.pk == 1:
                     continue
-                count = Marking.objects.filter(color=color).update(color_id=1)
+                count = Marking.objects.filter(color=color).update(color=None)
                 total_repointed += count
                 color.delete()
 
         messages.success(
             request,
-            f"Deleted {total_colors} color(s); re-pointed color on "
-            f"{total_repointed} marking(s) to BLACK. All catalog listings were kept."
+            f"Deleted {total_colors} color(s); cleared color on "
+            f"{total_repointed} marking(s). All catalog listings were kept."
         )
 
     def get_actions(self, request):

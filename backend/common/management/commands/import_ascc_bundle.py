@@ -85,7 +85,7 @@ RESOURCES = {
 #   reference_works                         -- leaf lookup (citation parent)
 #   post_offices                            -- depends on nothing (region link is in junction)
 #   post_office_regions                     -- depends on post_offices and regions
-#   markings                                -- depends on shape, lettering, color, post_office
+#   markings                                -- depends on shape, lettering, optional color, post_office
 #   covers                                  -- depends on color
 #   cover_valuations                        -- depends on cover
 #   dates_seen                              -- polymorphic; depends on cover and/or marking

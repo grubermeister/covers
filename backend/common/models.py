@@ -24,11 +24,9 @@ class Color(TimestampedModel):
 
     model.md domain type: Color
     Seed values: BLACK, BLUE, RED, GREEN, BROWN, ORANGE, PURPLE, MAGENTA,
-    VIOLET (plus catalog compounds such as BROWN-RED and RED-ORANGE). BLACK is
-    seeded as id 1 and is the Marking.color default (see the field below); the
-    canonical color rows are supplied by the import pipeline, so a bare database
-    (e.g. a fresh test DB) has none and callers that create a marking must
-    supply an explicit color rather than rely on the default=1.
+    VIOLET (plus catalog compounds such as BROWN-RED and RED-ORANGE). The
+    canonical color rows are supplied by the import pipeline. Marking.color may
+    be null when the catalog entry does not identify a color.
     """
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=50, unique=True)
@@ -195,7 +193,7 @@ class Marking(TimestampedModel):
     is_manuscript = models.BooleanField()
     shape = models.ForeignKey('Shape', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     lettering = models.ForeignKey('Lettering', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
-    color = models.ForeignKey(Color, on_delete=models.PROTECT, default=1, related_name='markings')
+    color = models.ForeignKey(Color, on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     is_irreg = models.BooleanField(null=True, blank=True)
     width = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
     height = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
@@ -235,7 +233,7 @@ class Marking(TimestampedModel):
             models.CheckConstraint(
                 check=(
                     Q(is_manuscript=True, lettering__isnull=True, shape__isnull=True, is_irreg__isnull=True)
-                    | Q(is_manuscript=False, shape__isnull=False, is_irreg__isnull=False)
+                    | Q(is_manuscript=False, is_irreg__isnull=False)
                 ),
                 name='marking_manuscript_consistency',
             ),
@@ -251,8 +249,6 @@ class Marking(TimestampedModel):
             if self.is_irreg is not None:
                 raise ValidationError({'is_irreg': 'Must be null when is_manuscript is true.'})
         else:
-            if self.shape_id is None:
-                raise ValidationError({'shape': 'Required when is_manuscript is false.'})
             if self.is_irreg is None:
                 self.is_irreg = False
 

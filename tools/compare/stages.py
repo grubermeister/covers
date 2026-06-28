@@ -23,7 +23,7 @@ from munger.classify import (
     detect_fragment,
     detect_structural_anatomy,
 )
-from munger.assembly import LETTERING_SEEDS, resolve_effective_shape
+from munger.assembly import LETTERING_SEEDS, promote_no_paren_to_manuscript, resolve_effective_shape
 from munger.fields import _split_ms_date_token, classify_all_fields, subparse_fields
 from munger.fields.dates import parse_date_field
 from munger.head import parse_head, parse_manuscript_row
@@ -703,6 +703,7 @@ def _relationship_frame(rows: list[dict], key_col: str, text_col: str, order_col
     df = resolve_relationships(df)
     df = roll_up_catalog_text(df)
     _inherit_relationship_attributes(df)
+    _promote_no_paren_manuscripts(df)
     _resolve_text_shapes(df)
     return df
 
@@ -793,6 +794,14 @@ def _resolve_text_shapes(df: pd.DataFrame) -> None:
     )
     df["effective_shape_code"] = shape_resolution["effective_shape_code"]
     df["shape_source"] = shape_resolution["shape_source"]
+
+
+def _promote_no_paren_manuscripts(df: pd.DataFrame) -> None:
+    for pos, row in df.iterrows():
+        if not promote_no_paren_to_manuscript(row):
+            continue
+        df.iat[pos, df.columns.get_loc("is_manuscript")] = True
+        df.iat[pos, df.columns.get_loc("parsed_colors")] = []
 
 
 def _is_manuscript_section_row(row) -> bool:
@@ -1054,7 +1063,7 @@ def _align_row(left, right, disposition, score, reason, rep_v1, rep_v2, v1_dup, 
 def _parsed_text_field_values(row) -> dict:
     shape = row.get("effective_shape_code", "")
     shape_source = row.get("shape_source", "")
-    if shape_source == "catalog_fallback":
+    if shape_source in {"catalog_fallback", "no_shape"}:
         shape = ""
     return {
         "post_office/town": _norm_town(row.get("resolved_town", "")),

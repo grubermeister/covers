@@ -443,13 +443,7 @@ def merge_markings(
                 bundle.spec.label,
                 row.get("lettering"),
             )
-            out["color"] = remap_required(
-                maps,
-                "colors",
-                bundle.spec.label,
-                row.get("color"),
-                "markings.color",
-            )
+            out["color"] = remap_optional(maps, "colors", bundle.spec.label, row.get("color"))
             out["post_office"] = remap_required(
                 maps,
                 "post_offices",
@@ -649,7 +643,7 @@ def check_bundle(bundle_dir: Path) -> list[str]:
     check_fk(rows, id_sets, errors, "post_office_regions", "region", "regions")
     check_fk(rows, id_sets, errors, "markings", "shape", "shapes", optional=True)
     check_fk(rows, id_sets, errors, "markings", "lettering", "letterings", optional=True)
-    check_fk(rows, id_sets, errors, "markings", "color", "colors")
+    check_fk(rows, id_sets, errors, "markings", "color", "colors", optional=True)
     check_fk(rows, id_sets, errors, "markings", "post_office", "post_offices")
     check_fk(rows, id_sets, errors, "covers", "color", "colors", optional=True)
     check_fk(rows, id_sets, errors, "cover_valuations", "cover", "covers")

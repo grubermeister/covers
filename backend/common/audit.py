@@ -220,7 +220,7 @@ def restore_marking_from_snapshot(marking: Marking, snapshot: dict[str, Any], ac
     marking.post_office_id = snapshot.get("post_office_id")
     marking.shape_id = snapshot.get("shape_id")
     marking.lettering_id = snapshot.get("lettering_id")
-    marking.color_id = snapshot.get("color_id") or 1
+    marking.color_id = snapshot.get("color_id")
     marking.is_manuscript = bool(snapshot.get("is_manuscript"))
     marking.impression = snapshot.get("impression")
     marking.is_irreg = snapshot.get("is_irreg")

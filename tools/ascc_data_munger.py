@@ -28,7 +28,7 @@ from pathlib import Path
 from PIL import Image as PILImage
 
 from catalog_rows import read_legacy_dataframe
-from munger.assembly import LETTERING_SEEDS, SHAPE_SEEDS, _nkey, confidence_level, dt_date, resolve_effective_shape, resolve_shape_name
+from munger.assembly import LETTERING_SEEDS, SHAPE_SEEDS, _nkey, confidence_level, dt_date, promote_no_paren_to_manuscript, resolve_effective_shape, resolve_shape_name
 from munger.classify import RELATIONSHIP_PATTERN, TRAILING_VALUE_PATTERN, _csv_manuscript_truthy, classify_entry, detect_cross_reference, detect_fragment, detect_structural_anatomy
 from munger.export import AUDIT_TAIL, AUDIT_USER_ID, INT_COLS, _by_listing, _cast_int_columns, _resolve_int_fk, _src_row_by
 from munger.fields import _split_ms_date_token, classify_all_fields, classify_paren_field, subparse_fields, triage_other_field
@@ -57,8 +57,6 @@ from munger.text_utils import strip_dot_leaders
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
-DEFAULT_MARKING_COLOR = "BLACK"
-
 def source_key_component(value):
     """Return the Page/Chunk component used in marking_lineage.csv keys."""
     if value is None or pd.isna(value):
@@ -1448,6 +1446,20 @@ def main(argv=None):
     print(f'    With sizes after inheritance: {has_sizes}')
 
     # ======================================================================
+    # 8.0 No-Paren Manuscript Promotion
+    # ======================================================================
+    promoted_no_paren_ms = 0
+    for idx, row in listings.iterrows():
+        if not promote_no_paren_to_manuscript(row):
+            continue
+        listings.at[idx, 'is_manuscript'] = True
+        listings.at[idx, 'parsed_colors'] = []
+        promoted_no_paren_ms += 1
+    print()
+    print('No-paren manuscript promotion:')
+    print(f'  Promoted rows: {promoted_no_paren_ms}')
+
+    # ======================================================================
     # 8.1 Value Table Construction
     # ======================================================================
     shapes_df = pd.DataFrame({
@@ -1457,7 +1469,7 @@ def main(argv=None):
     shape_lookup = dict(zip(shapes_df['name'].str.upper(), shapes_df['shape_id']))
     all_color_names = sorted({
         c for clist in listings['parsed_colors'] for c in clist
-    } | {DEFAULT_MARKING_COLOR})
+    })
     colors_df = pd.DataFrame({
         'color_id': range(1, len(all_color_names) + 1),
         'name': all_color_names,
@@ -1505,7 +1517,10 @@ def main(argv=None):
         lambda n: None if (n is None or (isinstance(n, float) and pd.isna(n))) else shape_lookup.get(n.upper())
     )
     ms_with_shape = listings[
-        listings['is_manuscript_section'].fillna(False) &
+        (
+            listings['is_manuscript_section'].fillna(False)
+            | listings['is_manuscript'].fillna(False)
+        ) &
         listings['shape_id'].notna()
     ]
     if len(ms_with_shape):
@@ -1519,9 +1534,9 @@ def main(argv=None):
     print('Shape distribution:')
     for name, count in listings['shape_name'].dropna().value_counts().items():
         print(f'  {name}: {count}')
-    n_ms_null = int(listings['shape_name'].isna().sum())
-    if n_ms_null:
-        print(f'  (null -- manuscript): {n_ms_null}')
+    n_null_shape = int(listings['shape_name'].isna().sum())
+    if n_null_shape:
+        print(f'  (null): {n_null_shape}')
     print()
     errors = listings[listings['shape_error'].notna()]
     if len(errors):
@@ -1588,7 +1603,6 @@ def main(argv=None):
     # ======================================================================
     expanded_rows = []
     next_townmark_id = 1
-    default_color_id = color_lookup[DEFAULT_MARKING_COLOR]
     for idx, row in listings.iterrows():
         if row.get('is_latest_merge'):
             continue  # (L) row: no own townmark; date merges into parent (#36)
@@ -1599,8 +1613,8 @@ def main(argv=None):
             r = {
                 'townmark_id': next_townmark_id,
                 'source_listing_idx': idx,
-                'color_name': DEFAULT_MARKING_COLOR,
-                'color_id': default_color_id,
+                'color_name': None,
+                'color_id': None,
                 'is_multi_color_fanout': False,
             }
             expanded_rows.append(r)
@@ -2091,9 +2105,9 @@ def main(argv=None):
         if pm_row['is_multi_color_fanout']:
             warnings.append('multi_color_fanout')
 
-        # Shape fallback
-        if src.get('shape_source') == 'catalog_fallback':
-            warnings.append('shape_from_catalog_fallback')
+        # Missing shape evidence
+        if src.get('shape_source') == 'no_shape':
+            warnings.append('missing_shape')
 
         # Shape resolution error
         if pd.notna(src.get('shape_error')):
@@ -2903,8 +2917,8 @@ def main(argv=None):
     }
     colors_out = pd.DataFrame({
         "name": _colors_src["name"],
-        "hex_val": _colors_src["hex_val"] if "hex_val" in _colors_src.columns else None,
-        "pantone_code": _colors_src["pantone_code"] if "pantone_code" in _colors_src.columns else None,
+        "hex_val": _colors_src["hex_val"] if "hex_val" in _colors_src.columns else pd.Series([None] * len(_colors_src)),
+        "pantone_code": _colors_src["pantone_code"] if "pantone_code" in _colors_src.columns else pd.Series([None] * len(_colors_src)),
     })
     colors_out = _stamp(colors_out)
     letterings_out = pd.DataFrame({
@@ -3013,14 +3027,6 @@ def main(argv=None):
         shape_int = r.get("shape_id")
         shape_id = _resolve_int_fk(shape_id_by_internal, shape_int)
         shape_name = _resolve_int_fk(shape_name_by_internal, shape_int)
-        # Marking invariant: when is_manuscript is False, shape is required.
-        # If no shape resolved, fall back to "SL - Straight Line" (default
-        # handstamp form for text-only inscriptions without a bracket cue).
-        if not is_ms and shape_id is None:
-            _sl = _shapes_src[_shapes_src["name"] == "SL - Straight Line"]
-            if len(_sl):
-                shape_id = int(_sl.iloc[0]["id"])
-                shape_name = str(_sl.iloc[0]["name"])
         is_irreg_val = r.get("is_irregular")
         if not is_ms and (is_irreg_val is None or (isinstance(is_irreg_val, float) and pd.isna(is_irreg_val))):
             is_irreg_val = False

@@ -175,7 +175,7 @@ class MergeAsccBundlesTests(unittest.TestCase):
 
             self.assertIn("colors: duplicate name Black", errors)
 
-    def test_blank_marking_color_fails(self):
+    def test_blank_marking_color_merges_as_blank(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             va = root / "va"
@@ -185,8 +185,10 @@ class MergeAsccBundlesTests(unittest.TestCase):
             rows[0]["color"] = ""
             write_csv(va / "markings.csv", list(rows[0]), rows)
 
-            with self.assertRaisesRegex(MergeError, "VA:markings.color: blank id"):
-                merge_bundles([BundleSpec("VA", va)], out)
+            merge_bundles([BundleSpec("VA", va)], out)
+
+            merged = read_rows(out / "markings.csv")
+            self.assertEqual(merged[0]["color"], "")
 
     def test_check_bundle_allows_storage_filename_fanout_to_different_subjects(self):
         with tempfile.TemporaryDirectory() as td:

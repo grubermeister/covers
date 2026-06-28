@@ -268,6 +268,39 @@ class AsccAdditiveImportTests(TestCase):
         self.assertEqual(CoverValuation.objects.count(), 1)
         self.assertEqual(Marking.objects.get().inscription_txt, "MANUAL EDIT")
 
+    def test_import_allows_marking_with_blank_shape_and_color(self):
+        path = self.bundle / "markings.csv"
+        with path.open("r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            fieldnames = list(reader.fieldnames or [])
+            rows = list(reader)
+        rows.append(_stamp({
+            "code": "ASCC1-VA-M1002",
+            "type": "TOWNMARK",
+            "catalog_txt": "RICHMOND",
+            "inscription_txt": "RICHMOND",
+            "desc": "",
+            "is_manuscript": "False",
+            "shape": "",
+            "lettering": "",
+            "color": "",
+            "is_irreg": "False",
+            "width": "",
+            "height": "",
+            "date_fmt": "",
+            "impression": "Normal",
+            "rate_val": "",
+            "post_office": "USA-VA1-1",
+        }, self.user))
+        _write_csv(path, fieldnames, rows)
+
+        call_command("import_ascc_bundle", str(self.bundle), verbosity=0)
+
+        marking = Marking.objects.get(code="ASCC1-VA-M1002")
+        self.assertIsNone(marking.shape_id)
+        self.assertIsNone(marking.color_id)
+        self.assertFalse(marking.is_irreg)
+
     def test_drop_ascc_state_dry_run_then_delete(self):
         call_command("import_ascc_bundle", str(self.bundle), verbosity=0)
 
