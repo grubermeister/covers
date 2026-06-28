@@ -3,6 +3,36 @@
 from django.db import migrations, models
 
 
+def _column_exists(connection, cursor, table, column):
+    return column in {
+        description.name
+        for description in connection.introspection.get_table_description(cursor, table)
+    }
+
+
+def _drop_stale_partial_migration_columns(apps, schema_editor, cursor):
+    """Undo physical columns left by a failed earlier 0007 deploy.
+
+    MySQL DDL is not fully rolled back with the Django migration transaction.
+    A failed deploy can leave common_region.code or post_office.code in the
+    database while django_migrations still says common.0007 is unapplied.
+    In that state Django's following AddField operation fails with:
+      MySQLdb.OperationalError: (1060, "Duplicate column name 'code'")
+
+    The tables are purged immediately after this cleanup, so these pre-migration
+    column values are disposable along with the rest of the stale catalog data.
+    """
+    connection = schema_editor.connection
+    for model_name in ("Region", "PostOffice"):
+        model = apps.get_model("common", model_name)
+        table = model._meta.db_table
+        if not _column_exists(connection, cursor, table, "code"):
+            continue
+        quoted_table = schema_editor.quote_name(table)
+        quoted_column = schema_editor.quote_name("code")
+        cursor.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
+
+
 def purge_disposable_ascc_data(apps, schema_editor):
     """Delete stale catalog rows before adding additive-import constraints.
 
@@ -45,10 +75,11 @@ def purge_disposable_ascc_data(apps, schema_editor):
         if is_mysql:
             cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
         try:
+            _drop_stale_partial_migration_columns(apps, schema_editor, cursor)
             for model_name in model_names:
                 model = apps.get_model("common", model_name)
                 table = model._meta.db_table
-                cursor.execute(f"DELETE FROM `{table}`")
+                cursor.execute(f"DELETE FROM {schema_editor.quote_name(table)}")
         finally:
             if is_mysql:
                 cursor.execute("SET FOREIGN_KEY_CHECKS = 1")
