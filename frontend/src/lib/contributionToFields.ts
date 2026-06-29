@@ -37,6 +37,11 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   "last_seen", "lastSeen",
   "date_range", "dateRange",
   "dates_observed", "datesObserved",
+  // consumed: editor-only ERD/LRD (fall back to these for earliest/latest)
+  "marking_erd", "markingErd",
+  "marking_erd_granularity", "markingErdGranularity",
+  "marking_lrd", "markingLrd",
+  "marking_lrd_granularity", "markingLrdGranularity",
   // consumed: physical attributes
   "shape", "shape_id", "shapeId",
   "color", "color_id", "colorId",
@@ -121,8 +126,8 @@ function yearOnly(value: unknown): string {
 function readEarliestLatest(sd: Record<string, unknown>): { earliest: string; latest: string } {
   const dr = toStr(sd.date_range ?? sd.dateRange);
   const drParts = dr ? dr.split(/\s*-\s*/).map((s) => s.trim()) : [];
-  const e = yearOnly(sd.first_seen ?? sd.firstSeen ?? drParts[0]);
-  const l = yearOnly(sd.last_seen ?? sd.lastSeen ?? drParts[1]);
+  const e = yearOnly(sd.first_seen ?? sd.firstSeen ?? drParts[0] ?? sd.marking_erd ?? sd.markingErd);
+  const l = yearOnly(sd.last_seen ?? sd.lastSeen ?? drParts[1] ?? sd.marking_lrd ?? sd.markingLrd);
   return { earliest: e, latest: l };
 }
 

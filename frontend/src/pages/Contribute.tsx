@@ -1560,10 +1560,10 @@ const Contribute = () => {
           lettering_style_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
-          ...(erdToSend
+          ...(isStateEditor && erdToSend
             ? { marking_erd: erdToSend.date, marking_erd_granularity: erdToSend.granularity }
             : {}),
-          ...(lrdToSend
+          ...(isStateEditor && lrdToSend
             ? { marking_lrd: lrdToSend.date, marking_lrd_granularity: lrdToSend.granularity }
             : {}),
           marking_image_tags: orderedNewTags,
