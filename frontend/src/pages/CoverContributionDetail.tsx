@@ -507,8 +507,11 @@ export default function CoverContributionDetail({ initialContribution = null }: 
 
   const isPending = normalizedStatus === "pending";
   const canReview = isStateEditor && isPending && !!user;
-  const canContributorResubmit =
-    isContributor && (normalizedStatus === "rejected" || normalizedStatus === "needs_revision");
+  const canContributorEdit =
+    isContributor &&
+    (normalizedStatus === "pending" ||
+      normalizedStatus === "rejected" ||
+      normalizedStatus === "needs_revision");
   const canDeleteOwn = isContributor && normalizedStatus !== "approved";
 
   const handleDeleteConfirm = async () => {
@@ -681,7 +684,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="font-heading text-lg">Cover Details</CardTitle>
                 <div className="flex flex-wrap items-center gap-2">
-                  {canContributorResubmit && parentMarkingId != null && (
+                  {canContributorEdit && parentMarkingId != null && (
                     <Button
                       variant="outline"
                       size="sm"
@@ -693,7 +696,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
                       disabled={submitting || deleting}
                     >
                       <Pencil className="mr-2 h-4 w-4" />
-                      Edit before resubmitting
+                      {normalizedStatus === "pending" ? "Edit" : "Edit before resubmitting"}
                     </Button>
                   )}
                   {canDeleteOwn && (

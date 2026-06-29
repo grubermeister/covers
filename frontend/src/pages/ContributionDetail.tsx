@@ -464,6 +464,7 @@ const ContributionDetail = () => {
   const canContributorEdit =
     isContributor &&
     (contribution.status === "draft" ||
+      contribution.status === "pending" ||
       contribution.status === "needs_revision" ||
       contribution.status === "rejected");
   const canDeleteOwn = isContributor && contribution.status !== "approved";

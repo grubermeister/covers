@@ -289,6 +289,65 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     navigate(`/contribute?edit=${s.id}`);
   };
 
+  const goEditSubmission = (s: DashboardItem) => {
+    const statusNorm = String(s.status || "").toLowerCase();
+    const coverParentMarkingId = s.cover_parent_marking_id ?? s.marking_id ?? null;
+    if (statusNorm === "pending" || statusNorm === "needs_revision" || statusNorm === "rejected") {
+      if (s.isCover && coverParentMarkingId != null) {
+        navigate(`/record/${coverParentMarkingId}/cover/new?edit=${s.id}`, {
+          state: { from: "/dashboard" },
+        });
+        return;
+      }
+      navigate(`/contribute?edit=${s.id}`, { state: { from: "/dashboard" } });
+      return;
+    }
+
+    if (s.isCover && coverParentMarkingId != null && s.cover_id != null) {
+      // Approved cover submissions already have a materialized Cover row.
+      // Edit that cover directly instead of sending an approved contribution id
+      // through the draft/resubmission endpoint.
+      navigate(`/record/${coverParentMarkingId}/cover/${s.cover_id}/edit`, {
+        state: { from: "/dashboard" },
+      });
+      return;
+    }
+
+    if (s.isCover && coverParentMarkingId != null) {
+      // Returned cover contributions resume through CoverEdit with the
+      // contribution id. Routing to /edit/:markingId would open the parent
+      // marking editor instead.
+      navigate(`/record/${coverParentMarkingId}/cover/new?edit=${s.id}`, {
+        state: { from: "/dashboard" },
+      });
+      return;
+    }
+
+    if (s.marking_id != null) {
+      navigate(`/edit/${s.marking_id}`, {
+        state: { fromDashboard: true, fromDashboardDirect: true },
+      });
+    }
+  };
+
+  const canEditSubmission = (s: DashboardItem): boolean => {
+    const statusNorm = String(s.status || "").toLowerCase();
+    if (statusNorm === "draft") return true;
+    if (statusNorm === "pending" || statusNorm === "needs_revision" || statusNorm === "rejected") {
+      if (!s.isCover) return true;
+      return (s.cover_parent_marking_id ?? s.marking_id ?? null) != null;
+    }
+
+    if (s.isCover) {
+      const coverParentMarkingId = s.cover_parent_marking_id ?? s.marking_id ?? null;
+      if (coverParentMarkingId == null) return false;
+      return s.cover_id != null;
+    }
+
+    if (statusNorm === "approved" && s.marking_id != null) return true;
+    return (isSuperuser || isEditor) && s.marking_id != null;
+  };
+
   const goOpenDashboardItem = (item: {
     id: number;
     status: string;
@@ -1462,21 +1521,16 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                                   Edit Draft
                                 </Button>
                               )}
-                              {(isSuperuser || isEditor) && submission.marking_id && (
-                                <>
+                              {String(submission.status || "").toLowerCase() !== "draft" &&
+                                canEditSubmission(submission) && (
                                   <Button
                                     variant="outline"
                                     size="sm"
-                                    onClick={() =>
-                                      navigate(`/edit/${submission.marking_id}`, {
-                                        state: { fromDashboard: true, fromDashboardDirect: true },
-                                      })
-                                    }
+                                    onClick={() => goEditSubmission(submission)}
                                   >
                                     Edit
                                   </Button>
-                                </>
-                              )}
+                                )}
                             </div>
                           </div>
                         </div>

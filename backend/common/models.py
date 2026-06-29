@@ -339,6 +339,7 @@ class SubmissionTransaction(models.Model):
     #   MARKING_REMOVED -- a marking was soft-removed into the recycle bin
     #   MARKING_RESTORED-- a marking was restored from the recycle bin
     ACTION_DRAFT_DELETED = "draft_deleted"
+    ACTION_CONTRIBUTION_SUPERSEDED = "contribution_superseded"
     ACTION_MARKING_REMOVED = "marking_removed"
     ACTION_MARKING_RESTORED = "marking_restored"
     # Cover deletion-model actions, mirroring the marking recycle bin
@@ -359,6 +360,7 @@ class SubmissionTransaction(models.Model):
         (ACTION_RECORD_UPDATE, "Record updated"),
         (ACTION_RECORD_DELETE, "Record deleted"),
         (ACTION_DRAFT_DELETED, "Draft deleted"),
+        (ACTION_CONTRIBUTION_SUPERSEDED, "Contribution superseded"),
         (ACTION_MARKING_REMOVED, "Marking removed"),
         (ACTION_MARKING_RESTORED, "Marking restored"),
         (ACTION_COVER_REMOVED, "Cover removed"),

@@ -331,30 +331,41 @@ const Contribute = () => {
   const isResubmissionStatus =
     loadedContributionStatus === "needs_revision" ||
     loadedContributionStatus === "rejected";
-  const isResumingDraft = isEditContribution && !isResubmissionStatus;
+  const isPendingEditContribution = loadedContributionStatus === "pending";
+  const isResumingDraft = isEditContribution && !isResubmissionStatus && !isPendingEditContribution;
   const isResumingMarkingEditDraft = isResumingDraft && resumedEditMarkingId != null;
-  const copy = isResumingDraft
-    ? isResumingMarkingEditDraft
-      ? {
-          ...baseCopy,
-          h1: "Continue your draft",
-          intro: "Pick up where you left off. Keep saving as a draft or submit your edit when you are ready for editor review.",
-          card: "Edit draft",
-          button: SUBMISSION_LABELS.action.submitEditToMarking,
-          toastTitle: "Submitted for review",
-          toastBody: "Changes to published Marking fields are submitted for editor approval and do not update the catalog directly.",
-        }
-      : {
-          ...baseCopy,
-          h1: "Continue your draft",
-          intro: "Pick up where you left off. Keep saving as a draft or submit when you are ready for editor review.",
-          card: "Edit draft",
-          button: SUBMISSION_LABELS.action.submitNewMarking,
-          toastTitle: SUBMISSION_LABELS.toast.received,
-          toastBody:
-            "Your Marking has been submitted for approval. It will appear in Search after an editor approves it.",
-        }
-    : baseCopy;
+  const copy = isPendingEditContribution
+    ? {
+        ...baseCopy,
+        h1: "Edit pending submission",
+        intro: "Update your pending submission before an editor reviews it.",
+        card: "Edit submission",
+        button: "Save pending submission",
+        toastTitle: "Pending submission updated",
+        toastBody: "Your updated submission remains pending editor review.",
+      }
+    : isResumingDraft
+      ? isResumingMarkingEditDraft
+        ? {
+            ...baseCopy,
+            h1: "Continue your draft",
+            intro: "Pick up where you left off. Keep saving as a draft or submit your edit when you are ready for editor review.",
+            card: "Edit draft",
+            button: SUBMISSION_LABELS.action.submitEditToMarking,
+            toastTitle: "Submitted for review",
+            toastBody: "Changes to published Marking fields are submitted for editor approval and do not update the catalog directly.",
+          }
+        : {
+            ...baseCopy,
+            h1: "Continue your draft",
+            intro: "Pick up where you left off. Keep saving as a draft or submit when you are ready for editor review.",
+            card: "Edit draft",
+            button: SUBMISSION_LABELS.action.submitNewMarking,
+            toastTitle: SUBMISSION_LABELS.toast.received,
+            toastBody:
+              "Your Marking has been submitted for approval. It will appear in Search after an editor approves it.",
+          }
+      : baseCopy;
   const [loadingRecord, setLoadingRecord] = useState(isEditMarking);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [colorOptions, setColorOptions] = useState<ColorOption[]>([]);
@@ -2692,17 +2703,19 @@ const Contribute = () => {
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full sm:flex-1"
-                        disabled={submitting || noAssignedStates}
-                        onClick={(e) => {
-                          handleSubmit(e, true);
-                        }}
-                      >
-                        Save as Draft
-                      </Button>
+                      {!isPendingEditContribution && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full sm:flex-1"
+                          disabled={submitting || noAssignedStates}
+                          onClick={(e) => {
+                            handleSubmit(e, true);
+                          }}
+                        >
+                          Save as Draft
+                        </Button>
+                      )}
                       <Button
                         type="submit"
                         className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"

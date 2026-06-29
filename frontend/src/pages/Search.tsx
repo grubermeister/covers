@@ -95,29 +95,19 @@ function isDefaultSort(entries: SortEntry[]): boolean {
  */
 function orderingParamForSort(entries: SortEntry[]): string {
   if (entries.length === 0) return "id";
+  if (isDefaultSort(entries)) {
+    return [
+      "post_office__post_office_regions__region__name",
+      "is_manuscript",
+      "post_office__name",
+      "earliest_seen",
+      "id",
+    ].join(",");
+  }
   const cols: string[] = [];
-  const used = new Set<string>();
   for (const e of entries) {
     const col = SORT_FIELD_COLUMN[e.field];
     cols.push((e.dir === "desc" ? "-" : "") + col);
-    used.add(col);
-    // Inject is_manuscript right after region so handstamps sort before
-    // manuscripts within each region.
-    if (col === "post_office__post_office_regions__region__name" && !used.has("is_manuscript")) {
-      cols.push("is_manuscript");
-      used.add("is_manuscript");
-    }
-  }
-  for (const tb of [
-    "post_office__post_office_regions__region__name",
-    "is_manuscript",
-    "post_office__name",
-    "earliest_seen",
-  ]) {
-    if (!used.has(tb)) {
-      cols.push(tb);
-      used.add(tb);
-    }
   }
   cols.push("id");
   return cols.join(",");

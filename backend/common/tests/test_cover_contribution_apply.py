@@ -496,6 +496,156 @@ class CoverContributionApproveEndpointTests(APITestCase):
     def _suggestion_url(self, pk):
         return "/api/v2/contributions/{}/catalog-code-suggestion/".format(pk)
 
+    def test_rejected_cover_contribution_can_be_saved_again(self):
+        sd = _cover_submitted_data(self.parent, cover_date="1850-06-01")
+        contrib = _make_cover_contribution(
+            self.contributor,
+            sd,
+            self.collection,
+            status=Contribution.STATUS_REJECTED,
+        )
+        self.client.force_authenticate(self.contributor)
+
+        resp = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_contribution_id": contrib.pk,
+                "submission_kind": "cover",
+                "save_as_draft": "true",
+                "state": "VA",
+                "type": "FC",
+                "parent_marking_id": self.parent.pk,
+                "marking_id": self.parent.pk,
+                "cover_date": "1850-06-02",
+                "cover_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        contrib.refresh_from_db()
+        self.assertEqual(contrib.status, Contribution.STATUS_REJECTED)
+        self.assertEqual(contrib.submitted_data["cover_date"], "1850-06-02")
+
+    def test_rejected_cover_contribution_can_be_resubmitted(self):
+        sd = _cover_submitted_data(self.parent, cover_date="1850-06-01")
+        contrib = _make_cover_contribution(
+            self.contributor,
+            sd,
+            self.collection,
+            status=Contribution.STATUS_REJECTED,
+        )
+        self.client.force_authenticate(self.contributor)
+
+        resp = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_contribution_id": contrib.pk,
+                "submission_kind": "cover",
+                "state": "VA",
+                "type": "FC",
+                "parent_marking_id": self.parent.pk,
+                "marking_id": self.parent.pk,
+                "cover_date": "1850-06-03",
+                "cover_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        contrib.refresh_from_db()
+        self.assertEqual(contrib.status, Contribution.STATUS_PENDING)
+        self.assertEqual(contrib.submitted_data["cover_date"], "1850-06-03")
+
+    def test_pending_cover_contribution_can_be_updated_before_review(self):
+        sd = _cover_submitted_data(self.parent, cover_date="1850-06-01")
+        contrib = _make_cover_contribution(
+            self.contributor,
+            sd,
+            self.collection,
+            status=Contribution.STATUS_PENDING,
+        )
+        self.client.force_authenticate(self.contributor)
+
+        resp = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_contribution_id": contrib.pk,
+                "submission_kind": "cover",
+                "state": "VA",
+                "type": "FC",
+                "parent_marking_id": self.parent.pk,
+                "marking_id": self.parent.pk,
+                "cover_date": "1850-06-04",
+                "cover_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        contrib.refresh_from_db()
+        self.assertEqual(contrib.status, Contribution.STATUS_PENDING)
+        self.assertEqual(contrib.submitted_data["cover_date"], "1850-06-04")
+
+    def test_draft_cover_edit_does_not_supersede_prior_rows(self):
+        cover = Cover.objects.create(
+            code="ASCC1-VA-C0001",
+            type="FC",
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        cover_marking = CoverMarking.objects.create(
+            cover=cover,
+            marking=self.parent,
+            review_status=CoverMarking.REVIEW_APPROVED,
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        original = Contribution.objects.create(
+            contributor=self.contributor,
+            collection=self.collection,
+            submitted_data=_cover_submitted_data(
+                self.parent,
+                cover_id=cover.pk,
+                cover_marking_id=cover_marking.pk,
+            ),
+            status=Contribution.STATUS_APPROVED,
+            marking=self.parent,
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        self.client.force_authenticate(self.contributor)
+
+        resp = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "submission_kind": "cover",
+                "save_as_draft": "true",
+                "edit_cover_id": cover.pk,
+                "edit_cover_marking_id": cover_marking.pk,
+                "state": "VA",
+                "type": "FC",
+                "parent_marking_id": self.parent.pk,
+                "marking_id": self.parent.pk,
+                "cover_date": "1850-06-02",
+                "cover_granularity": "DAY",
+            },
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertTrue(Contribution.objects.filter(pk=original.pk).exists())
+        draft = Contribution.objects.get(pk=resp.data["id"])
+        self.assertEqual(draft.status, Contribution.STATUS_DRAFT)
+        self.assertEqual(resp.data["cover_id"], cover.pk)
+        self.assertEqual(ContributionListSerializer(draft).data["cover_id"], cover.pk)
+        self.assertFalse(
+            SubmissionTransaction.objects.filter(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_SUPERSEDED,
+                cover=cover,
+            ).exists()
+        )
+
     def test_approve_endpoint_materializes_and_records(self):
         sd = _cover_submitted_data(self.parent)
         contrib = _make_cover_contribution(self.contributor, sd, self.collection)
@@ -532,6 +682,68 @@ class CoverContributionApproveEndpointTests(APITestCase):
             ).exists()
         )
         self.assertTrue(CoverVersion.objects.filter(cover_id=cover_id).exists())
+
+    def test_approve_cover_edit_supersedes_prior_same_contributor_cover_row(self):
+        cover = Cover.objects.create(
+            code="ASCC1-VA-C0001",
+            type="FC",
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        cover_marking = CoverMarking.objects.create(
+            cover=cover,
+            marking=self.parent,
+            review_status=CoverMarking.REVIEW_APPROVED,
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        original = Contribution.objects.create(
+            contributor=self.contributor,
+            collection=self.collection,
+            submitted_data=_cover_submitted_data(
+                self.parent,
+                cover_id=cover.pk,
+                cover_marking_id=cover_marking.pk,
+            ),
+            status=Contribution.STATUS_APPROVED,
+            marking=self.parent,
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        edit = _make_cover_contribution(
+            self.contributor,
+            _cover_submitted_data(
+                self.parent,
+                edit_cover_id=cover.pk,
+                edit_cover_marking_id=cover_marking.pk,
+                cover_date="1850-06-02",
+            ),
+            self.collection,
+        )
+        self.client.force_authenticate(self.editor)
+
+        resp = self.client.post(
+            self._approve_url(edit.pk),
+            {"review_notes": "updated"},
+            format="json",
+        )
+
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertEqual(resp.data["coverId"], cover.pk)
+        self.assertFalse(Contribution.objects.filter(pk=original.pk).exists())
+        edit.refresh_from_db()
+        self.assertEqual(edit.status, Contribution.STATUS_APPROVED)
+        self.assertEqual(edit.marking_id, self.parent.pk)
+        self.assertEqual(edit.submitted_data["cover_id"], cover.pk)
+        tombstone = SubmissionTransaction.objects.get(
+            action=SubmissionTransaction.ACTION_CONTRIBUTION_SUPERSEDED,
+            cover=cover,
+        )
+        self.assertEqual(tombstone.before_payload["contribution_id"], original.pk)
+        self.assertEqual(
+            tombstone.extra_payload["superseded_by_contribution_id"],
+            edit.pk,
+        )
 
     def test_contribution_no_longer_pending_after_approval(self):
         sd = _cover_submitted_data(self.parent)
