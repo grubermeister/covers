@@ -155,6 +155,86 @@ class V1PipelineTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_v1_overlay_preserves_multi_star_inscription_text(self):
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("ABINGDON/*VA.*"),
+            "ABINGDON/*VA.*",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("*BETHANY/Va."),
+            "BETHANY/Va.",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("BETHANY/Va.*"),
+            "BETHANY/Va.",
+        )
+
+    def test_v1_overlay_same_uses_immediate_previous_row_text(self):
+        carry_state = {}
+        rows = [
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "ABINGDON/*VA.*",
+            },
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "Same/VA.",
+            },
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "Same",
+            },
+        ]
+
+        resolved = [
+            v1_bundle_overlay.overlay_row_inscription(row, carry_state)
+            for row in rows
+        ]
+
+        self.assertEqual(
+            resolved,
+            ["ABINGDON/*VA.*", "ABINGDON/VA.", "ABINGDON/VA."],
+        )
+
+    def test_v1_overlay_applies_multi_star_townmark_text(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-VA-M1076",
+                "type": "TOWNMARK",
+                "inscription_txt": "ABINGDON/VA.",
+                "post_office": "USA-VA1-1",
+                "is_manuscript": "False",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "ABINGDON/*VA.*",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "104",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(
+            markings_by_id["M1"]["inscription_txt"],
+            "ABINGDON/*VA.*",
+        )
+
     def test_catalog_rows_include_approve_deleted_when_not_deleted(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -404,6 +484,66 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(rolled["raw_id"].tolist(), ["71", "72"])
         self.assertEqual(rolled["parsed_colors"].tolist(), [["BLACK"], ["RED"]])
         self.assertEqual([row["chunk"] for row in lineage_rows], ["71", "72"])
+
+    def test_v1_catalog_rows_drop_manual_color_split_duplicates(self):
+        fields = [
+            "nRawStateDataID",
+            "txtRawStateData",
+            "txtTown",
+            "txtTownPostmark",
+            "txtRates",
+            "txtColors",
+            "txtTownmarkColor",
+            "dtUpdated",
+            "nImageCount",
+        ]
+        base = {
+            "txtRawStateData": "Same/Va.(1834-51;30;FREE,PAID;Black,Blue,Red) 20",
+            "txtTown": "ABINGDON",
+            "txtTownPostmark": "ABINGDON/Va.",
+            "txtRates": "FREE,PAID,5,10",
+            "txtColors": "Black,Blue,Red",
+            "dtUpdated": "2024-01-25 05:51:45",
+            "nImageCount": "0",
+        }
+        rows = [
+            {
+                **base,
+                "nRawStateDataID": "108",
+                "txtTownmarkColor": "Black",
+            },
+            {
+                **base,
+                "nRawStateDataID": "774",
+                "txtTownmarkColor": "Blue",
+                "dtUpdated": "2024-01-26 00:00:00",
+            },
+            {
+                **base,
+                "nRawStateDataID": "775",
+                "txtTownmarkColor": "Red",
+            },
+            {
+                **base,
+                "nRawStateDataID": "776",
+                "txtTownmarkColor": "Red",
+                "txtRates": "PAID",
+            },
+            {
+                **base,
+                "nRawStateDataID": "777",
+                "txtTownmarkColor": "Blue",
+            },
+        ]
+
+        kept, dropped = v1_catalog_rows.dedupe_v1_color_split_rows(
+            rows,
+            fields,
+            image_counts={"777": 1},
+        )
+
+        self.assertEqual([row["nRawStateDataID"] for row in kept], ["108", "776", "777"])
+        self.assertEqual(dropped, ["774", "775"])
 
     def test_synthetic_listing_preserves_note_only_rate_text_as_desc(self):
         row = {

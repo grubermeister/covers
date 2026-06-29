@@ -38,6 +38,7 @@ import {
   type MarkingCitationReferenceWork,
   type MarkingImage,
   type MarkingRecord,
+  deleteImage,
 } from "@/services/markings";
 import {
   Dialog,
@@ -58,6 +59,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { useAuth } from "@/hooks/useAuth";
@@ -302,6 +304,7 @@ const RecordDetail = () => {
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [savingReviewed, setSavingReviewed] = useState(false);
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
   const markingId = id ? parseInt(String(id).replace(/^api-/, ""), 10) : null;
 
@@ -482,6 +485,7 @@ const RecordDetail = () => {
     const next = record.images.slice();
     const [picked] = next.splice(index, 1);
     next.unshift(picked);
+    setCurrent(0);
     void applyImageOrder(next);
   };
 
@@ -551,6 +555,34 @@ const RecordDetail = () => {
     if (markingId == null || Number.isNaN(markingId)) return;
     const refreshed = await getMarkingById(markingId);
     if (refreshed) setRecord(refreshed);
+  };
+
+  const handleDeleteImage = async (index: number) => {
+    if (!record) return;
+    const image = record.images[index];
+    if (!image || image.imageId <= 0) return;
+    const label = image.originalFilename || `image ${index + 1}`;
+    const confirmed = window.confirm(
+      `Delete ${label}? This removes the image from its catalog record.`,
+    );
+    if (!confirmed) return;
+    setDeletingImageId(image.imageId);
+    try {
+      const res = await deleteImage(image.imageId);
+      if (res.ok) {
+        toast({ title: "Image deleted" });
+        await refetchRecord();
+        setCurrent((prev) => Math.max(0, Math.min(prev, record.images.length - 2)));
+      } else {
+        toast({
+          title: "Could not delete image",
+          description: res.message,
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setDeletingImageId(null);
+    }
   };
 
   // State-editor "reviewed/confirmed" toggle (Issue #22). Optimistically reflect
@@ -734,7 +766,12 @@ const RecordDetail = () => {
                         const src = img.imageUrl || imageNotAvailable;
                         const alt = img.originalFilename || `Image ${index + 1}`;
                         const isPlaceholder = !img.imageUrl;
-                        const inner = (
+                        const canSetDefaultImage =
+                          isStaff &&
+                          !record.isRemoved &&
+                          img.imageId != null &&
+                          !isPlaceholder;
+                        const imageFrame = (
                           <div className="relative flex w-full aspect-[4/3] items-center justify-center rounded border border-border bg-muted overflow-hidden">
                             <img src={src} alt={alt} className="w-full h-full object-contain" />
                             <div className="absolute top-2 left-2 flex flex-wrap items-center gap-1">
@@ -746,19 +783,49 @@ const RecordDetail = () => {
                         );
                         return (
                           <CarouselItem key={index}>
-                            {img.imageUrl ? (
-                              <a
-                                href={img.imageUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                aria-label={`Open ${alt} in new tab`}
-                                className="block"
-                              >
-                                {inner}
-                              </a>
-                            ) : (
-                              inner
-                            )}
+                            <div className="relative">
+                              {img.imageUrl ? (
+                                <a
+                                  href={img.imageUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label={`Open ${alt} in new tab`}
+                                  className="block"
+                                >
+                                  {imageFrame}
+                                </a>
+                              ) : (
+                                imageFrame
+                              )}
+                              {canSetDefaultImage && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="icon"
+                                      className={
+                                        img.isDefault
+                                          ? "absolute right-2 top-2 h-8 w-8 border-amber-400 bg-amber-100 text-amber-700 hover:bg-amber-100 hover:text-amber-700 disabled:opacity-100"
+                                          : "absolute right-2 top-2 h-8 w-8 bg-background/90"
+                                      }
+                                      aria-label={
+                                        img.isDefault
+                                          ? "Default catalog image"
+                                          : "Set as default catalog image"
+                                      }
+                                      disabled={reorderingImages || img.isDefault}
+                                      onClick={() => setImageAsDefault(index)}
+                                    >
+                                      <Star className={`h-4 w-4 ${img.isDefault ? "fill-amber-500 text-amber-500" : ""}`} />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {img.isDefault ? "Default catalog image" : "Set as default catalog image"}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
                           </CarouselItem>
                         );
                       })}
@@ -792,11 +859,11 @@ const RecordDetail = () => {
                       {galleryImages.map((img, idx) => {
                         // A removed marking is read-only: no image reordering
                         // either, only Restore.
-                        const canReorder =
+                        const canManageImage =
                           isStaff &&
                           !record.isRemoved &&
-                          img.imageId != null &&
-                          galleryImages.length > 1;
+                          img.imageId != null;
+                        const canReorder = canManageImage && galleryImages.length > 1;
                         return (
                           <div
                             key={`${img.imageId ?? img.originalFilename ?? "img"}-${idx}`}
@@ -814,56 +881,79 @@ const RecordDetail = () => {
                                 className="h-full w-full object-cover"
                               />
                             </button>
-                            {canReorder && (
+                            {canManageImage && (
                               // Editor reorder strip. Each button issues a
                               // PATCH /api/v2/images/{id}/ via applyImageOrder
                               // (with optimistic UI). Star = move to position
                               // 0 = becomes the Catalog Search thumbnail.
                               <div className="flex items-center gap-0.5">
+                                {canReorder && (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      aria-label="Move thumbnail left"
+                                      disabled={
+                                        reorderingImages || idx === 0
+                                      }
+                                      onClick={() => moveImageBy(idx, -1)}
+                                    >
+                                      <ArrowUp className="h-3 w-3 -rotate-90" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      aria-label="Move thumbnail right"
+                                      disabled={
+                                        reorderingImages ||
+                                        idx === galleryImages.length - 1
+                                      }
+                                      onClick={() => moveImageBy(idx, 1)}
+                                    >
+                                      <ArrowDown className="h-3 w-3 -rotate-90" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className={
+                                        img.isDefault
+                                          ? "h-6 w-6 text-amber-600 hover:text-amber-600 disabled:opacity-100"
+                                          : "h-6 w-6"
+                                      }
+                                      aria-label="Set as default catalog thumbnail"
+                                      title={
+                                        img.isDefault
+                                          ? "Default catalog thumbnail"
+                                          : "Set as default catalog thumbnail"
+                                      }
+                                      disabled={reorderingImages || img.isDefault}
+                                      onClick={() => setImageAsDefault(idx)}
+                                    >
+                                      <Star
+                                        className={`h-3 w-3 ${img.isDefault ? "fill-amber-500 text-amber-500" : ""}`}
+                                      />
+                                    </Button>
+                                  </>
+                                )}
                                 <Button
                                   type="button"
                                   variant="ghost"
                                   size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Move thumbnail left"
-                                  disabled={
-                                    reorderingImages || idx === 0
-                                  }
-                                  onClick={() => moveImageBy(idx, -1)}
-                                >
-                                  <ArrowUp className="h-3 w-3 -rotate-90" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Move thumbnail right"
+                                  className="h-6 w-6 text-destructive hover:text-destructive"
+                                  aria-label="Delete image"
+                                  title="Delete image"
                                   disabled={
                                     reorderingImages ||
-                                    idx === galleryImages.length - 1
+                                    deletingImageId === img.imageId
                                   }
-                                  onClick={() => moveImageBy(idx, 1)}
+                                  onClick={() => handleDeleteImage(idx)}
                                 >
-                                  <ArrowDown className="h-3 w-3 -rotate-90" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant={img.isDefault ? "secondary" : "ghost"}
-                                  size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Set as default catalog thumbnail"
-                                  title={
-                                    img.isDefault
-                                      ? "Default catalog thumbnail"
-                                      : "Set as default catalog thumbnail"
-                                  }
-                                  disabled={reorderingImages || img.isDefault}
-                                  onClick={() => setImageAsDefault(idx)}
-                                >
-                                  <Star
-                                    className={`h-3 w-3 ${img.isDefault ? "fill-current" : ""}`}
-                                  />
+                                  <Trash2 className="h-3 w-3" />
                                 </Button>
                               </div>
                             )}

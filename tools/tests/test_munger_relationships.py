@@ -17,7 +17,11 @@ TOOLS_DIR = Path(__file__).resolve().parents[1]
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from munger.relationships import resolve_relationships, roll_up_catalog_text
+from munger.relationships import (
+    resolve_relationships,
+    roll_up_catalog_text,
+    strip_inscription_markers,
+)
 
 
 class ResolveRelationshipsTests(unittest.TestCase):
@@ -35,6 +39,30 @@ class ResolveRelationshipsTests(unittest.TestCase):
         resolved = resolve_relationships(listings)
 
         self.assertEqual(resolved.loc[0, "resolved_inscription"], "BETHANY/Va.")
+
+    def test_strip_inscription_preserves_multi_star_device_text(self):
+        self.assertEqual(
+            strip_inscription_markers("ABINGDON/*VA.*"),
+            "ABINGDON/*VA.*",
+        )
+        self.assertEqual(strip_inscription_markers("*BETHANY/Va."), "BETHANY/Va.")
+        self.assertEqual(strip_inscription_markers("BETHANY/Va.*"), "BETHANY/Va.")
+
+    def test_independent_inscription_preserves_internal_stars(self):
+        listings = pd.DataFrame(
+            [
+                {
+                    "head_rel_type": None,
+                    "head_name_body": "ABINGDON/*VA.*",
+                    "Default Shape": "C",
+                },
+            ]
+        )
+
+        resolved = resolve_relationships(listings)
+
+        self.assertEqual(resolved.loc[0, "resolved_inscription"], "ABINGDON/*VA.*")
+        self.assertEqual(resolved.loc[0, "resolved_town"], "ABINGDON")
 
     def test_same_suffix_uses_parent_townmark_text(self):
         cases = [
@@ -86,6 +114,60 @@ class ResolveRelationshipsTests(unittest.TestCase):
 
         self.assertEqual(resolved.loc[1, "resolved_inscription"], "CABOTVILLE / Ms.")
         self.assertNotIn("Same", resolved.loc[1, "resolved_inscription"])
+
+    def test_bare_same_inherits_immediate_same_suffix_sibling(self):
+        listings = pd.DataFrame(
+            [
+                {
+                    "head_rel_type": None,
+                    "head_name_body": "ABINGDON/*VA.*",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": "/VA.",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": None,
+                    "Default Shape": "C",
+                },
+            ]
+        )
+
+        resolved = resolve_relationships(listings)
+
+        self.assertEqual(resolved.loc[0, "resolved_inscription"], "ABINGDON/*VA.*")
+        self.assertEqual(resolved.loc[1, "resolved_inscription"], "ABINGDON/VA.")
+        self.assertEqual(resolved.loc[2, "resolved_inscription"], "ABINGDON/VA.")
+        self.assertEqual(resolved.loc[2, "prev_sibling_idx"], 1)
+
+    def test_same_suffix_uses_immediate_same_suffix_sibling_stem(self):
+        listings = pd.DataFrame(
+            [
+                {
+                    "head_rel_type": None,
+                    "head_name_body": "ALEXANDRIA/Va.",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": "VA./5",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": "/VA.",
+                    "Default Shape": "C",
+                },
+            ]
+        )
+
+        resolved = resolve_relationships(listings)
+
+        self.assertEqual(resolved.loc[1, "resolved_inscription"], "ALEXANDRIA VA./5")
+        self.assertEqual(resolved.loc[2, "resolved_inscription"], "ALEXANDRIA VA./VA.")
 
     def test_rollup_dedupes_identical_parent_and_child_text(self):
         listings = pd.DataFrame(

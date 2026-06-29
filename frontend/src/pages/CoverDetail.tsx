@@ -22,6 +22,7 @@ import {
   getImagesForSubject,
   getMarkingChangelog,
   getCoverMarkingsByCover,
+  deleteImage,
   loadAssociatedMarkingsForCover,
   normalizeImageUrl,
   postCoverMarkingReview,
@@ -155,6 +156,7 @@ const CoverDetailPage = () => {
   const [removing, setRemoving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
   const isStaff =
     !!user &&
@@ -451,8 +453,44 @@ const CoverDetailPage = () => {
     const next = images.slice();
     const [picked] = next.splice(index, 1);
     next.unshift(picked);
+    setCurrent(0);
     void applyImageOrder(next);
   };
+
+  const handleDeleteImage = useCallback(
+    async (index: number) => {
+      if (coverPk == null) return;
+      const image = images[index];
+      if (!image || image.imageId <= 0) return;
+      const label = image.originalFilename || `image ${index + 1}`;
+      const confirmed = window.confirm(
+        `Delete ${label}? This removes the image from this cover.`,
+      );
+      if (!confirmed) return;
+      setDeletingImageId(image.imageId);
+      try {
+        const res = await deleteImage(image.imageId);
+        if (res.ok) {
+          toast({ title: "Image deleted" });
+          const refreshed = await getImagesForSubject({
+            subjectType: "COVER",
+            subjectId: coverPk,
+          });
+          setImages(refreshed);
+          setCurrent((prev) => Math.max(0, Math.min(prev, refreshed.length - 1)));
+        } else {
+          toast({
+            title: "Could not delete image",
+            description: res.message,
+            variant: "destructive",
+          });
+        }
+      } finally {
+        setDeletingImageId(null);
+      }
+    },
+    [coverPk, images, toast],
+  );
 
   const requireAuth = (): boolean => {
     if (user) return true;
@@ -504,6 +542,7 @@ const CoverDetailPage = () => {
   }
 
   const galleryImages = buildCoverGalleryImages(images);
+  const canManageImages = isStaff && !cover.isRemoved;
   // A removed (recycle-binned) cover is read-only: no edits until it is restored
   // (mirrors the marking record UI).
   const canSubmitEdit =
@@ -539,16 +578,21 @@ const CoverDetailPage = () => {
               carouselApi={api}
               setCarouselApi={setApi}
               currentIndex={current}
+              canSetDefaultImage={canManageImages}
+              settingDefaultImage={reorderingImages}
+              onSetDefaultImage={setImageAsDefault}
             />
             <EntryAssociatedThumbnailsCard
               images={galleryImages}
               carouselApi={api}
               currentIndex={current}
               emptyMessage="No images linked to this cover yet."
-              canReorder={isStaff && !cover.isRemoved}
+              canReorder={canManageImages && galleryImages.length > 1}
               reorderingImages={reorderingImages}
+              deletingImageId={deletingImageId}
               onMoveBy={moveImageBy}
               onSetDefault={setImageAsDefault}
+              onDeleteImage={canManageImages ? handleDeleteImage : undefined}
             />
             {canViewHistory && (
               <EntryRecordHistoryCard

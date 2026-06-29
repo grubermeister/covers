@@ -1275,17 +1275,15 @@ export default function CoverEdit() {
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3 pt-2">
-                      {mode === "create" && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="w-full sm:flex-1"
-                          disabled={submitting}
-                          onClick={() => void submitCoverContribution(true)}
-                        >
-                          Save as Draft
-                        </Button>
-                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:flex-1"
+                        disabled={submitting}
+                        onClick={() => void submitCoverContribution(true)}
+                      >
+                        Save as Draft
+                      </Button>
                       <Button type="submit" className="w-full sm:flex-1" disabled={submitting}>
                         {submitting ? "Saving..." : mode === "create" ? "Submit Cover" : "Submit changes for review"}
                       </Button>

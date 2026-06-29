@@ -12,6 +12,7 @@ from common.models import (
     PostOfficeRegion,
     ReferenceWork,
     Region,
+    SubmissionTransaction,
 )
 
 
@@ -165,6 +166,133 @@ class ContributionSubmitMarkingEditTests(TestCase):
         self.assertEqual(len(metas), 1)
         self.assertEqual(metas[0]["storage_filename"], self.image.storage_filename)
         self.assertFalse(metas[0]["tracing"])
+
+    def test_fresh_marking_edit_supersedes_prior_same_contributor_rows(self):
+        original = Contribution.objects.create(
+            contributor=self.user,
+            collection=self.collection,
+            submitted_data={"submission_kind": "marking", "state": "VA"},
+            status=Contribution.STATUS_APPROVED,
+            marking=self.marking,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        returned = Contribution.objects.create(
+            contributor=self.user,
+            collection=self.collection,
+            submitted_data={
+                "submission_kind": "marking",
+                "edit_marking_id": self.marking.pk,
+                "state": "VA",
+            },
+            status=Contribution.STATUS_REJECTED,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        draft = Contribution.objects.create(
+            contributor=self.user,
+            collection=self.collection,
+            submitted_data={
+                "submission_kind": "marking",
+                "edit_marking_id": self.marking.pk,
+                "state": "VA",
+            },
+            status=Contribution.STATUS_DRAFT,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        other_user = User.objects.create_user(username="other", password="pw")
+        other_contribution = Contribution.objects.create(
+            contributor=other_user,
+            collection=self.collection,
+            submitted_data={
+                "submission_kind": "marking",
+                "edit_marking_id": self.marking.pk,
+                "state": "VA",
+            },
+            status=Contribution.STATUS_PENDING,
+            created_by=other_user,
+            modified_by=other_user,
+        )
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_marking_id": self.marking.pk,
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertFalse(Contribution.objects.filter(pk=original.pk).exists())
+        self.assertFalse(Contribution.objects.filter(pk=returned.pk).exists())
+        self.assertTrue(Contribution.objects.filter(pk=draft.pk).exists())
+        self.assertTrue(Contribution.objects.filter(pk=other_contribution.pk).exists())
+        self.assertTrue(
+            Contribution.objects.filter(
+                pk=response.data["id"],
+                status=Contribution.STATUS_PENDING,
+            ).exists()
+        )
+        tombstones = SubmissionTransaction.objects.filter(
+            action=SubmissionTransaction.ACTION_CONTRIBUTION_SUPERSEDED,
+            marking=self.marking,
+        )
+        self.assertEqual(tombstones.count(), 2)
+        self.assertEqual(
+            sorted(
+                row.before_payload["contribution_id"]
+                for row in tombstones
+            ),
+            sorted([original.pk, returned.pk]),
+        )
+
+    def test_draft_marking_edit_does_not_supersede_prior_rows(self):
+        original = Contribution.objects.create(
+            contributor=self.user,
+            collection=self.collection,
+            submitted_data={"submission_kind": "marking", "state": "VA"},
+            status=Contribution.STATUS_APPROVED,
+            marking=self.marking,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_marking_id": self.marking.pk,
+                "save_as_draft": "true",
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertTrue(Contribution.objects.filter(pk=original.pk).exists())
+        self.assertEqual(
+            Contribution.objects.get(pk=response.data["id"]).status,
+            Contribution.STATUS_DRAFT,
+        )
+        self.assertFalse(
+            SubmissionTransaction.objects.filter(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_SUPERSEDED,
+                marking=self.marking,
+            ).exists()
+        )
 
     def test_contributor_submitted_catalog_code_keys_are_stripped(self):
         response = self.client.post(
@@ -373,6 +501,33 @@ class ContributionSubmitMarkingEditTests(TestCase):
         marking = Marking.objects.get(pk=response.data["markingId"])
         self.assertEqual(marking.code, "ASCC1-VA-M0001")
 
+    def test_pending_marking_contribution_can_be_updated_before_review(self):
+        contribution = self._make_pending_marking_contribution()
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_contribution_id": contribution.pk,
+                "submission_kind": "marking",
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "UPDATED RICHMOND VA",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        contribution.refresh_from_db()
+        self.assertEqual(contribution.status, Contribution.STATUS_PENDING)
+        self.assertEqual(
+            contribution.submitted_data["inscription_txt"],
+            "UPDATED RICHMOND VA",
+        )
+
     def test_approve_marking_edit_updates_existing_catalog_code(self):
         self.marking.code = "ASCC1-VA-M0001"
         self.marking.save(update_fields=["code"])
@@ -404,7 +559,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         self.assertIsNone(response.data["code"])
 
-    def test_approving_marking_edit_does_not_duplicate_marking_link(self):
+    def test_approving_marking_edit_supersedes_original_marking_link(self):
         editor = self._editor()
         original = Contribution.objects.create(
             contributor=self.user,
@@ -453,9 +608,15 @@ class ContributionSubmitMarkingEditTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200, response.data)
-        original.refresh_from_db()
         edit.refresh_from_db()
-        self.assertEqual(original.marking_id, self.marking.pk)
-        self.assertIsNone(edit.marking_id)
+        self.assertFalse(Contribution.objects.filter(pk=original.pk).exists())
+        self.assertEqual(edit.marking_id, self.marking.pk)
         self.assertEqual(edit.status, Contribution.STATUS_APPROVED)
         self.assertEqual(response.data["markingId"], self.marking.pk)
+        self.assertTrue(
+            SubmissionTransaction.objects.filter(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_SUPERSEDED,
+                marking=self.marking,
+                before_payload__contribution_id=original.pk,
+            ).exists()
+        )

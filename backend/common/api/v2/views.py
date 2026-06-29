@@ -51,6 +51,10 @@ from common.contribution_apply import (
     _parse_int,
     strip_marking_date_keys,
 )
+from common.contribution_consolidation import (
+    ContributionTarget,
+    consolidate_superseded_contributions,
+)
 from common.audit import (
     build_cover_snapshot,
     build_marking_snapshot,
@@ -1886,6 +1890,15 @@ class ContributionViewSet(
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
                     contrib.modified_by = request.user
+                    # Delete older cover contributions before checking the
+                    # optional parent marking link. An older approved cover
+                    # contribution may own that one-to-one link.
+                    consolidate_superseded_contributions(
+                        current=contrib,
+                        target=ContributionTarget("cover", cover.pk),
+                        actor=request.user,
+                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                    )
                     update_fields = [
                         "status",
                         "reviewer",
@@ -1933,6 +1946,14 @@ class ContributionViewSet(
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
                     contrib.modified_by = request.user
+                    # Delete older marking contributions before assigning the
+                    # one-to-one Contribution.marking link to the latest row.
+                    consolidate_superseded_contributions(
+                        current=contrib,
+                        target=ContributionTarget("marking", marking.pk),
+                        actor=request.user,
+                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                    )
                     update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
                     if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
                         contrib.marking = marking
@@ -2411,24 +2432,25 @@ class ContributionSubmitView(APIView):
 
         if edit_pk is not None:
             if is_draft:
-                # Allow save-as-draft against either an actual draft or a
-                # needs_revision row (contributor saving partial edits before
-                # they are ready to resubmit). The needs_revision row keeps
-                # its status so it stays in the editor's history and the
-                # original review_notes remain visible.
+                # Allow saving updates against editable, unapproved rows.
+                # Pending rows stay pending; returned rows keep their status so
+                # they stay in history with the original review_notes visible.
                 target_statuses = [
                     Contribution.STATUS_DRAFT,
+                    Contribution.STATUS_PENDING,
                     Contribution.STATUS_NEEDS_REVISION,
+                    Contribution.STATUS_REJECTED,
                 ]
                 transition_to_pending = False
             else:
-                # Non-draft submit with edit_pk: contributor either resubmitting
-                # after the editor returned the contribution for revision OR
-                # promoting one of their own drafts to pending review for the
-                # first time. Both transition the row to pending.
+                # Non-draft submit with edit_pk: contributor is updating a
+                # pending row, resubmitting a returned row, or promoting one of
+                # their own drafts to pending review. All end as pending.
                 target_statuses = [
                     Contribution.STATUS_DRAFT,
+                    Contribution.STATUS_PENDING,
                     Contribution.STATUS_NEEDS_REVISION,
+                    Contribution.STATUS_REJECTED,
                 ]
                 transition_to_pending = True
 
@@ -2439,9 +2461,9 @@ class ContributionSubmitView(APIView):
             ).first()
             if not contrib:
                 detail = (
-                    "Contribution not found, not owned by you, or not in a submittable status (draft / needs_revision)."
+                    "Contribution not found, not owned by you, or not in a submittable status (draft / pending / needs_revision / rejected)."
                     if transition_to_pending
-                    else "Draft or returned contribution not found or not editable."
+                    else "Draft, pending, or returned contribution not found or not editable."
                 )
                 return Response({"detail": detail}, status=status.HTTP_404_NOT_FOUND)
             existing_sd = dict(contrib.submitted_data or {})
@@ -2469,6 +2491,12 @@ class ContributionSubmitView(APIView):
                 contrib.review_notes = ""
                 update_fields += ["status", "reviewer", "review_notes"]
             contrib.save(update_fields=update_fields)
+            if transition_to_pending:
+                consolidate_superseded_contributions(
+                    current=contrib,
+                    actor=request.user,
+                    source=SubmissionTransaction.SOURCE_CONTRIBUTOR_PORTAL,
+                )
             log_submission_transaction(
                 action=SubmissionTransaction.ACTION_EDIT_SUBMISSION,
                 actor=request.user,
@@ -2527,6 +2555,12 @@ class ContributionSubmitView(APIView):
             created_by=request.user,
             modified_by=request.user,
         )
+        if not is_draft:
+            consolidate_superseded_contributions(
+                current=contrib,
+                actor=request.user,
+                source=SubmissionTransaction.SOURCE_CONTRIBUTOR_PORTAL,
+            )
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_SUBMIT,
             actor=request.user,

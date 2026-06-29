@@ -35,6 +35,7 @@ from extract_state_cross_section import (
 )
 from v1_to_v2_catalog_format import (
     RAW_ID_COL,
+    build_image_counts,
     normalize_listing,
     write_image_refs,
 )
@@ -46,6 +47,27 @@ IMAGE_COUNT_VALUE = "0"
 ROW_TYPE_VALUE = "LISTING"
 TOWN_COL = "txtTown"
 TOWN_POSTMARK_COL = "txtTownPostmark"
+V1_COLOR_SPLIT_IGNORED_COLUMNS = frozenset({
+    "nRawStateDataID",
+    "nRawStateDataID_parent",
+    "txtColors",
+    "txtTownmarkColor",
+    "txtDefaultImage",
+    "txtPDFPage",
+    "nImageCount",
+    "dtEntered",
+    "dtUpdated",
+    "ynForReview",
+    "txtReasonForReview",
+    "txtMarkedBy",
+    "dtMarkedForReview",
+    "approve_status",
+    "request_status",
+    "txtUserEmail",
+    "ynEmailCheck",
+    "submitterId",
+    "approverId",
+})
 
 
 def candidate_town_tokens(row: dict[str, str]) -> list[str]:
@@ -93,15 +115,72 @@ def strip_glued_context_prefix(listing: str, row: dict[str, str]) -> str:
     return listing
 
 
-def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[str]]:
+def v1_color_split_key(row: dict[str, str], fields: list[str]) -> tuple[str, ...]:
+    """Return the semantic key used to collapse manual v1 color splits.
+
+    v1 sometimes has several rows for one catalog record because an editor
+    manually split color variants across rows. The munger owns color fan-out,
+    so the v1 adapter drops later rows only when all parser-relevant fields are
+    identical after excluding color sources and administrative bookkeeping.
+
+    Example duplicate shape:
+      {"txtRawStateData": "Same(...;Black,Blue,Red) 20",
+       "txtTownmarkColor": "Blue"}
+      {"txtRawStateData": "Same(...;Black,Blue,Red) 20",
+       "txtTownmarkColor": "Red"}
+    """
+    parts = []
+    for field in fields:
+        if field in V1_COLOR_SPLIT_IGNORED_COLUMNS:
+            continue
+        parts.append(normalize_listing(row.get(field)))
+    return tuple(parts)
+
+
+def dedupe_v1_color_split_rows(
+    rows: list[dict[str, str]],
+    fields: list[str],
+    image_counts: dict[str, int] | None = None,
+) -> tuple[list[dict[str, str]], list[str]]:
+    """Drop later rows that only differ by v1 color columns.
+
+    Rows with image refs are always kept. If a duplicate image-bearing row were
+    dropped here, write_image_refs() would have no included raw id to attach
+    that image to during the v1 overlay step.
+    """
+    image_counts = image_counts or {}
+    seen = set()
+    kept = []
+    dropped_raw_ids = []
+    for row in rows:
+        raw_id = (row.get(RAW_ID_COL) or "").strip()
+        key = v1_color_split_key(row, fields)
+        if int(image_counts.get(raw_id, 0)) > 0:
+            seen.add(key)
+            kept.append(row)
+            continue
+        if key in seen:
+            dropped_raw_ids.append(raw_id)
+            continue
+        seen.add(key)
+        kept.append(row)
+    return kept, dropped_raw_ids
+
+
+def write_v1_catalog_rows(
+    slice_path: Path,
+    out_path: Path,
+    image_counts: dict[str, int] | None = None,
+) -> tuple[int, list[str]]:
     """Write a v1 slice as munger-safe catalog rows.
 
     Returns (rows_written, included_raw_ids). included_raw_ids contains source
     rows whose txtRawStateData is non-empty or whose v1 split columns can be
     synthesized into munger-safe listing text.
     """
-    rows = []
+    catalog_rows = []
     included_raw_ids = []
+    source_rows = []
     with Path(slice_path).open(newline="", encoding="utf-8") as src:
         reader = csv.DictReader(src)
         fields = reader.fieldnames
@@ -112,7 +191,22 @@ def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[s
                 sys.exit(
                     "error: {0} has no '{1}' column".format(slice_path, required)
                 )
-        for row in reader:
+        raw_rows = list(reader)
+        source_rows, dropped_raw_ids = dedupe_v1_color_split_rows(
+            raw_rows,
+            fields,
+            image_counts=image_counts,
+        )
+        if dropped_raw_ids:
+            print(
+                "dropped v1 color-split duplicate rows: {0} ({1})".format(
+                    len(dropped_raw_ids),
+                    ", ".join(dropped_raw_ids[:10]),
+                )
+            )
+        else:
+            print("dropped v1 color-split duplicate rows: 0")
+        for row in source_rows:
             listing = normalize_listing(row.get(RAW_TEXT_COL))
             listing = strip_glued_context_prefix(listing, row)
             if not listing:
@@ -121,7 +215,7 @@ def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[s
                 continue
             raw_id = (row.get(RAW_ID_COL) or "").strip()
             included_raw_ids.append(raw_id)
-            rows.append(
+            catalog_rows.append(
                 {
                     "listing_text": listing,
                     "catalog_page": CATALOG_PAGE_VALUE,
@@ -133,8 +227,8 @@ def write_v1_catalog_rows(slice_path: Path, out_path: Path) -> tuple[int, list[s
                     "institutional_owner": "",
                 }
             )
-    write_catalog_rows(Path(out_path), rows)
-    return len(rows), included_raw_ids
+    write_catalog_rows(Path(out_path), catalog_rows)
+    return len(catalog_rows), included_raw_ids
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -197,7 +291,12 @@ def main(argv: list[str] | None = None) -> int:
 
     state_id = resolve_state_id(states_path, state)
     stats = write_slice(raw_path, slice_out, state_id, status=STATUS_NOT_DELETED)
-    rows_written, raw_ids = write_v1_catalog_rows(slice_out, catalog_rows_out)
+    image_counts = build_image_counts(images_path)
+    rows_written, raw_ids = write_v1_catalog_rows(
+        slice_out,
+        catalog_rows_out,
+        image_counts=image_counts,
+    )
     region_abbrev = (
         args.region_abbrev.strip().upper()
         if args.region_abbrev

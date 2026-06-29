@@ -16,6 +16,7 @@ from common.catalog_codes import (
     strip_catalog_code_keys,
     validate_unique_catalog_code,
 )
+from common.contribution_consolidation import contribution_target
 from common.models import (
     Citation,
     Collection,
@@ -405,7 +406,7 @@ class CoverSerializer(serializers.ModelSerializer):
     is_removed = serializers.SerializerMethodField()
     can_remove = serializers.SerializerMethodField()
     # Derived display name of the submitter (the cover's created_by, i.e. the
-    # contributor). Returned ONLY when the submitter opted in — privacy is
+    # contributor). Returned ONLY when the submitter opted in -- privacy is
     # enforced here at the API boundary, not just hidden in the UI.
     submitter_name = serializers.SerializerMethodField()
 
@@ -920,35 +921,27 @@ def _contribution_submitted_data_is_cover(sd) -> bool:
 
 
 def _contribution_target_marking_id(obj):
-    if obj.marking_id:
-        return obj.marking_id
     sd = obj.submitted_data or {}
-    raw = None
     if _contribution_submitted_data_is_cover(sd):
         raw = sd.get("parent_marking_id") or sd.get("marking_id")
-    else:
-        raw = sd.get("edit_marking_id") or sd.get("original_marking_id")
-    if raw in (None, ""):
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+    target = contribution_target(obj)
+    if target is None or target.kind != "marking":
         return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
+    return target.id
 
 
 def _contribution_target_cover_id(obj):
-    sd = obj.submitted_data or {}
-    if not _contribution_submitted_data_is_cover(sd):
+    target = contribution_target(obj)
+    if target is None or target.kind != "cover":
         return None
-    raw = sd.get("cover_id") or sd.get("coverId")
-    if raw in (None, ""):
-        return None
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return value if value > 0 else None
+    return target.id
 
 
 class ContributionListSerializer(serializers.ModelSerializer):

@@ -1690,12 +1690,14 @@ def main(argv=None):
         # Lettering: null for manuscript (per invariant), resolved from annotations otherwise
         lettering_id = None if is_ms else src.get('lettering_id')
 
-        # Parent listing (intermediate for review)
-        parent_listing_idx = src.get('parent_idx')
-        if pd.notna(parent_listing_idx):
-            parent_listing_idx = int(parent_listing_idx)
+        # Carry-source listing (intermediate for review). Relationship rows
+        # inherit from the immediately preceding sibling, not the top family
+        # anchor, matching Step 7.1b field inheritance.
+        carry_listing_idx = src.get('prev_sibling_idx')
+        if pd.notna(carry_listing_idx):
+            carry_listing_idx = int(carry_listing_idx)
         else:
-            parent_listing_idx = None
+            carry_listing_idx = None
 
         # Images above: catalog page image count (intermediate field for human review)
         images_above = src.get('Images Above')
@@ -1748,7 +1750,7 @@ def main(argv=None):
             'images_above': images_above,
             'page': page,
             'chunk': chunk,
-            'parent_listing_idx': parent_listing_idx,
+            'parent_listing_idx': carry_listing_idx,
         }
     townmarks_df = pd.DataFrame(
         [build_townmark(row) for _, row in fanout_df.iterrows()]
