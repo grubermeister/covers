@@ -155,6 +155,86 @@ class V1PipelineTests(unittest.TestCase):
                     expected,
                 )
 
+    def test_v1_overlay_preserves_multi_star_inscription_text(self):
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("ABINGDON/*VA.*"),
+            "ABINGDON/*VA.*",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("*BETHANY/Va."),
+            "BETHANY/Va.",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.strip_inscription_markers("BETHANY/Va.*"),
+            "BETHANY/Va.",
+        )
+
+    def test_v1_overlay_same_uses_immediate_previous_row_text(self):
+        carry_state = {}
+        rows = [
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "ABINGDON/*VA.*",
+            },
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "Same/VA.",
+            },
+            {
+                "txtTown": "ABINGDON",
+                "txtTownPostmark": "ABINGDON/*VA.*",
+                "txtPostmark": "Same",
+            },
+        ]
+
+        resolved = [
+            v1_bundle_overlay.overlay_row_inscription(row, carry_state)
+            for row in rows
+        ]
+
+        self.assertEqual(
+            resolved,
+            ["ABINGDON/*VA.*", "ABINGDON/VA.", "ABINGDON/VA."],
+        )
+
+    def test_v1_overlay_applies_multi_star_townmark_text(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-VA-M1076",
+                "type": "TOWNMARK",
+                "inscription_txt": "ABINGDON/VA.",
+                "post_office": "USA-VA1-1",
+                "is_manuscript": "False",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "ABINGDON/*VA.*",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "104",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(
+            markings_by_id["M1"]["inscription_txt"],
+            "ABINGDON/*VA.*",
+        )
+
     def test_catalog_rows_include_approve_deleted_when_not_deleted(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

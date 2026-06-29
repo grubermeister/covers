@@ -122,12 +122,21 @@ TRAILING_INSCRIPTION_MARKER_RE = re.compile(r"\s*(?:\(\s*\d(?:\.\d)?\s*\))\s*$")
 CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
 
 
+def strip_unambiguous_star_marker(text: str) -> str:
+    """Remove one boundary catalog star; preserve multi-star inscriptions."""
+    if text.count("*") != 1:
+        return text
+    return re.sub(r"^\s*\*|\*\s*$", "", text).strip()
+
+
 def strip_inscription_markers(inscription: object) -> str:
     """Remove catalog-only markers from inscription text."""
-    value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription).replace("*", "")).strip()
+    value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription)).strip()
+    value = strip_unambiguous_star_marker(value)
     while value:
         stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
         stripped = TRAILING_INSCRIPTION_MARKER_RE.sub("", stripped, count=1).strip()
+        stripped = strip_unambiguous_star_marker(stripped)
         if stripped == value:
             return clean(stripped)
         value = stripped
@@ -163,10 +172,44 @@ def resolve_same_inscription(inscription: object, parent_text: object) -> str:
     parent = strip_inscription_markers(parent_text)
     if not parent:
         return value
-    suffix = value[match.end():]
+    suffix = strip_inscription_markers(value[match.end():])
     if not suffix.strip():
         return parent
-    return strip_inscription_markers(townmark_text_stem(parent) + suffix)
+    sep = "" if suffix.startswith("/") else " "
+    return strip_inscription_markers(townmark_text_stem(parent) + sep + suffix)
+
+
+def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
+    """Return the town key used for immediate Same carry-forward."""
+    town = clean(raw_row.get("txtTown")).upper()
+    if town:
+        return town
+    return townmark_text_stem(townmark_text).upper()
+
+
+def overlay_row_inscription(
+    raw_row: dict[str, str],
+    carry_state: dict[str, str] | None = None,
+) -> str:
+    """Resolve v1 row inscription using immediate previous-row carry-forward."""
+    townmark_text = strip_inscription_markers(raw_row.get("txtTownPostmark"))
+    postmark_text = strip_inscription_markers(raw_row.get("txtPostmark"))
+    source_text = townmark_text
+    town_key = row_town_key(raw_row, townmark_text)
+    if SAME_PREFIX_RE.match(postmark_text):
+        if (
+            carry_state is not None
+            and carry_state.get("town_key") == town_key
+            and nonblank(carry_state.get("inscription"))
+        ):
+            source_text = clean(carry_state.get("inscription"))
+    inscription = resolve_same_inscription(raw_row.get("txtPostmark"), source_text)
+    if not inscription:
+        inscription = townmark_text
+    if carry_state is not None and inscription:
+        carry_state["town_key"] = town_key
+        carry_state["inscription"] = inscription
+    return inscription
 
 
 def truthy(value: object) -> bool:
@@ -669,6 +712,7 @@ def apply_row_fields(
     lookups: dict[str, dict[str, str]],
     tables: dict[str, object],
     report: list[dict[str, str]],
+    carry_state: dict[str, str] | None = None,
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
     marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
@@ -686,11 +730,7 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    townmark_text = strip_inscription_markers(raw_row.get("txtTownPostmark"))
-    inscription = (
-        resolve_same_inscription(raw_row.get("txtPostmark"), townmark_text)
-        or townmark_text
-    )
+    inscription = overlay_row_inscription(raw_row, carry_state)
     if inscription:
         for row in townmark_rows:
             row["inscription_txt"] = inscription
@@ -1031,6 +1071,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
         "regions": regions,
         "audit": audit,
     }
+    carry_state: dict[str, str] = {}
     for raw_id, raw_row in raw_rows.items():
         apply_row_fields(
             raw_id,
@@ -1042,6 +1083,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
             lookups,
             tables,
             report,
+            carry_state,
         )
 
     by_raw, tm_by_raw = build_lineage_maps(lineage_rows)

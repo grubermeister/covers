@@ -214,6 +214,34 @@ export async function updateImage(
 }
 
 /**
+ * DELETE /api/v2/images/{image_id}/ -- remove one image row.
+ *
+ * Cwd for manual verification: frontend/.
+ * Command: npm run build
+ * Expected exit code: 0.
+ *
+ * The backend deletes only the Image row; shared files remain on disk. That is
+ * the intended quick-delete behavior for an editor cleaning up a bad catalog
+ * image from a detail page without visiting the full edit flow.
+ */
+export async function deleteImage(
+  imageId: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.delete(`/images/${imageId}/`);
+    return { ok: true };
+  } catch (err: unknown) {
+    const ax = err as { response?: { data?: { detail?: string } } };
+    const detail = ax.response?.data?.detail;
+    return {
+      ok: false,
+      message: typeof detail === "string" ? detail : "Could not delete image.",
+    };
+  }
+}
+
+/**
  * Toggle the state-editor "reviewed/confirmed" flag on a marking (Issue #22).
  * Persisted via the same editor-gated PATCH path as other catalog edits; the
  * backend rejects the write unless the caller is the state editor responsible

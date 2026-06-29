@@ -6,13 +6,22 @@ LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNOREC
 CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
 
 
+def _strip_unambiguous_star_marker(text):
+    """Remove one boundary catalog star; preserve multi-star inscriptions."""
+    if text.count('*') != 1:
+        return text
+    return re.sub(r"^\s*\*|\*\s*$", "", text).strip()
+
+
 def strip_inscription_markers(inscription):
     """Remove catalog-only markers from inscription text."""
     if inscription is None or (isinstance(inscription, float) and pd.isna(inscription)):
         return ''
-    text = CATALOG_DATE_MARKER_RE.sub(' ', str(inscription).replace('*', '')).strip()
+    text = CATALOG_DATE_MARKER_RE.sub(' ', str(inscription)).strip()
+    text = _strip_unambiguous_star_marker(text)
     while True:
         cleaned = LEADING_INSCRIPTION_MARKER_RE.sub('', text, count=1).strip()
+        cleaned = _strip_unambiguous_star_marker(cleaned)
         if cleaned == text:
             return re.sub(r"\s+", " ", cleaned).strip()
         text = cleaned
@@ -29,10 +38,10 @@ def extract_town_root(inscription):
 
 
 def parent_townmark_text_for_same(parent_inscription, parent_town, suffix=''):
-    """Return parent inscription text to use when catalog text says Same.
+    """Return carry-source inscription text to use when catalog text says Same.
 
-    Bare Same inherits the full parent townmark inscription. Same with a suffix
-    such as /VA or C.H./VA uses the parent inscription stem so the suffix can
+    Explicit Same with a suffix such as /VA or C.H./VA uses the immediate
+    carry-source inscription stem so it can
     replace or extend the location text without copying the word Same.
     """
     parent_text = ''
@@ -121,43 +130,47 @@ def resolve_relationships(listings_df):
                 if prev_child_pos is None:
                     # First child: carry-forward source is the parent.
                     prev_sibling_idx[pos] = listings_df.index[current_parent_pos]
+                    carry_source_pos = current_parent_pos
                 else:
                     prev_sibling_idx[pos] = listings_df.index[prev_child_pos]
+                    carry_source_pos = prev_child_pos
                 last_child_pos_by_parent[current_parent_pos] = pos
-                p_inscription = resolved_inscription[current_parent_pos]
-                p_town = resolved_town[current_parent_pos]
+                carry_inscription = resolved_inscription[carry_source_pos]
+                carry_town = resolved_town[carry_source_pos]
 
                 rel = row['head_rel_type']
                 name_body = row['head_name_body']
 
                 if rel == 'Same' and pd.notna(name_body):
+                    name_body_clean = strip_inscription_markers(name_body)
                     # Different device, same town: reconstruct inscription.
                     # Same is a catalog placeholder, never inscription text.
-                    # Use the parent inscription stem, not the normalized
+                    # Use the immediate carry-source inscription stem, not the
+                    # normalized
                     # post-office name, so punctuation and spelling stay tied
-                    # to the parent townmark text.
+                    # to the prior resolved townmark text.
                     # When name_body does not start with '/' the source had
                     # a literal space between 'Same' and the name body
                     # (e.g. 'Same C.H./Va.') that parse_head stripped; put
                     # one space back to avoid 'ACCOMACKC.H./VA.'.
                     parent_text = parent_townmark_text_for_same(
-                        p_inscription,
-                        p_town,
-                        name_body,
+                        carry_inscription,
+                        carry_town,
+                        name_body_clean,
                     )
-                    if not name_body.startswith('/'):
+                    if not name_body_clean.startswith('/'):
                         warnings.append('same_name_body_no_slash')
                         sep = ' '
                     else:
                         sep = ''
                     resolved_inscription[pos] = strip_inscription_markers(
-                        parent_text + sep + name_body
+                        parent_text + sep + name_body_clean
                     )
-                    resolved_town[pos] = p_town
+                    resolved_town[pos] = carry_town
                 else:
                     # Same device (Same w/o name, (L), (E)): inherit
-                    resolved_inscription[pos] = strip_inscription_markers(p_inscription)
-                    resolved_town[pos] = p_town
+                    resolved_inscription[pos] = strip_inscription_markers(carry_inscription)
+                    resolved_town[pos] = carry_town
 
                 # Cross-section check
                 parent_row = listings_df.iloc[current_parent_pos]
