@@ -226,6 +226,89 @@ def encode_region_key(region):
     )
 
 
+def _parse_positive_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _json_object(value):
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return dict(parsed) if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _is_cover_submission_payload(payload):
+    kind = str(payload.get("submission_kind") or payload.get("submissionKind") or "")
+    return kind.strip().lower() == "cover"
+
+
+def _marking_code_from_payload(payload):
+    for key in ("parent_marking_id", "marking_id", "marking", "edit_marking_id"):
+        marking_id = _parse_positive_int(payload.get(key))
+        if marking_id is None:
+            continue
+        marking = Marking.all_objects.filter(pk=marking_id).first()
+        if marking is not None:
+            return marking.code or ""
+    return ""
+
+
+def _cover_code_from_payload(payload):
+    for key in ("edit_cover_id", "editCoverId", "cover_id", "materialized_cover_id"):
+        cover_id = _parse_positive_int(payload.get(key))
+        if cover_id is None:
+            continue
+        cover = Cover.all_objects.filter(pk=cover_id).first()
+        if cover is not None:
+            return cover.code or ""
+    return ""
+
+
+def _remap_cover_payload_ids(payload, marking_code, cover_code):
+    data = dict(payload)
+    marking = None
+    if marking_code:
+        marking = Marking.all_objects.filter(code=marking_code).first()
+    if marking is not None:
+        marking_id = str(marking.pk)
+        for key in ("parent_marking_id", "marking_id"):
+            if key in data:
+                data[key] = marking_id
+
+    cover = None
+    if cover_code:
+        cover = Cover.all_objects.filter(code=cover_code).first()
+    if cover is not None:
+        cover_id = str(cover.pk)
+        for key in ("edit_cover_id", "cover_id", "materialized_cover_id"):
+            if key in data:
+                data[key] = cover_id
+
+    if marking is not None and cover is not None:
+        link = CoverMarking.objects.filter(cover=cover, marking=marking).first()
+        if link is not None:
+            link_id = str(link.pk)
+            for key in (
+                "edit_cover_marking_id",
+                "cover_marking_id",
+                "materialized_cover_marking_id",
+            ):
+                if key in data:
+                    data[key] = link_id
+    return data
+
+
 ###################################################################################################
 ## Base resource
 ###################################################################################################
@@ -270,6 +353,19 @@ class PortableTimestampedResource(
         if isinstance(f, (DjangoCharField, DjangoTextField)) and getattr(f, "null", False):
             return NullableCharWidget
         return super().widget_from_django_field(f, default=default)
+
+
+class RestoreNoDiffMixin:
+    """Disable import-export diffs for command-only restore resources.
+
+    Catalog-only truncate reloads can leave audit rows whose FK ids point at
+    removed catalog rows. The restore command overwrites those FKs from backup
+    natural keys, but import-export builds diffs before it repairs the row.
+    """
+
+    class Meta:
+        abstract = True
+        skip_diff = True
 
 
 ###################################################################################################
@@ -903,6 +999,7 @@ class MarkingRecycleBinResource(
 
 class MarkingSubmissionTransactionResource(
     ExportOnlyIdMixin,
+    RestoreNoDiffMixin,
     resources.ModelResource,
 ):
     transaction_uuid = fields.Field(
@@ -957,7 +1054,7 @@ class MarkingSubmissionTransactionResource(
         readonly=True,
     )
 
-    class Meta:
+    class Meta(RestoreNoDiffMixin.Meta):
         model = SubmissionTransaction
         fields = (
             "id",
@@ -991,7 +1088,9 @@ class MarkingSubmissionTransactionResource(
 
 class MarkingContributionResource(PortableTimestampedResource):
     """Contribution.marking is OneToOne -- one Contribution per Marking. We
-    key on marking_code so restoring is idempotent."""
+    key on marking_code so restoring is idempotent. Pending cover rows have no
+    Contribution.marking yet, so the resource also exports target codes from
+    submitted_data and remaps those JSON ids before import."""
 
     contributor = fields.Field(
         column_name="contributor",
@@ -1018,6 +1117,14 @@ class MarkingContributionResource(PortableTimestampedResource):
         attribute="submitted_data",
         widget=NullableJSONWidget(),
     )
+    target_marking_code = fields.Field(
+        column_name="target_marking_code",
+        readonly=True,
+    )
+    target_cover_code = fields.Field(
+        column_name="target_cover_code",
+        readonly=True,
+    )
 
     class Meta(PortableTimestampedResource.Meta):
         model = Contribution
@@ -1025,6 +1132,8 @@ class MarkingContributionResource(PortableTimestampedResource):
             "id",
             "contributor",
             "marking",
+            "target_marking_code",
+            "target_cover_code",
             "collection",
             "submitted_data",
             "status",
@@ -1036,6 +1145,87 @@ class MarkingContributionResource(PortableTimestampedResource):
             "modified_by",
         )
         import_id_fields = ("marking",)
+
+    def dehydrate_target_marking_code(self, obj):
+        payload = obj.submitted_data or {}
+        return _marking_code_from_payload(payload) or getattr(obj.marking, "code", "")
+
+    def dehydrate_target_cover_code(self, obj):
+        payload = obj.submitted_data or {}
+        return _cover_code_from_payload(payload)
+
+    def before_import_row(self, row, **kwargs):
+        payload = _json_object(row.get("submitted_data"))
+        if payload and _is_cover_submission_payload(payload):
+            row["submitted_data"] = _remap_cover_payload_ids(
+                payload,
+                (row.get("target_marking_code") or "").strip(),
+                (row.get("target_cover_code") or "").strip(),
+            )
+        super().before_import_row(row, **kwargs)
+
+    def get_instance(self, instance_loader, row):
+        marking = self.fields["marking"].clean(row)
+        if marking is not None:
+            return Contribution.objects.filter(marking=marking).first()
+
+        payload = _json_object(row.get("submitted_data"))
+        if not _is_cover_submission_payload(payload):
+            return None
+
+        contributor = self.fields["contributor"].clean(row)
+        if contributor is None:
+            return None
+        status = row.get("status")
+        target_marking = str(
+            payload.get("parent_marking_id") or payload.get("marking_id") or ""
+        ).strip()
+        target_cover = str(
+            payload.get("edit_cover_id") or payload.get("cover_id") or ""
+        ).strip()
+        catalog_code = str(payload.get("catalog_code") or "").strip()
+        checksum = ""
+        first_meta = payload.get("image_meta")
+        if isinstance(first_meta, dict):
+            checksum = str(first_meta.get("file_checksum") or "").strip()
+
+        candidates = Contribution.objects.filter(
+            contributor=contributor,
+            marking__isnull=True,
+        )
+        if status:
+            candidates = candidates.filter(status=status)
+        for candidate in candidates.order_by("pk"):
+            candidate_payload = candidate.submitted_data or {}
+            if not _is_cover_submission_payload(candidate_payload):
+                continue
+            candidate_marking = str(
+                candidate_payload.get("parent_marking_id")
+                or candidate_payload.get("marking_id")
+                or ""
+            ).strip()
+            if target_marking and candidate_marking != target_marking:
+                continue
+            candidate_cover = str(
+                candidate_payload.get("edit_cover_id")
+                or candidate_payload.get("cover_id")
+                or ""
+            ).strip()
+            if target_cover and candidate_cover != target_cover:
+                continue
+            candidate_code = str(candidate_payload.get("catalog_code") or "").strip()
+            if catalog_code and candidate_code != catalog_code:
+                continue
+            candidate_checksum = ""
+            candidate_meta = candidate_payload.get("image_meta")
+            if isinstance(candidate_meta, dict):
+                candidate_checksum = str(
+                    candidate_meta.get("file_checksum") or ""
+                ).strip()
+            if checksum and candidate_checksum != checksum:
+                continue
+            return candidate
+        return None
 
     def before_save_instance(self, instance, row, **kwargs):
         if getattr(instance, "submitted_data", None) is None:
@@ -1053,6 +1243,7 @@ class MarkingContributionResource(PortableTimestampedResource):
 
 class MarkingVersionResource(
     ExportOnlyIdMixin,
+    RestoreNoDiffMixin,
     resources.ModelResource,
 ):
     marking = fields.Field(
@@ -1082,7 +1273,7 @@ class MarkingVersionResource(
         readonly=True,
     )
 
-    class Meta:
+    class Meta(RestoreNoDiffMixin.Meta):
         model = MarkingVersion
         fields = (
             "id",
@@ -1103,6 +1294,7 @@ class MarkingVersionResource(
 
 class MarkingCoverVersionResource(
     ExportOnlyIdMixin,
+    RestoreNoDiffMixin,
     resources.ModelResource,
 ):
     cover = fields.Field(
@@ -1132,7 +1324,7 @@ class MarkingCoverVersionResource(
         readonly=True,
     )
 
-    class Meta:
+    class Meta(RestoreNoDiffMixin.Meta):
         model = CoverVersion
         fields = (
             "id",

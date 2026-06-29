@@ -45,6 +45,50 @@ def _dataset_payload(dataset):
     }
 
 
+def _parse_int(value):
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def _is_cover_contribution_data(data):
+    if not isinstance(data, dict):
+        return False
+    kind = str(data.get("submission_kind") or data.get("submissionKind") or "")
+    return kind.strip().lower() == "cover"
+
+
+def _cover_contribution_marking_id(contribution):
+    data = contribution.submitted_data or {}
+    if not _is_cover_contribution_data(data):
+        return None
+    for key in ("parent_marking_id", "marking_id", "marking"):
+        marking_id = _parse_int(data.get(key))
+        if marking_id is not None:
+            return marking_id
+    return contribution.marking_id
+
+
+def _cover_contribution_cover_id(contribution):
+    data = contribution.submitted_data or {}
+    if not _is_cover_contribution_data(data):
+        return None
+    for key in (
+        "edit_cover_id",
+        "editCoverId",
+        "cover_id",
+        "materialized_cover_id",
+    ):
+        cover_id = _parse_int(data.get(key))
+        if cover_id is not None:
+            return cover_id
+    return None
+
+
 def _walk_region_ancestors(region_ids):
     """Return input Region PKs plus every parent Region PK."""
     expanded = set(region_ids)
@@ -177,6 +221,15 @@ class Command(BaseCommand):
         contribution_ids = set(
             Contribution.objects.filter(marking=root).values_list("pk", flat=True)
         )
+        for contribution in Contribution.objects.filter(
+            submitted_data__submission_kind="cover",
+        ):
+            if _cover_contribution_marking_id(contribution) != root.pk:
+                continue
+            contribution_ids.add(contribution.pk)
+            cover_id = _cover_contribution_cover_id(contribution)
+            if cover_id is not None:
+                cover_ids.add(cover_id)
         collection_ids = set(
             Contribution.objects.filter(pk__in=contribution_ids).values_list(
                 "collection_id",
@@ -200,6 +253,14 @@ class Command(BaseCommand):
             .exclude(color_id__isnull=True)
             .values_list("color_id", flat=True)
         )
+        for data in Contribution.objects.filter(
+            pk__in=contribution_ids,
+        ).values_list("submitted_data", flat=True):
+            if not isinstance(data, dict):
+                continue
+            color_id = _parse_int(data.get("color_id"))
+            if color_id is not None:
+                color_ids.add(color_id)
         shape_ids = {root.shape_id} if root.shape_id else set()
         lettering_ids = {root.lettering_id} if root.lettering_id else set()
         post_office_ids = {root.post_office_id}

@@ -6,6 +6,7 @@ from uuid import uuid4
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 from django.test import TestCase
 from rest_framework.test import APIClient
 
@@ -362,6 +363,93 @@ class MarkingBackupRestoreCommandTests(TestCase):
         self.assertEqual(response.status_code, 200, response.data)
         rows = response.data.get("results", response.data)
         self.assertEqual([row["id"] for row in rows], [restored.pk])
+
+    def test_restore_marking_round_trips_pending_cover_contribution(self):
+        pending_cover = Contribution.objects.create(
+            contributor=self.contributor,
+            collection=self.collection,
+            submitted_data={
+                "submission_kind": "cover",
+                "entity_type": "cover",
+                "parent_marking_id": str(self.marking.pk),
+                "marking_id": str(self.marking.pk),
+                "state": "VA",
+                "type": "FC",
+                "cover_date": "1850-06-01",
+                "cover_granularity": "DAY",
+                "catalog_code": "ASCC1-VA-C0002",
+                "image_meta": {"file_checksum": "cover-checksum"},
+                "cover_image_metas": [
+                    {
+                        "storage_filename": "va/cover.jpg",
+                        "original_filename": "cover.jpg",
+                        "file_checksum": "cover-checksum",
+                        "mime_type": "image/jpeg",
+                        "image_width": 100,
+                        "image_height": 80,
+                        "file_size_bytes": 123,
+                    }
+                ],
+            },
+            status=Contribution.STATUS_PENDING,
+            created_by=self.contributor,
+            modified_by=self.contributor,
+        )
+        backup_path = self._backup()
+        payload = json.loads(backup_path.read_text(encoding="utf-8"))
+        rows = payload["datasets"]["contributions"]["rows"]
+        cover_row = next(
+            row
+            for row in rows
+            if row["id"] == str(pending_cover.pk)
+        )
+        self.assertEqual(cover_row["target_marking_code"], self.marking.code)
+
+        cover_row["submitted_data"]["parent_marking_id"] = "999999"
+        cover_row["submitted_data"]["marking_id"] = "999999"
+        edited_path = self.tmp_path / "pending-cover.json"
+        edited_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
+
+        call_command("wipe_user_data", no_input=True, verbosity=0)
+        call_command("restore_marking", str(edited_path), verbosity=0)
+
+        restored = Contribution.objects.get(
+            submitted_data__catalog_code="ASCC1-VA-C0002",
+        )
+        self.assertEqual(restored.status, Contribution.STATUS_PENDING)
+        self.assertIsNone(restored.marking_id)
+        self.assertEqual(
+            restored.submitted_data["parent_marking_id"],
+            str(self.marking.pk),
+        )
+        self.assertEqual(restored.submitted_data["marking_id"], str(self.marking.pk))
+
+    def test_restore_marking_repairs_existing_transaction_with_stale_marking_fk(self):
+        backup_path = self._backup()
+        marking_pk = self.marking.pk
+        transaction_uuid = self.transaction.transaction_uuid
+
+        # Simulates import_ascc_bundle --truncate without wipe_user_data: audit
+        # rows keep their UUIDs, but their catalog FKs can point at deleted rows.
+        table = connection.ops.quote_name(Marking._meta.db_table)
+        with connection.constraint_checks_disabled(), connection.cursor() as cursor:
+            cursor.execute(f"DELETE FROM {table} WHERE id = %s", [marking_pk])
+
+        self.assertFalse(Marking.all_objects.filter(pk=marking_pk).exists())
+        self.assertTrue(
+            SubmissionTransaction.objects.filter(
+                transaction_uuid=transaction_uuid,
+                marking_id=marking_pk,
+            ).exists()
+        )
+
+        call_command("restore_marking", str(backup_path), verbosity=0)
+
+        restored = SubmissionTransaction.objects.get(
+            transaction_uuid=transaction_uuid,
+        )
+        self.assertEqual(restored.marking.code, self.marking.code)
+        self.assertEqual(restored.contribution.marking.code, self.marking.code)
 
     def _round_trip_counts(self):
         return {
