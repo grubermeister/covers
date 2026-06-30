@@ -170,6 +170,7 @@ def _build_contribution_suggestion(
             region=_region_for_marking(parent_marking),
             exclude_id=_existing_subject_id(contrib, "COVER", payload),
             source="contribution_cover",
+            exclude_contribution_id=contrib.pk,
         )
 
     region = _region_from_payload(payload)
@@ -180,6 +181,7 @@ def _build_contribution_suggestion(
         region=region,
         exclude_id=_existing_subject_id(contrib, "MARKING", payload),
         source="contribution_marking",
+        exclude_contribution_id=contrib.pk,
     )
 
 
@@ -191,6 +193,7 @@ def _build_suggestion(
     region: Region,
     exclude_id: int | None,
     source: str,
+    exclude_contribution_id: int | None = None,
 ) -> CatalogCodeSuggestion:
     reference = normalize_catalog_code(reference_code) or DEFAULT_REFERENCE_CODE
     region_abbrev = normalize_catalog_code(region.abbrev).upper()
@@ -203,6 +206,7 @@ def _build_suggestion(
         subject_type=subject_type,
         prefix=prefix,
         exclude_id=exclude_id,
+        exclude_contribution_id=exclude_contribution_id,
     )
     return CatalogCodeSuggestion(
         catalog_code="{}{:04d}".format(prefix, serial),
@@ -219,6 +223,7 @@ def _next_serial(
     subject_type: str,
     prefix: str,
     exclude_id: int | None,
+    exclude_contribution_id: int | None = None,
 ) -> int:
     model = _model_for_subject(subject_type)
     max_seen = 0
@@ -231,6 +236,28 @@ def _next_serial(
         if match is None:
             continue
         max_seen = max(max_seen, int(match.group(1)))
+
+    # Also check codes already suggested for other pending/draft contributions
+    # that have not yet been approved into the Marking/Cover table.
+    pending_qs = Contribution.objects.filter(
+        status__in=(
+            Contribution.STATUS_DRAFT,
+            Contribution.STATUS_PENDING,
+            Contribution.STATUS_NEEDS_REVISION,
+        ),
+    ).only("id", "submitted_data")
+    if exclude_contribution_id is not None:
+        pending_qs = pending_qs.exclude(pk=exclude_contribution_id)
+    for contrib_row in pending_qs:
+        code = code_value_from_payload(dict(contrib_row.submitted_data or {}))
+        if not code or not code.startswith(prefix):
+            continue
+        suffix = code[len(prefix):]
+        match = _CODE_NUMBER_RE.match(suffix)
+        if match is None:
+            continue
+        max_seen = max(max_seen, int(match.group(1)))
+
     return max_seen + 1
 
 

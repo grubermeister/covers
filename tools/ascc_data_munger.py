@@ -85,6 +85,43 @@ def format_dates_seen_desc(raw_text):
     return "Dates Seen " + ", ".join(tokens)
 
 
+_POST_OFFICE_APOSTROPHE_RE = re.compile(r"[\u2019']")
+_POST_OFFICE_AMP_RE = re.compile(r"\s*&\s*")
+_POST_OFFICE_STRIP_PUNCT_RE = re.compile(r"[,/=()\[\]:;_`*?]")
+_POST_OFFICE_DOUBLE_DASH_RE = re.compile(r"-{2,}")
+_POST_OFFICE_MULTI_SPACE_RE = re.compile(r"\s+")
+_POST_OFFICE_EDGE_TRIM_RE = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
+_POST_OFFICE_ATTACHED_YEAR_TAIL_RE = re.compile(
+    r"(?<=[A-Z])C?\d{3,4}(?:'?[S])?(?:[,-]\d{1,4}(?:'?[S])?)*(?:\s+.*)?$"
+)
+_POST_OFFICE_DIGIT_TOKEN_TAIL_RE = re.compile(r"\s+\S*\d\S*.*$")
+
+
+def normalize_post_office_town(raw_town):
+    """Normalize ASCC town text into the PostOffice.name alphabet.
+
+    Example mappings:
+      "Barnett's" -> "BARNETTS"
+      "B&O" -> "B AND O"
+      "Newark 1854 with Newark" -> "NEWARK"
+      "Clay1842-43" -> "CLAY"
+    """
+    if raw_town is None or pd.isna(raw_town):
+        return pd.NA
+    town = str(raw_town).upper()
+    town = _POST_OFFICE_APOSTROPHE_RE.sub("", town)
+    town = _POST_OFFICE_AMP_RE.sub(" AND ", town)
+    town = _POST_OFFICE_STRIP_PUNCT_RE.sub(" ", town)
+    town = _POST_OFFICE_DOUBLE_DASH_RE.sub("-", town)
+    town = _POST_OFFICE_MULTI_SPACE_RE.sub(" ", town)
+    # v1 descriptive entries glue dates and prose to the town name.
+    # Strip whitespace-delimited date tokens before attached date suffixes.
+    town = _POST_OFFICE_DIGIT_TOKEN_TAIL_RE.sub("", town)
+    town = _POST_OFFICE_ATTACHED_YEAR_TAIL_RE.sub("", town)
+    town = _POST_OFFICE_EDGE_TRIM_RE.sub("", town)
+    return town or pd.NA
+
+
 def assign_post_office_codes(post_offices_df, region_code):
     """Return a copy with deterministic munger-assigned PostOffice.code values.
 
@@ -1949,28 +1986,8 @@ def main(argv=None):
     # ======================================================================
     # 8.8 PostOffice Normalization
     # ======================================================================
-    _apostrophe_re = re.compile(r"[\u2019']")  # straight + curly apostrophe
-    _amp_re        = re.compile(r"\s*&\s*")
-    _strip_punct   = re.compile(r"[,/=()\[\]:;_`*?]")
-    _double_dash   = re.compile(r"-{2,}")
-    _multi_space   = re.compile(r"\s+")
-    _edge_trim     = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
-    # v1 descriptive entries glue dates and prose to the town name
-    # (e.g. "NEWARK 1854 WITH NEWARK", "WHITE OAK C1862 ON PATRIOTIC
-    # COVER"). Truncate from the first whitespace-delimited token that
-    # contains a digit. Real post office names are purely alphabetic.
-    _digit_tail    = re.compile(r"\s+\S*\d\S*.*$")
-    listings['normalized_town'] = (
-        listings['resolved_town'].astype('string')
-        .str.upper()
-        .str.replace(_apostrophe_re, '', regex=True)            # BARNETT'S -> BARNETTS
-        .str.replace(_amp_re, ' AND ', regex=True)              # B&O -> B AND O
-        .str.replace(_strip_punct, ' ', regex=True)             # , / = ( ) -> space
-        .str.replace(_double_dash, '-', regex=True)             # -- -> -
-        .str.replace(_multi_space, ' ', regex=True)             # collapse spaces
-        .str.replace(_digit_tail, '', regex=True)               # NEWARK 1854 ... -> NEWARK
-        .str.replace(_edge_trim, '', regex=True)                # trim edges
-        .replace('', pd.NA)
+    listings['normalized_town'] = listings['resolved_town'].apply(
+        normalize_post_office_town
     )
     listings['state_code'] = pd.Series(
         REGION_ABBREV, index=listings.index, dtype='string'

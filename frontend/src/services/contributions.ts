@@ -15,6 +15,8 @@
  */
 import apiClient, { ensureCsrfToken } from "@/lib/api";
 
+const CONTRIBUTION_UPLOAD_TIMEOUT_MS = 300000;
+
 /**
  * One contribution row off the wire. Tolerates camelCase (renderer) and
  * snake_case, plus the optional display fields the editor lists read.
@@ -205,7 +207,12 @@ export async function createContribution(
   body: FormData | Record<string, unknown>,
 ): Promise<ContributionWriteResult> {
   await ensureCsrfToken();
-  const res = await apiClient.post("/contributions/", body);
+  const isMultipart = typeof FormData !== "undefined" && body instanceof FormData;
+  const res = await apiClient.post(
+    "/contributions/",
+    body,
+    isMultipart ? { timeout: CONTRIBUTION_UPLOAD_TIMEOUT_MS } : undefined,
+  );
   return mapWriteResult(res.data);
 }
 

@@ -18,7 +18,7 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from ascc_data_munger import assign_post_office_codes
+from ascc_data_munger import assign_post_office_codes, normalize_post_office_town
 
 
 class PostOfficeCodeAssignmentTests(unittest.TestCase):
@@ -46,6 +46,25 @@ class PostOfficeCodeAssignmentTests(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "region code must be nonblank"):
             assign_post_office_codes(post_offices, " ")
+
+
+class PostOfficeTownNormalizationTests(unittest.TestCase):
+    def test_strips_spaced_descriptive_digit_tails(self):
+        self.assertEqual(
+            normalize_post_office_town("Newark 1854 with Newark"),
+            "NEWARK",
+        )
+        self.assertEqual(
+            normalize_post_office_town("White Oak c1862 on patriotic cover"),
+            "WHITE OAK",
+        )
+
+    def test_strips_attached_year_tail_from_michigan_v1_row(self):
+        self.assertEqual(normalize_post_office_town("Clay1842-43"), "CLAY")
+
+    def test_keeps_existing_punctuation_normalization(self):
+        self.assertEqual(normalize_post_office_town("Barnett's"), "BARNETTS")
+        self.assertEqual(normalize_post_office_town("B&O"), "B AND O")
 
 
 if __name__ == "__main__":

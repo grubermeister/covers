@@ -123,11 +123,19 @@ function yearOnly(value: unknown): string {
   return m ? m[1] : s;
 }
 
+function firstNonEmpty(...values: unknown[]): string {
+  for (const value of values) {
+    const s = toStr(value);
+    if (s) return s;
+  }
+  return "";
+}
+
 function readEarliestLatest(sd: Record<string, unknown>): { earliest: string; latest: string } {
   const dr = toStr(sd.date_range ?? sd.dateRange);
   const drParts = dr ? dr.split(/\s*-\s*/).map((s) => s.trim()) : [];
-  const e = yearOnly(sd.first_seen ?? sd.firstSeen ?? drParts[0] ?? sd.marking_erd ?? sd.markingErd);
-  const l = yearOnly(sd.last_seen ?? sd.lastSeen ?? drParts[1] ?? sd.marking_lrd ?? sd.markingLrd);
+  const e = yearOnly(firstNonEmpty(sd.first_seen, sd.firstSeen, drParts[0], sd.marking_erd, sd.markingErd));
+  const l = yearOnly(firstNonEmpty(sd.last_seen, sd.lastSeen, drParts[1], sd.marking_lrd, sd.markingLrd));
   return { earliest: e, latest: l };
 }
 

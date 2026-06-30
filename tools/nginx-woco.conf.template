@@ -17,7 +17,8 @@ server {
     server_name __HOSTNAME__ www.__HOSTNAME__;
 
     # Cover-image uploads from the submission flow.
-    client_max_body_size 25m;
+    # Matches the UI and Django per-file upload limit.
+    client_max_body_size 100m;
 
     # Serve Django static + uploaded media straight from disk; everything else
     # goes to gunicorn. collectstatic writes to backend/static; uploads and

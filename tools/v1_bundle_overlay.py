@@ -29,7 +29,7 @@ import re
 import shutil
 import sys
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from PIL import Image as PILImage
@@ -464,30 +464,26 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
         gran = parsed.get("date_granularity")
         try:
             if gran == "DAY":
-                observations.append((
-                    "{0:04d}-{1:02d}-{2:02d}".format(
-                        int(parsed["date_year_start"]),
-                        int(parsed["date_month"]),
-                        int(parsed["date_day"]),
-                    ),
-                    "DAY",
-                ))
+                observed = date(
+                    int(parsed["date_year_start"]),
+                    int(parsed["date_month"]),
+                    int(parsed["date_day"]),
+                )
+                observations.append((str(observed), "DAY"))
             elif gran == "MONTH":
-                observations.append((
-                    "{0:04d}-{1:02d}-01".format(
-                        int(parsed["date_year_start"]),
-                        int(parsed["date_month"]),
-                    ),
-                    "MONTH",
-                ))
+                observed = date(
+                    int(parsed["date_year_start"]),
+                    int(parsed["date_month"]),
+                    1,
+                )
+                observations.append((str(observed), "MONTH"))
             elif gran == "YEAR":
-                observations.append((
-                    "{0:04d}-01-01".format(int(parsed["date_year_start"])),
-                    "YEAR",
-                ))
+                observed = date(int(parsed["date_year_start"]), 1, 1)
+                observations.append((str(observed), "YEAR"))
             elif gran in {"RANGE", "DECADE"}:
                 for year in (parsed.get("date_year_start"), parsed.get("date_year_end")):
-                    observations.append(("{0:04d}-01-01".format(int(year)), "YEAR"))
+                    observed = date(int(year), 1, 1)
+                    observations.append((str(observed), "YEAR"))
         except (TypeError, ValueError):
             continue
         for subject_id in subject_ids:

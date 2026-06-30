@@ -600,6 +600,15 @@ class V1PipelineTests(unittest.TestCase):
             [("ASCC6-WV-M2283", "1852-03-01", "MONTH")],
         )
 
+    def test_overlay_skips_invalid_calendar_day(self):
+        rows = v1_bundle_overlay.parsed_date_rows(
+            "Sept. 31, 1813",
+            ["ASCC6-MI-M1106"],
+            AUDIT,
+        )
+
+        self.assertEqual(rows, [])
+
     def test_munger_handles_synthetic_rates_auxmarks_and_sentinel_dates(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
