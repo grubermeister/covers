@@ -1,0 +1,121 @@
+# On push to main: build, check, and deploy to hellowoco.app (production).
+# Standard flow: PRs merge to staging (→ woco.dev via build-and-deploy.yml),
+# then staging is merged into main here when the change is production-ready.
+name: Build and deploy to prod (hellowoco.app)
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Opt JS-based actions (e.g. actions/upload-artifact@v5, still declared as
+# node20 in its action.yml) into the node24 runtime ahead of GitHub's
+# forced flip on 2026-06-02. No-op once node24 becomes the default.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # Fail fast if any known malware fingerprint is present in the tree.
+      # Runs before any install / build step so a compromised commit cannot
+      # execute code on the runner. Patterns are catalogued in
+      # tools/fingerprint.sh.
+      - name: Malware fingerprint scan
+        run: bash tools/fingerprint.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          # Pin uv version so CI is deterministic. Bump deliberately.
+          version: "0.11.2"
+          enable-cache: true
+          # Python version comes from .python-version at repo root (3.13).
+
+      - name: Set up Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        # Same flags as the server: locked resolution, no dev group.
+        run: uv sync --no-dev --frozen
+
+      # Build the frontend before running Django system checks. Django's
+      # STATICFILES_DIRS points at frontend/dist/, and `manage.py check`
+      # raises staticfiles.W004 if that directory is missing. Building
+      # first keeps the check log clean.
+      - name: Build frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Django system checks
+        env:
+          DJANGO_SECRET_KEY: ci-dummy-not-a-real-secret-do-not-use-anywhere
+        run: uv run python backend/manage.py check
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v5
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to hellowoco.app (SSH)
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: hellowoco.app
+          # SSH as wocod (service account) directly. wocod has a narrow
+          # passwordless-sudo entry in /etc/sudoers.d/wocod-deploy granting
+          # exactly the four commands invoked below: systemctl stop/start
+          # worldcovers, systemctl daemon-reload, and install of the
+          # systemd unit file. Stealing this SSH key buys an attacker
+          # those four commands plus a shell as wocod (no general sudo).
+          username: wocod
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            # Non-interactive SSH does not source .bashrc / .profile, so
+            # user-level installs (uv lives at ~/.local/bin/uv by default)
+            # are not on PATH. Add the standard user-bin directory so the
+            # deploy script can find uv without a system-wide install.
+            export PATH="$HOME/.local/bin:$PATH"
+            # Stop the app so migrations can run without table locks
+            # (ALTER TABLE on Postmarks can block otherwise).
+            sudo -n /bin/systemctl stop worldcovers
+            # Pull the latest main tip. wocod owns /srv/woco so no sudo
+            # is needed here.
+            git -C /srv/woco fetch origin
+            git -C /srv/woco reset --hard origin/main
+            # `reset --hard` updates tracked files but leaves UNTRACKED files in
+            # place. A stray migration generated directly on the box (e.g. from
+            # someone running `makemigrations` there) survives every deploy and
+            # collides with the committed graph ("multiple leaf nodes in the
+            # migration graph"), which aborts `migrate` before anything ships.
+            # Drop untracked files under the migrations dir so the box's
+            # migration set is exactly what main tracks. -fd only (no -x) so
+            # gitignored files like __pycache__ and .env are left untouched.
+            git -C /srv/woco clean -fd backend/common/migrations
+            # Re-install the systemd unit file only when it has changed.
+            # The install path is pinned in sudoers so the exact source
+            # and destination must match the sudoers entry verbatim.
+            if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
+                echo "Updating systemd unit file..."
+                sudo -n /usr/bin/install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
+                sudo -n /bin/systemctl daemon-reload
+            fi
+            # Run the actual deploy as wocod (we already are wocod).
+            cd /srv/woco && ./tools/deploy.sh
+            sudo -n /bin/systemctl start worldcovers
