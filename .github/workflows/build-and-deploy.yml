@@ -98,7 +98,7 @@ jobs:
           # must be set to prohibit-password in sshd_config (see
           # docs/devel/STAGING_WOCO_DEV.md for the 2026-06-22 recovery note).
           username: root
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          key: ${{ secrets.WOCO_DEV_SSH_KEY }}
           command_timeout: 20m
           script: |
             set -euo pipefail
