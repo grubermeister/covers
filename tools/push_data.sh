@@ -5,12 +5,9 @@
 # the app runtime can read them without a manual chown dance. With --import,
 # also triggers /srv/woco/tools/reload_data.sh as the wocod user.
 #
-# Prereq on the server: the SSH user (default: mpc) can run `sudo` without a
-# password — blanket passwordless sudo is fine. For a host without blanket
-# sudo, a minimal drop-in would be:
-#   # /etc/sudoers.d/mpc-rsync
-#   mpc ALL=(root) NOPASSWD: /usr/bin/rsync
-#   mpc ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
+# Prereq on the server: the SSH user (default: reese) can run `sudo` without a
+# password — reese is in the sudo group with NOPASSWD on both hellowoco.app
+# and woco.dev.
 #
 # Usage:
 #   ./tools/push_data.sh              # push only
@@ -20,7 +17,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST="${WOCO_HOST:-mpc@hellowoco.app}"
+HOST="${WOCO_HOST:-reese@hellowoco.app}"
 REMOTE_ROOT="${WOCO_REMOTE_ROOT:-/srv/woco}"
 
 DO_IMPORT=0
