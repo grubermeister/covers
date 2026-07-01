@@ -85,25 +85,21 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to woco.dev (SSH as root)
+      - name: Deploy to woco.dev (SSH as reese)
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: woco.dev
-          # SSH as root on woco.dev (Reese's staging box). Root has no
-          # narrow sudoers restriction here — it owns the box outright.
-          # uv is installed under the wocod service account, so deploy.sh
-          # is invoked via `sudo -u wocod` to keep the uv PATH correct.
-          # PREREQUISITE: DEPLOY_SSH_KEY public key must be in
-          # /root/.ssh/authorized_keys on woco.dev and PermitRootLogin
-          # must be set to prohibit-password in sshd_config (see
-          # docs/devel/STAGING_WOCO_DEV.md for the 2026-06-22 recovery note).
-          username: root
+          # SSH as `reese` (sudo group, NOPASSWD) — never as root.
+          # PREREQUISITE: woco.dev must have a `reese` user whose
+          # authorized_keys holds the WOCO_DEV_SSH_KEY public key.
+          # WOCO_DEV_SSH_KEY must be a dedicated deploy key, not a personal key.
+          username: reese
           key: ${{ secrets.WOCO_DEV_SSH_KEY }}
           command_timeout: 20m
           script: |
             set -euo pipefail
             # Stop the app so migrations can run without table locks.
-            systemctl stop worldcovers
+            sudo systemctl stop worldcovers
             # Pull the latest staging tip.
             git -C /srv/woco fetch origin
             git -C /srv/woco reset --hard origin/staging
@@ -113,10 +109,10 @@ jobs:
             # Re-install the systemd unit file only when it has changed.
             if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
                 echo "Updating systemd unit file..."
-                install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
-                systemctl daemon-reload
+                sudo install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
+                sudo systemctl daemon-reload
             fi
-            # Re-own after root's git ops; uv lives in wocod's ~/.local/bin.
-            chown -R wocod:wocod /srv/woco
+            # Re-own so wocod can run deploy.sh; uv lives in wocod's ~/.local/bin.
+            sudo chown -R wocod:wocod /srv/woco
             sudo -u wocod -H bash -lc 'export PATH=$HOME/.local/bin:$PATH && cd /srv/woco && ./tools/deploy.sh'
-            systemctl start worldcovers
+            sudo systemctl start worldcovers
