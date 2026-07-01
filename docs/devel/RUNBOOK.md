@@ -1,10 +1,11 @@
 # Operator Runbook
 
-Day-to-day commands for running WorldCovers on staging.
+Day-to-day commands for running WorldCovers on staging and production.
 
 Source of truth:
 
-- Deployment flow: `.github/workflows/build-and-deploy.yml`
+- Staging deployment flow: `.github/workflows/build-and-deploy.yml`
+- Production deployment flow: `.github/workflows/deploy-prod.yml`
 - App build steps: `tools/deploy.sh`
 - Data refresh: `tools/reload_data.sh`
 - Service definition: `tools/worldcovers.service`
@@ -25,13 +26,14 @@ Expected exit code for successful commands: `0`.
 
 ## Manual Deploy
 
-From the staging host:
+From the host as `wocod`; use `origin/staging` on staging and `origin/main`
+on production:
 
 ```sh
 cd /srv/woco
-sudo -n /bin/systemctl stop worldcovers
 git fetch origin
 git reset --hard origin/staging
+sudo -n /bin/systemctl stop worldcovers
 ./tools/deploy.sh
 sudo -n /bin/systemctl start worldcovers
 ```
@@ -39,7 +41,7 @@ sudo -n /bin/systemctl start worldcovers
 `tools/deploy.sh` syncs Python dependencies, runs migrations, builds the
 frontend, and collects static files. It does not start or stop the service.
 
-For the full unit-file update flow and sudoers requirements, see
+For the full key-rotation, unit-file update, and sudoers requirements, see
 [DEPLOY.md](DEPLOY.md).
 
 ## Data Refresh

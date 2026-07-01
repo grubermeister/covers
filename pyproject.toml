@@ -1,6 +1,6 @@
 [project]
 name = "worldcovers"
-version = "0.0.0"
+dynamic = ["version"]
 requires-python = "==3.13.*"
 dependencies = [
     "asgiref==3.10.0",
@@ -64,6 +64,13 @@ woco = "woco_cli:main"
 # console script above to land in .venv/bin/.
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Single source of truth for the app version, shared with the frontend
+# (frontend/vite.config.ts reads this same file to build __APP_VERSION__).
+# Bump the VERSION file at repo root to release a new version.
+path = "VERSION"
+pattern = "^(?P<version>.+)$"
 
 [tool.hatch.build.targets.wheel]
 # Only ship the CLI shim. backend/ stays on PYTHONPATH at runtime via

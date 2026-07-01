@@ -95,6 +95,17 @@ The live Help page is backed by these repo-level Markdown files:
 Developer and operator docs stay under `docs/devel/` and are intentionally
 excluded from the Help API.
 
+## Versioning
+
+The app version is a single string in [VERSION](./VERSION) at the repo root.
+`pyproject.toml` reads it dynamically via `[tool.hatch.version]`, and
+`frontend/vite.config.ts` reads the same file to build the `__APP_VERSION__`
+constant shown in the site footer. To release a new version, edit `VERSION`
+only -- nothing else needs to change.
+
+`frontend/package.json` also carries a `version` field because npm requires
+one; it is not read by the app and can drift. Treat `VERSION` as canonical.
+
 ## License And Contributions
 
 For licensing details, see [LICENSE](./LICENSE).

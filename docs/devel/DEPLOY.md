@@ -1,22 +1,33 @@
 # Deployment
 
-This document describes the current staging deployment for
-`https://hellowoco.app`.
+This document describes the secure hosted deploy flow for WorldCovers.
 
 Source of truth:
 
-- `.github/workflows/build-and-deploy.yml` controls the hosted deploy flow.
-- `tools/deploy.sh` performs the unprivileged app build steps.
-- `tools/worldcovers.service` defines the gunicorn systemd service.
+- `.github/workflows/build-and-deploy.yml`: staging deploy to `woco.dev`
+- `.github/workflows/deploy-prod.yml`: production deploy to `hellowoco.app`
+- `tools/deploy.sh`: unprivileged app build and migration steps
+- `tools/worldcovers.service`: gunicorn systemd service definition
+- `tools/worldcovers-apply-unit.sh`: staging-only root-owned unit helper
 
-## Current Staging Host
+## Hosts
 
-- Host: `hellowoco.app` on Ubuntu LTS
-- Branch: `staging`
-- Repo path: `/srv/woco`
-- App user: `wocod`
-- Service: `worldcovers`
-- Frontend build: `frontend/dist/`, generated on deploy and not committed
+Both hosts keep the repo at `/srv/woco`, owned by `wocod:wocod`.
+GitHub Actions deploys over SSH as `wocod`; it never SSHes as `root`.
+
+```text
+staging:
+  host: woco.dev
+  branch: staging
+  secret: STAGING_DEPLOY_SSH_KEY
+  unit updates: sudo /usr/local/sbin/worldcovers-apply-unit
+
+production:
+  host: hellowoco.app
+  branch: main
+  secret: PROD_DEPLOY_SSH_KEY
+  unit updates: manual root apply only
+```
 
 Expected host layout:
 
@@ -31,19 +42,9 @@ Expected host layout:
   backups/
 ```
 
-Required config files:
+## GitHub Actions Deploy Flow
 
-- `/srv/woco/mysql.cnf`: MySQL credentials read by Django through
-  `read_default_file`.
-- `/srv/woco/backend/.env`: Django runtime config read by python-decouple,
-  including `DEBUG`, `SECRET_KEY`, and `ALLOWED_HOSTS`.
-
-## What GitHub Actions Does
-
-On push to `staging`, `.github/workflows/build-and-deploy.yml` runs a build
-job and then a deploy job.
-
-Build job:
+Build job on both branches:
 
 ```sh
 bash tools/fingerprint.sh
@@ -52,20 +53,33 @@ cd frontend && npm ci && npm run build
 uv run python backend/manage.py check
 ```
 
-Deploy job, over SSH as `wocod`:
+Staging deploy over SSH as `wocod`:
 
 ```sh
-sudo -n /bin/systemctl stop worldcovers
 git -C /srv/woco fetch origin
 git -C /srv/woco reset --hard origin/staging
-sudo -n /usr/bin/install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
-sudo -n /bin/systemctl daemon-reload
+git -C /srv/woco clean -fd backend/common/migrations
+sudo -n /usr/local/sbin/worldcovers-apply-unit  # only if the unit differs
+sudo -n /bin/systemctl stop worldcovers
 cd /srv/woco && ./tools/deploy.sh
 sudo -n /bin/systemctl start worldcovers
 ```
 
-The unit install and daemon reload run only when the checked-in unit differs
-from the installed unit.
+Production deploy over SSH as `wocod`:
+
+```sh
+git -C /srv/woco fetch origin
+git -C /srv/woco reset --hard origin/main
+git -C /srv/woco clean -fd backend/common/migrations
+diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
+sudo -n /bin/systemctl stop worldcovers
+cd /srv/woco && ./tools/deploy.sh
+sudo -n /bin/systemctl start worldcovers
+```
+
+Production deploy fails before stopping the service if the checked-in unit file
+differs from the installed unit. A root operator must review and apply that
+change manually.
 
 ## What tools/deploy.sh Does
 
@@ -85,69 +99,110 @@ Steps:
 4. `uv run python backend/manage.py collectstatic --noinput`
 
 The script does not stop, start, or restart systemd. The caller owns service
-lifecycle. In staging, the GitHub Actions deploy job is that caller.
+lifecycle.
 
 ## Sudoers
 
-The `wocod` user needs only the privileged commands that the workflow runs:
+Production allows only service stop and start:
 
 ```text
 wocod ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
 wocod ALL=(ALL) NOPASSWD: /bin/systemctl start worldcovers
-wocod ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
-wocod ALL=(ALL) NOPASSWD: /usr/bin/install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
 ```
 
-Keep the command paths in sudoers aligned with the workflow.
+Staging allows service stop, service start, and the audited root-owned helper:
 
-## Manual Deploy
+```text
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl start worldcovers
+wocod ALL=(root) NOPASSWD: /usr/local/sbin/worldcovers-apply-unit
+```
 
-Manual deploy from the staging host:
+Do not grant direct CI sudo access to `/usr/bin/install` or
+`/bin/systemctl daemon-reload` on either host.
+
+## Staging Unit Helper
+
+Install or refresh the helper as root on `woco.dev`:
 
 ```sh
 cd /srv/woco
-sudo -n /bin/systemctl stop worldcovers
-git fetch origin
-git reset --hard origin/staging
-if ! diff -q tools/worldcovers.service /etc/systemd/system/worldcovers.service >/dev/null 2>&1; then
-  sudo -n /usr/bin/install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
-  sudo -n /bin/systemctl daemon-reload
-fi
-./tools/deploy.sh
-sudo -n /bin/systemctl start worldcovers
+install -o root -g root -m 0755 tools/worldcovers-apply-unit.sh /usr/local/sbin/worldcovers-apply-unit
+visudo -cf /etc/sudoers.d/wocod-deploy
 ```
 
 Expected exit code: `0`.
 
-## Pushing Catalog Data To Staging
+The helper validates `/srv/woco/tools/worldcovers.service`, runs
+`systemd-analyze verify`, installs to `/etc/systemd/system/worldcovers.service`,
+and runs `systemctl daemon-reload`.
 
-Catalog data is outside git. `tools/push_data.sh` syncs local work files to
-the host:
+The helper is staging-only. It is intentionally not part of the production
+sudoers policy.
 
-```sh
-./tools/push_data.sh
-./tools/push_data.sh --dry-run
-./tools/push_data.sh --import
-```
+## Production Manual Unit Apply
 
-It syncs:
-
-- `tools/wip/` to `/srv/woco/tools/wip/`
-- `backend/media/` to `/srv/woco/backend/media/`
-
-With `--import`, it then runs `/srv/woco/tools/reload_data.sh` as `wocod`.
-That reload script is the source of truth for data refresh behavior.
-
-Current reload sequence:
+When production deploy blocks because the unit changed, review the diff and run
+as root on `hellowoco.app`:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
+diff -u /etc/systemd/system/worldcovers.service /srv/woco/tools/worldcovers.service
+systemd-analyze verify /srv/woco/tools/worldcovers.service
+install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
+systemctl daemon-reload
+systemctl restart worldcovers
+systemctl status worldcovers
 ```
 
-This reload does not call `wipe_user_data`. It does pass `--truncate`, which
-deletes all 14 catalog import tables before reloading the bundle. Run
-`wipe_user_data` first when submission, version, and recycle-bin history must
-also be cleared.
+Expected exit code: `0`.
+
+## Deploy Key Rotation
+
+Generate separate keys for the two deploy boundaries:
+
+```sh
+ssh-keygen -t ed25519 -C worldcovers-actions-staging -f worldcovers-actions-staging
+ssh-keygen -t ed25519 -C worldcovers-actions-prod -f worldcovers-actions-prod
+```
+
+Install only `worldcovers-actions-staging.pub` for
+`wocod@woco.dev`. Install only `worldcovers-actions-prod.pub` for
+`wocod@hellowoco.app`.
+
+Update GitHub Actions secrets:
+
+```text
+STAGING_DEPLOY_SSH_KEY = private key from worldcovers-actions-staging
+PROD_DEPLOY_SSH_KEY = private key from worldcovers-actions-prod
+```
+
+After both new deploys succeed, delete the old shared `DEPLOY_SSH_KEY` secret
+and remove its public key from all server `authorized_keys` files, including
+root on staging if it was added there.
+
+## SSH Policy
+
+Production should set:
+
+```text
+PermitRootLogin no
+```
+
+Staging should set `PermitRootLogin no` after `wocod` deploys work. Use
+`PermitRootLogin prohibit-password` only while recovering or provisioning the
+host.
+
+## Review Checklist For Deploy PRs
+
+Use this checklist on any PR that changes workflows, SSH users, hosts, sudoers,
+deploy keys, branch routing, or systemd files:
+
+- Separate deploy keys per host and privilege boundary.
+- Never promote a CI key from service-account access to root access.
+- Avoid shared secrets across environments.
+- Treat systemd unit updates as privileged infrastructure changes.
+- Make production fail closed before stopping the service.
+- Keep the repo and generated text ASCII-only.
 
 ## Troubleshooting
 

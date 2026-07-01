@@ -51,7 +51,8 @@ WOCO_HOSTNAME=woco.dev /srv/woco/tools/provision.sh
 `provision.sh` installs all packages, creates the `wocod` user, sets up MySQL +
 `mysql.cnf` + `backend/.env` (fresh secret, `DEBUG=False`, console email), the
 systemd unit, the HTTP nginx site, the firewall, then runs `deploy.sh` and starts
-the service. It is idempotent (`WOCO_FORCE=1` to regenerate secrets).
+the service. It also installs the staging-only root-owned unit helper used by
+GitHub Actions. It is idempotent (`WOCO_FORCE=1` to regenerate secrets).
 
 ### 3. Point DNS at the box (Porkbun)
 
@@ -96,18 +97,21 @@ state locally and repeat step 2.
 
 ## Deploying a UI branch
 
-This is a personal box, so deploys are manual. On the box:
+This is a personal box, so branch deploys can still be manual. SSH as `wocod`
+or switch to `wocod` first, then run:
 
 ```sh
-sudo -u wocod -H bash -lc '
-  cd /srv/woco
-  git fetch origin
-  git reset --hard origin/<your-ui-branch>
-  export PATH=$HOME/.local/bin:$PATH
-  ./tools/deploy.sh
-'
-sudo systemctl restart worldcovers
+cd /srv/woco
+git fetch origin
+git reset --hard origin/<your-ui-branch>
+export PATH=$HOME/.local/bin:$PATH
+sudo -n /bin/systemctl stop worldcovers
+./tools/deploy.sh
+sudo -n /bin/systemctl start worldcovers
 ```
+
+For deploy key rotation, sudoers, and the staging unit helper, see
+`docs/devel/DEPLOY.md`.
 
 ## Verifying
 

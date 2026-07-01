@@ -1,15 +1,13 @@
-# On push to staging: build, check, and deploy to woco.dev (pre-production).
-# To deploy to production (hellowoco.app), merge staging → main (see deploy-prod.yml).
-name: Build and deploy to staging (woco.dev)
+# On push to staging: build, check, and deploy to woco.dev.
+# Production deploys are handled by deploy-prod.yml on main.
+name: Build and deploy to staging
 
 on:
   push:
     branches: [staging]
   workflow_dispatch:
 
-# Opt JS-based actions (e.g. actions/upload-artifact@v5, still declared as
-# node20 in its action.yml) into the node24 runtime ahead of GitHub's
-# forced flip on 2026-06-02. No-op once node24 becomes the default.
+# Opt JS-based actions into the node24 runtime ahead of GitHub's forced flip.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -20,20 +18,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # Fail fast if any known malware fingerprint is present in the tree.
-      # Runs before any install / build step so a compromised commit cannot
-      # execute code on the runner. Patterns are catalogued in
-      # tools/fingerprint.sh.
       - name: Malware fingerprint scan
         run: bash tools/fingerprint.sh
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
         with:
-          # Pin uv version so CI is deterministic. Bump deliberately.
           version: "0.11.2"
           enable-cache: true
-          # Python version comes from .python-version at repo root (3.13).
 
       - name: Set up Node
         uses: actions/setup-node@v5
@@ -43,34 +35,15 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Python dependencies
-        # Same flags as the server: locked resolution, no dev group.
         run: uv sync --no-dev --frozen
 
-      # Build the frontend before running Django system checks. Django's
-      # STATICFILES_DIRS points at frontend/dist/, and `manage.py check`
-      # raises staticfiles.W004 if that directory is missing. Building
-      # first keeps the check log clean.
       - name: Build frontend
         run: |
           cd frontend
           npm ci
           npm run build
 
-      # `migrate --check` was the original step here, but it needs a live
-      # MySQL to inspect django_migrations and CI doesn't provide one, so it
-      # was wrapped in `|| true` and silently masked every failure (model
-      # import errors, broken migrations, missing dependencies all slipped
-      # through). `manage.py check` is the right CI smoke test: it loads
-      # settings, validates models / URL conf / app registry, and runs
-      # without a DB connection. Failures here now break the build.
-      # If you want a real `migrate --check` against a live DB in CI, add a
-      # MySQL service block + DATABASE config; see the `services:` pattern
-      # in https://docs.github.com/en/actions/using-containerized-services.
       - name: Django system checks
-        # The runner has no /srv/woco/.env so we provide a literal dummy
-        # secret here. manage.py check does no crypto; it just needs
-        # settings.py to import. The real secret lives in /srv/woco/.env
-        # on the server and is loaded by decouple at runtime there.
         env:
           DJANGO_SECRET_KEY: ci-dummy-not-a-real-secret-do-not-use-anywhere
         run: uv run python backend/manage.py check
@@ -85,38 +58,37 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to woco.dev (SSH as root)
+      - name: Deploy to woco.dev
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: woco.dev
-          # SSH as root on woco.dev (Reese's staging box). Root has no
-          # narrow sudoers restriction here — it owns the box outright.
-          # uv is installed under the wocod service account, so deploy.sh
-          # is invoked via `sudo -u wocod` to keep the uv PATH correct.
-          # PREREQUISITE: DEPLOY_SSH_KEY public key must be in
-          # /root/.ssh/authorized_keys on woco.dev and PermitRootLogin
-          # must be set to prohibit-password in sshd_config (see
-          # docs/devel/STAGING_WOCO_DEV.md for the 2026-06-22 recovery note).
-          username: root
-          key: ${{ secrets.WOCO_DEV_SSH_KEY }}
+          username: wocod
+          key: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
           command_timeout: 20m
           script: |
             set -euo pipefail
-            # Stop the app so migrations can run without table locks.
-            systemctl stop worldcovers
-            # Pull the latest staging tip.
+            export PATH="$HOME/.local/bin:$PATH"
+
             git -C /srv/woco fetch origin
             git -C /srv/woco reset --hard origin/staging
-            # Drop stray untracked migrations so the box stays in sync with
-            # what staging tracks (same rationale as the prod deploy below).
             git -C /srv/woco clean -fd backend/common/migrations
-            # Re-install the systemd unit file only when it has changed.
+
             if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
-                echo "Updating systemd unit file..."
-                install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
-                systemctl daemon-reload
+                echo "Updating staging systemd unit through root-owned helper..."
+                sudo -n /usr/local/sbin/worldcovers-apply-unit
             fi
-            # Re-own after root's git ops; uv lives in wocod's ~/.local/bin.
-            chown -R wocod:wocod /srv/woco
-            sudo -u wocod -H bash -lc 'export PATH=$HOME/.local/bin:$PATH && cd /srv/woco && ./tools/deploy.sh'
-            systemctl start worldcovers
+
+            service_stopped=0
+            restart_if_stopped() {
+                if [ "$service_stopped" -eq 1 ]; then
+                    sudo -n /bin/systemctl start worldcovers || true
+                fi
+            }
+            trap restart_if_stopped EXIT
+
+            sudo -n /bin/systemctl stop worldcovers
+            service_stopped=1
+            cd /srv/woco && ./tools/deploy.sh
+            sudo -n /bin/systemctl start worldcovers
+            service_stopped=0
+            trap - EXIT

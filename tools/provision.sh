@@ -152,12 +152,14 @@ install -m 644 "${ROOT}/tools/worldcovers.service" /etc/systemd/system/worldcove
 systemctl daemon-reload
 systemctl enable worldcovers
 
-log "Installing sudoers drop-in for ${APP_USER} (deploy commands only)"
+log "Installing staging unit helper"
+install -o root -g root -m 0755 "${ROOT}/tools/worldcovers-apply-unit.sh" /usr/local/sbin/worldcovers-apply-unit
+
+log "Installing sudoers drop-in for ${APP_USER} (staging deploy commands only)"
 cat > /etc/sudoers.d/wocod-deploy <<SUDO
 ${APP_USER} ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
 ${APP_USER} ALL=(ALL) NOPASSWD: /bin/systemctl start worldcovers
-${APP_USER} ALL=(ALL) NOPASSWD: /bin/systemctl daemon-reload
-${APP_USER} ALL=(ALL) NOPASSWD: /usr/bin/install -m 644 ${ROOT}/tools/worldcovers.service /etc/systemd/system/worldcovers.service
+${APP_USER} ALL=(root) NOPASSWD: /usr/local/sbin/worldcovers-apply-unit
 SUDO
 chmod 440 /etc/sudoers.d/wocod-deploy
 visudo -cf /etc/sudoers.d/wocod-deploy

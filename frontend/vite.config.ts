@@ -1,10 +1,19 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react-swc";
 import path from "path";
+import { readFileSync } from "fs";
 // (removed component tagger)
+
+// Single source of truth for the app version is the repo-root VERSION file
+// (shared with pyproject.toml, see [tool.hatch.version] there). Bump that
+// file to release a new version; this just reads it in at build time.
+const appVersion = readFileSync(new URL("../VERSION", import.meta.url), "utf-8").trim();
 
 // https://vitejs.dev/config/
 export default defineConfig(({ mode }) => ({
+  define: {
+    __APP_VERSION__: JSON.stringify(appVersion),
+  },
   build: {
     sourcemap: true, // unminify errors in devtools (file:line instead of index-xxx.js)
     chunkSizeWarningLimit: 768,
