@@ -1,0 +1,41 @@
+# Claude reviews every PR and posts/updates a single scorecard comment.
+#
+# Security: the trigger must stay `pull_request` — NOT `pull_request_target`.
+# With `pull_request`, GitHub withholds repository secrets from fork PRs, so
+# untrusted code can never read ANTHROPIC_API_KEY. Switching to
+# `pull_request_target` to "make the bot work on forks" would hand the secret
+# to attacker-controlled code (the classic pwn-request vulnerability).
+name: Claude PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+# A new push supersedes the in-flight review of the same PR.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  review:
+    # Fork PRs get no secrets under `pull_request`; skip them cleanly instead
+    # of failing on an empty API key.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Fetch diff, review with Claude, upsert PR comment
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: python3 .github/scripts/review.py
