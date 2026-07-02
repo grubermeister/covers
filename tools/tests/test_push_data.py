@@ -66,13 +66,13 @@ class PushDataHostResolution(unittest.TestCase):
     def test_help_works_without_any_config(self):
         result = self.run_script("--help")
         self.assertEqual(result.returncode, 0)
-        self.assertIn("push_data.sh", result.stdout)
+        self.assertIn("--dry-run", result.stdout)
 
     def test_env_file_user_builds_host(self):
         (self.tmp / ".env").write_text(
             "DEBUG=True\n"
             "DEFAULT_FROM_EMAIL=WorldCovers <no-reply@hellowoco.app>\n"
-            "WOCO_DEPLOY_USER=alice\n"
+            "WOCO_DEPLOY_USER=alice  # my ssh user\n"
         )
         result = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -50,7 +50,9 @@ fi
 # WOCO_DEPLOY_USER from .env. The .env is extracted with sed, not sourced —
 # it is a Django-style env file whose unquoted values would break bash.
 if [[ -z "${WOCO_DEPLOY_USER:-}" && -f .env ]]; then
-  WOCO_DEPLOY_USER="$(sed -n 's/^WOCO_DEPLOY_USER=//p' .env | tail -1)"
+  # Strip any trailing inline comment and whitespace so "alice  # ssh user"
+  # yields "alice" instead of a silently broken SSH target.
+  WOCO_DEPLOY_USER="$(sed -n 's/^WOCO_DEPLOY_USER=\([^#]*\).*/\1/p' .env | tail -1 | tr -d '[:space:]')"
 fi
 if [[ -z "${WOCO_HOST:-}" ]]; then
   if [[ -z "${WOCO_DEPLOY_USER:-}" ]]; then
