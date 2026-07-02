@@ -40,7 +40,9 @@ linode-cli linodes list   # note the IPv4
 ### 2. Clone the repo and provision
 
 SSH in as root, clone the repo to `/srv/woco` (provide your own git auth --
-deploy key or token), then run the provisioning script:
+deploy key or token), then run the provisioning script. Root SSH is for this
+initial provisioning ONLY — afterwards set `PermitRootLogin no` and use your
+own sudo-group user (see `DEPLOY.md` §sshd hardening):
 
 ```sh
 ssh root@<IP>
@@ -86,8 +88,10 @@ checkout:
 ./woco ascc munge MI --import-check never
 
 # 2. Push the bundle + media and reload (truncate + import) on the box.
-#    push_data.sh honours WOCO_HOST / WOCO_REMOTE_ROOT.
-WOCO_HOST=root@woco.dev ./tools/push_data.sh --import
+#    push_data.sh honours WOCO_HOST / WOCO_REMOTE_ROOT. Root login is
+#    disabled after provisioning — connect as YOUR user (sudo group);
+#    files still land owned by wocod.
+WOCO_HOST=<your-user>@woco.dev ./tools/push_data.sh --import
 ```
 
 `--import` runs `reload_data.sh` on the box, which is

@@ -36,8 +36,9 @@ directory of CSVs if you prefer to inspect them.)
 
 ```bash
 # Pull prod -> local, then push local -> woco.dev (never store it long-term):
+# Root login is disabled on the box — connect as your own user (sudo group).
 scp <prod>:/tmp/woco-auth.json ./woco-auth.json
-scp ./woco-auth.json root@172.238.189.147:/tmp/woco-auth.json
+scp ./woco-auth.json <your-user>@172.238.189.147:/tmp/woco-auth.json
 ```
 
 ## Target side — restore on `woco.dev`
