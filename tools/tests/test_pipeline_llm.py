@@ -116,12 +116,12 @@ class PipelineLLMTests(unittest.TestCase):
     def test_missing_keys_raise_exact_messages(self):
         with patch.dict("os.environ", {}, clear=True):
             with self.assertRaisesRegex(
-                AssertionError,
+                RuntimeError,
                 "OPENROUTER_API_KEY not set in .env",
             ):
                 make_pipeline_llm(PROVIDER_OPENROUTER)
             with self.assertRaisesRegex(
-                AssertionError,
+                RuntimeError,
                 "ANTHROPIC_API_KEY not set in .env",
             ):
                 make_pipeline_llm(PROVIDER_ANTHROPIC)

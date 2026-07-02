@@ -240,6 +240,10 @@ If a chunk is pure illustration with no catalog text below, return
 class Paths:
     """Per-run filesystem layout, derived from the basename."""
     def __init__(self, basename, output_csv=None):
+        # basename becomes a path component under tools/wip/; reject anything
+        # that could escape it (e.g. "../../x").
+        if not basename or "/" in basename or "\\" in basename or ".." in basename:
+            raise ValueError(f"invalid basename {basename!r}: must be a bare name")
         self.basename   = basename
         self.images_dir = WIP_DIR / "cache" / f"{basename}_chunks"
         self.output_csv = Path(output_csv) if output_csv else WIP_DIR / "cache" / f"{basename}.csv"
@@ -508,17 +512,23 @@ def extract_chunk(llm, model, image_path, page, chunk_seq):
                 f"model returned non-JSON after 2 attempts; raw={snippet!r}"
             )
 
-    assert isinstance(parsed, dict), f"top-level not dict: {type(parsed)}"
+    # LLM output is untrusted: validate with explicit raises, not assert,
+    # so the checks survive `python -O`.
+    if not isinstance(parsed, dict):
+        raise ValueError(f"top-level not dict: {type(parsed)}")
     images_above = parsed.get("images_above")
-    assert isinstance(images_above, int) and images_above >= 0, \
-        f"images_above bad: {images_above!r}"
+    if not (isinstance(images_above, int) and images_above >= 0):
+        raise ValueError(f"images_above bad: {images_above!r}")
     entries = parsed.get("entries")
-    assert isinstance(entries, list), f"entries not list: {type(entries)}"
+    if not isinstance(entries, list):
+        raise ValueError(f"entries not list: {type(entries)}")
     for i, r in enumerate(entries):
-        assert isinstance(r, dict), f"entry[{i}] not dict"
-        assert isinstance(r.get("text"), str), f"entry[{i}].text not str"
-        assert r.get("type") in ("LISTING", "META"), \
-            f"entry[{i}].type bad: {r.get('type')!r}"
+        if not isinstance(r, dict):
+            raise ValueError(f"entry[{i}] not dict")
+        if not isinstance(r.get("text"), str):
+            raise ValueError(f"entry[{i}].text not str")
+        if r.get("type") not in ("LISTING", "META"):
+            raise ValueError(f"entry[{i}].type bad: {r.get('type')!r}")
         r["text"] = _compress_leaders(r["text"])
     return {"images_above": images_above, "entries": entries}
 
