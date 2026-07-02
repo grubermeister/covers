@@ -78,6 +78,13 @@ class PushDataHostResolution(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("alice@hellowoco.app:", self.rsync_log.read_text())
 
+    def test_dry_run_refuses_import(self):
+        (self.tmp / ".env").write_text("WOCO_DEPLOY_USER=alice\n")
+        result = self.run_script("--dry-run", "--import")
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("never a dry run", result.stderr)
+        self.assertFalse(self.rsync_log.exists(), "no rsync may run")
+
     def test_woco_host_env_overrides_env_file(self):
         (self.tmp / ".env").write_text("WOCO_DEPLOY_USER=alice\n")
         result = self.run_script(env_extra={"WOCO_HOST": "bob@example.org"})

@@ -10,9 +10,9 @@
 # override the full target. Files on the server are always owned by wocod
 # regardless of who pushes.
 #
-# Prereq on the server: your SSH user can run `sudo` without a password —
-# blanket passwordless sudo is fine. For a host without blanket sudo, a
-# minimal drop-in would be (replace <user> with your SSH user):
+# Prereq on the server: your SSH user needs passwordless sudo for exactly the
+# two commands below. Use a scoped drop-in (replace <user> with your SSH user)
+# rather than blanket NOPASSWD — blanket sudo makes the SSH key root-equivalent:
 #   # /etc/sudoers.d/<user>-rsync
 #   <user> ALL=(root) NOPASSWD: /usr/bin/rsync
 #   <user> ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
@@ -21,21 +21,30 @@
 #   ./tools/push_data.sh              # push only
 #   ./tools/push_data.sh --import     # push, then run imports as wocod
 #   ./tools/push_data.sh --dry-run    # show what rsync would do
+#                                     # (refuses --import: the import is never a dry run)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DO_IMPORT=0
+DRY_RUN=0
 RSYNC_EXTRA=()
 for arg in "$@"; do
   case "$arg" in
     --import)  DO_IMPORT=1 ;;
-    --dry-run) RSYNC_EXTRA+=("--dry-run") ;;
+    --dry-run) DRY_RUN=1; RSYNC_EXTRA+=("--dry-run") ;;
     -h|--help)
-      sed -n '2,23p' "$0"; exit 0 ;;
+      sed -n '2,24p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
+
+# --dry-run only previews the rsyncs; there is no dry-run for the import,
+# which truncate-reloads the live DB. Refuse the combination outright.
+if [[ $DRY_RUN -eq 1 && $DO_IMPORT -eq 1 ]]; then
+  echo "push_data.sh: refusing --import with --dry-run — the import step is never a dry run." >&2
+  exit 2
+fi
 
 # Resolve the SSH target. Precedence: WOCO_HOST env > WOCO_DEPLOY_USER env >
 # WOCO_DEPLOY_USER from .env. The .env is extracted with sed, not sourced —
