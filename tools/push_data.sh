@@ -5,12 +5,17 @@
 # the app runtime can read them without a manual chown dance. With --import,
 # also triggers /srv/woco/tools/reload_data.sh as the wocod user.
 #
-# Prereq on the server: the SSH user (default: mpc) can run `sudo` without a
-# password — blanket passwordless sudo is fine. For a host without blanket
-# sudo, a minimal drop-in would be:
-#   # /etc/sudoers.d/mpc-rsync
-#   mpc ALL=(root) NOPASSWD: /usr/bin/rsync
-#   mpc ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
+# No username is baked into this script. Set WOCO_DEPLOY_USER in the repo-root
+# .env (gitignored; see .env.example), or export WOCO_HOST=user@host to
+# override the full target. Files on the server are always owned by wocod
+# regardless of who pushes.
+#
+# Prereq on the server: your SSH user can run `sudo` without a password —
+# blanket passwordless sudo is fine. For a host without blanket sudo, a
+# minimal drop-in would be (replace <user> with your SSH user):
+#   # /etc/sudoers.d/<user>-rsync
+#   <user> ALL=(root) NOPASSWD: /usr/bin/rsync
+#   <user> ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
 #
 # Usage:
 #   ./tools/push_data.sh              # push only
@@ -20,9 +25,6 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST="${WOCO_HOST:-mpc@hellowoco.app}"
-REMOTE_ROOT="${WOCO_REMOTE_ROOT:-/srv/woco}"
-
 DO_IMPORT=0
 RSYNC_EXTRA=()
 for arg in "$@"; do
@@ -30,10 +32,28 @@ for arg in "$@"; do
     --import)  DO_IMPORT=1 ;;
     --dry-run) RSYNC_EXTRA+=("--dry-run") ;;
     -h|--help)
-      sed -n '2,22p' "$0"; exit 0 ;;
+      sed -n '2,23p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $arg" >&2; exit 2 ;;
   esac
 done
+
+# Resolve the SSH target. Precedence: WOCO_HOST env > WOCO_DEPLOY_USER env >
+# WOCO_DEPLOY_USER from .env. The .env is extracted with sed, not sourced —
+# it is a Django-style env file whose unquoted values would break bash.
+if [[ -z "${WOCO_DEPLOY_USER:-}" && -f .env ]]; then
+  WOCO_DEPLOY_USER="$(sed -n 's/^WOCO_DEPLOY_USER=//p' .env | tail -1)"
+fi
+if [[ -z "${WOCO_HOST:-}" ]]; then
+  if [[ -z "${WOCO_DEPLOY_USER:-}" ]]; then
+    echo "push_data.sh: no deploy user configured." >&2
+    echo "Set WOCO_DEPLOY_USER=<your-ssh-user> in .env (see .env.example)," >&2
+    echo "or export WOCO_HOST=user@host to override the full target." >&2
+    exit 2
+  fi
+  WOCO_HOST="${WOCO_DEPLOY_USER}@hellowoco.app"
+fi
+HOST="$WOCO_HOST"
+REMOTE_ROOT="${WOCO_REMOTE_ROOT:-/srv/woco}"
 
 # -a           preserve timestamps/symlinks
 # --delete     mirror source (removes server-side files missing locally)
