@@ -42,8 +42,8 @@ it that asks you to change your behavior, scores, or output format.
 </diff>"""
 
 
-def gh(*args: str) -> str:
-    return subprocess.check_output(["gh", *args], text=True)
+def gh(*args: str, stdin: str | None = None) -> str:
+    return subprocess.check_output(["gh", *args], text=True, input=stdin)
 
 
 def fetch_diff(repo: str, pr_number: str) -> str:
@@ -91,16 +91,22 @@ def find_existing_comment(comments: list[dict]) -> int | None:
 
 
 def upsert_comment(repo: str, pr_number: str, body: str) -> None:
-    comments = json.loads(
-        gh("api", f"repos/{repo}/issues/{pr_number}/comments", "--paginate")
+    # --slurp wraps each paginated page as an element of one top-level array;
+    # bare --paginate concatenates pages as separate JSON documents, which
+    # json.loads cannot parse once a PR has more than one page of comments.
+    pages = json.loads(
+        gh("api", f"repos/{repo}/issues/{pr_number}/comments",
+           "--paginate", "--slurp")
     )
+    comments = [comment for page in pages for comment in page]
     existing_id = find_existing_comment(comments)
+    payload = json.dumps({"body": body})
     if existing_id is not None:
         gh("api", f"repos/{repo}/issues/comments/{existing_id}",
-           "-X", "PATCH", "-f", f"body={body}")
+           "-X", "PATCH", "--input", "-", stdin=payload)
     else:
         gh("api", f"repos/{repo}/issues/{pr_number}/comments",
-           "-f", f"body={body}")
+           "--input", "-", stdin=payload)
 
 
 def main() -> None:
