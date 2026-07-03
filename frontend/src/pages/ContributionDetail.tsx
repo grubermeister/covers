@@ -189,13 +189,17 @@ const ContributionDetail = () => {
     }
   }, [contribution, dashboardTab, navigate]);
 
+  const contributionId = contribution?.id;
+  const contributionStatus = contribution?.status;
+  const contributionSubmittedData = contribution?.submittedData;
+
   useEffect(() => {
-    if (!contribution || contribution.status !== "pending" || !isStateEditor || !user) return;
-    if (isCoverContributionData(contribution.submittedData)) return;
+    if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
+    if (isCoverContributionData(contributionSubmittedData)) return;
     let cancelled = false;
     setCatalogCodeLoading(true);
     setCatalogCodeError(null);
-    getContributionCatalogCodeSuggestion(contribution.id)
+    getContributionCatalogCodeSuggestion(contributionId)
       .then((suggestion) => {
         if (!cancelled) setCatalogCode(suggestion.catalogCode);
       })
@@ -210,7 +214,7 @@ const ContributionDetail = () => {
     return () => {
       cancelled = true;
     };
-  }, [contribution?.id, contribution?.status, isStateEditor, user]);
+  }, [contributionId, contributionStatus, contributionSubmittedData, isStateEditor, user]);
 
   const ensureCatalogCode = async (): Promise<string> => {
     if (!contribution) return "";

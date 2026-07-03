@@ -30,6 +30,8 @@ import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const DEBOUNCE_MS = 800;
+const CIRCLE_SHAPE_CODES = ["C", "DC", "DLC", "DLDC"] as const;
+
 type SubmissionQueueSortOption = "newest" | "oldest";
 
 /**
@@ -385,7 +387,6 @@ const Search = () => {
   // shape code prefix (the part before " - " in the label) so the UI collapses
   // height/width into a single Diameter input. Explicit allow-list because
   // other curved shapes (ARC - Arc or Semi-circle) are not true circles.
-  const CIRCLE_SHAPE_CODES = ["C", "DC", "DLC", "DLDC"] as const;
   const isCircleShape = useMemo(() => {
     if (shapeFilter === "all") return false;
     const opts = Array.isArray(shapeOptions) ? shapeOptions : [];

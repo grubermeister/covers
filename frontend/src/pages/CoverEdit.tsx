@@ -322,7 +322,7 @@ export default function CoverEdit() {
     return () => {
       cancelled = true;
     };
-  }, [editContributionId, mode, referenceWorks]);
+  }, [editContributionId, markingId, mode, referenceWorks]);
 
   useEffect(() => {
     if (mode !== "edit" || !initial) return;
@@ -334,10 +334,13 @@ export default function CoverEdit() {
     setCoverDate(initial.coverDate);
   }, [mode, initial]);
 
+  const coverRowId = coverRow?.id;
+  const coverContributorComment = coverRow?.contributorComment;
+
   useEffect(() => {
-    if (!coverRow) return;
-    setContributorComment(coverRow.contributorComment ?? "");
-  }, [coverRow?.id]);
+    if (coverRowId == null) return;
+    setContributorComment(coverContributorComment ?? "");
+  }, [coverRowId, coverContributorComment]);
 
   useEffect(() => {
     let cancelled = false;

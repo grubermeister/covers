@@ -375,12 +375,15 @@ export default function CoverContributionDetail({ initialContribution = null }: 
     navigate("/dashboard");
   };
 
+  const contributionId = contribution?.id;
+  const contributionStatus = contribution?.status;
+
   useEffect(() => {
-    if (!contribution || contribution.status !== "pending" || !isStateEditor || !user) return;
+    if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
     let cancelled = false;
     setCatalogCodeLoading(true);
     setCatalogCodeError(null);
-    getContributionCatalogCodeSuggestion(contribution.id)
+    getContributionCatalogCodeSuggestion(contributionId)
       .then((suggestion) => {
         if (!cancelled) setCatalogCode(suggestion.catalogCode);
       })
@@ -395,7 +398,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
     return () => {
       cancelled = true;
     };
-  }, [contribution?.id, contribution?.status, isStateEditor, user]);
+  }, [contributionId, contributionStatus, isStateEditor, user]);
 
   const ensureCatalogCode = async (): Promise<string> => {
     if (!contribution) return "";

@@ -46,21 +46,21 @@ pipeline queue and the M2/M3 items in "Issues 1-34" below.
 They are **not** the "Issue 22-34" entries further down (different content, older
 email source). Read them as "**batch #NN**".
 
-**Near-term goal (gated by batch #31):** land these fixes, **re-run Maryland and
-Michigan** with them applied, then **invite the state editors to review the dev
-site** (`woco.dev`).
+**Near-term goal (gated by batch #31):** finish the remaining batch fixes,
+**re-run Maryland and Michigan** with them applied, then **invite the state
+editors to review the dev site** (`woco.dev`).
 
 ## Crosswalk -- Ian's email asks -> batch issue -> status
 
 | Ian's ask (18 Jun email) | Batch # | Status |
 |---|---|---|
-| State-editor approval workflow (reviewed/confirmed flag + filter) | #22 | **done** (draft PR #60) |
-| Rate-vs-Aux rule (number->Rate else Aux) + description + lettering field | #23 | **done** (draft PR #61) |
-| Multi-territory support (town in MI **+** MI Territory; scale to Vol 2/3) | #24 | **display half done** (draft PR #59); import half -> #36 |
+| State-editor approval workflow (reviewed/confirmed flag + filter) | #22 | **done** (merged to `staging` in PR #60) |
+| Rate-vs-Aux rule (number->Rate else Aux) + description + lettering field | #23 | **done** (merged to `staging` in PR #61; decision closed in Issue 21) |
+| Multi-territory support (town in MI **+** MI Territory; scale to Vol 2/3) | #24 | **display/search done** (merged to `staging` in PR #59); import half -> #36 |
 | Date parser: "Dates Seen" label; Amelia no-date; VA `(1)` -> apply to WV | #25 | open *(data side re-run-gated by #31)* |
 | Decade-level date ("1850s") -> leave date blank, put in note | #26 | open |
-| Date field on new markings, **state editors only** | #27 | open *(reconcile w/ existing ERD/LRD entry)* |
-| Territory/state tags -- display on detail **and searchable** | #28 | open *(extends #24)* |
+| Date field on new markings, **state editors only** | #27 | **done** (merged to `staging` in PR #67) |
+| Territory/state tags -- display on detail **and searchable** | #28 | **done** (detail tags + search via PR #59; broader territory alias question remains old Issue 31) |
 | Ensure "Institutional" designation appears properly | #29 | open *(same mechanism as #37)* |
 | Move "Clear Filter" button to top of UI | #30 | open *(quick UX win)* |
 | Notify Ian before each new state; invite editors after MD/MI re-run | #31 | open *(standing process gate)* |
@@ -77,7 +77,7 @@ already shipped (see Issue 21-family work / `docs/DECISIONS.md`).*
 
 ## Open items -- detail (self-contained; full bodies in Reese's `docs/issues.md`)
 
-**General feature asks (un-gated unless noted):**
+**General feature asks still open (un-gated unless noted):**
 - **#25 -- Date parser.** When multiple dates exist, label the description field
   **"Dates Seen"** + the dates. Handle Amelia-style **no-date** rows (parser
   currently mistakes circle size for a rate). VA condition `(1)` rule -> apply to
@@ -85,10 +85,6 @@ already shipped (see Issue 21-family work / `docs/DECISIONS.md`).*
   #31**; a frontend-only "Dates Seen" label half may be do-able first.*
 - **#26 -- Decade dates.** Decade-level ("1850s") -> leave the date field **blank**,
   move the value to the **note**.
-- **#27 -- Editor-only date field** on new markings. Likely a **role-gate** on the
-  existing ERD/LRD entry rather than net-new; reconcile before building.
-- **#28 -- Territory/state tags** on the detail screen + **searchable**. Extends
-  #24's multi-territory display (badges + filter).
 - **#29 -- "Institutional" designation** displays/applies correctly. Likely the
   same underlying mechanism as MI #37.
 - **#30 -- Move "Clear Filter" to top** of the UI. Low-risk UX, fully un-gated --
@@ -113,24 +109,30 @@ already shipped (see Issue 21-family work / `docs/DECISIONS.md`).*
 - **#37** Listings with `*` should be flagged **Institutional** but aren't (see #29).
 - **#38** ADA.MI townmark shows as **SL**, should be **circular**.
 
-**Done in this batch (verified locally; draft PRs open against `staging`):**
+**Done in this batch (merged to `staging`; verified locally):**
 - **#22** state-editor `is_reviewed` flag + filter (PR #60), **#23** Rate-vs-Aux
-  copy + lettering help (PR #61), **#24** multi-territory display (PR #59). None
-  merged -- merges to `staging` deploy prod and are Michael's call.
+  copy + lettering help (PR #61), **#24/#28** multi-territory display/search
+  (PR #59), and **#27** editor-only ERD/LRD date entry (PR #67). All are merged.
 
 ---
 
-## Status snapshot (as of 2026-06-15)
+## Status snapshot (as of 2026-07-03)
 
 **State rollout order (Ian):** VA -> WV -> **Michigan** -> Maryland -> Florida -> Tennessee -> Alabama.
 
 | Milestone | What | Status |
 |---|---|---|
-| **M1** | Reproduce VA E2E locally, then Michigan E2E | **Substantially done** |
+| **M1** | Reproduce VA E2E locally, then Michigan E2E | **DONE** |
 | [R1] | VA pipeline reproduced E2E locally | [DONE] **DONE** -- 11,559 rows, 0 errors. Required local patches (not unmodified); see `docs/DECISIONS.md`. |
-| [R2] | Michigan E2E via per-state extensibility | [DONE] **DONE** -- 10,224 rows, 0 errors; verified API/media. **PR #50** (this branch). Verdict: **config-only, no MI adapter class.** Open tails -> Issues 28-32. |
-| M2 | Frontend gaps: user upload+verify, territory UI | Started -- Issues 11, 17, 25, [R3]-[R5]; Issue 18 done |
-| M3 | QoL: citation search, branding, opt-out | Started -- Issues 23, 24, [R6]-[R8]; Issue 22 done |
+| [R2] | Michigan E2E via per-state extensibility | [DONE] **DONE** -- 10,224 rows, 0 errors; verified API/media. **PR #50** merged. Verdict: **config-only, no Michigan adapter class.** Open tails -> Issues 28-32. |
+| M2 | Frontend gaps: user upload+verify, territory UI | **Partially shipped** -- reviewed filter (#60), multi-territory display/search (#59), editor-only ERD/LRD (#67), submitter-name opt-in, link-existing cover/marking (#84), and image order/move (#85) are in `staging`. Original Prospect Hill main-image flow and parser/re-run-gated items remain open. |
+| M3 | QoL: citation search, branding, opt-out | **Partially shipped** -- acknowledgements are done, Rate-vs-Aux convention/copy is resolved, and submitter withdrawal policy is resolved. Branding/APMC sign-off and per-state citation rollout remain open. |
+
+Recent merged work since the June snapshot:
+- **#46 / PR #83** user-safe refresh wrappers: `backup_user_markings` and `restore_user_markings`.
+- **#47 / PR #84** link existing covers and markings from detail pages.
+- **#48 / PR #85** move images between markings and covers in both directions.
+- **PR #87** tooling, deploy-assets, and docs cleanup; added the feature-surface table below.
 
 **Highest-value finding (resolved):** the four "fresh-install schema drift" alarms
 from the VA write-up **did not reproduce** on a clean DB -- they were residue of an
@@ -245,38 +247,46 @@ the [R3] `SubmitImageDialog.tsx` -> `/api/v2/images/` wiring.
 ## UI copy & forms
 
 ### Issue 12 -- Canonical submission-guidelines content block
-**Status:** open - **Depends on:** none
+**Status:** open (copy approval) - **Depends on:** none
 One reusable guidelines block (used on three submission pages -- define once):
 1. Image quality -- "300 dpi preferred"
-2. Rate vs. Auxiliary -- *Rate: "Paid", "Free", "3", "Due 3"; Auxiliary: "Advertised", "Missent"* (final wording gated on Issue 21)
+2. Rate vs. Auxiliary -- current Issue 21 convention: number-bearing markings are Rate; word-only markings are usually Auxiliary
 3. Reference works -- "To add a new reference, please add a note to editor for approval and addition"
 4. Date-verification -- "please include image verifying date if not on exterior of cover"
-- [ ] Reusable component/string exists with all four items
+- [x] Reusable component/string exists with all four items
 - [ ] Content approved against Ian's wording
+Progress note, 2026-07-03: centralized guideline labels live in
+`frontend/src/labels/guidelines.ts`; Issue 21 resolved the Rate-vs-Aux wording.
 
 ### Issue 13 -- Submit New Marking page updates
 **Status:** open - **Depends on:** 12
 - [x] Rename "Create Marking" -> **"Submit New Marking"**
-- [ ] Expose **ERD** (Earliest Recorded Date) and **LRD** (Latest Recorded Date) fields
+- [x] Expose **ERD** (Earliest Recorded Date) and **LRD** (Latest Recorded Date) fields for state editors
 - [ ] Reference Works lists **"ASCC Edition 5", "ASCC Edition 6", "VPHC Catalog 1st Edition"** (currently shows ASCC twice -- remove dup)
-- [ ] Apply guidelines block (Issue 12)
-- [ ] Townmark field: hover/bracket note that it means the **EXACT** text on the marking
-Progress note, 2026-06-15: page H1 now uses `Submit New Marking`.
+- [x] Apply guidelines block (Issue 12)
+- [x] Townmark field explains that it means the **EXACT** text on the marking
+Progress note, 2026-07-03: page H1, state-editor ERD/LRD, centralized
+guidelines, and exact-text help are implemented. Reference-work seed cleanup
+remains open.
 
 ### Issue 14 -- Submit Edit to Marking page updates
 **Status:** open - **Depends on:** 12
 - [x] Rename "Edit Marking" -> **"Submit Edit to Existing Marking"**
 - [x] Date-format selector: "Select one or more date formats" -> **"Select Date format"** (single-select)
 - [ ] Document date-format codes: **MD** (month/day), **MDD** (month and day), **YMD** (year and month), **YMDD** (year, month and day) -- WARNING *source listed "YMDD" twice; confirm the year-and-month code with Ian*
-- [ ] Add ERD/LRD fields
-- [ ] Apply guidelines block (Issue 12)
+- [x] Add ERD/LRD fields for state editors
+- [x] Apply guidelines block (Issue 12)
 Progress note, 2026-06-15: edit-marking H1 now uses the requested wording; date
 format now behaves as a single-select radio menu and uses the requested empty
 state text.
+Progress note, 2026-07-03: state-editor ERD/LRD and centralized guidelines are
+implemented on the shared marking form.
 
 ### Issue 15 -- Submit New Cover page updates
-**Status:** open - **Depends on:** 12
-- [ ] Apply guidelines block (Issue 12), including the date-verification-image note
+**Status:** done (frontend copy) - **Depends on:** 12
+- [x] Apply guidelines block (Issue 12), including the date-verification-image note
+Resolution note, 2026-07-03: `CoverEdit.tsx` renders the centralized
+`COVER_SUBMISSION_GUIDELINES`, including the date-verification image note.
 
 ### Issue 16 -- Rename "Record Details" to entity-specific details
 **Status:** done (frontend copy) - **Depends on:** none
@@ -287,14 +297,17 @@ entity-specific details labels: `Cover Details` for covers and `Marking Details`
 for markings.
 
 ### Issue 17 -- Submitter acknowledgement on covers
-**Status:** open - **Depends on:** 16 - related **[R8]**
+**Status:** done (frontend/API/privacy) - **Depends on:** 16 - related **[R8]**
 On **Submit New Cover** (covers only, **not** markings): "Would you like your
 name to display as the submitter?" If yes -> show "Submitted by [name]" on the
 Cover Details screen. Incentivizes uploads.
-- [ ] Yes/no acknowledgement checkbox on Submit New Cover
-- [ ] When yes: "Submitted by [name]" appears on Cover Details
-- [ ] When no: no submitter name shown
-- [ ] Option does **not** appear on marking submission
+- [x] Yes/no acknowledgement checkbox on Submit New Cover
+- [x] When yes: "Submitted by [name]" appears on Cover Details
+- [x] When no: no submitter name shown
+- [x] Option does **not** appear on marking submission
+Resolution note, 2026-07-03: cover submissions persist
+`display_submitter_name`; the API only returns `submitter_name` when the
+submitter opted in, and Cover Details renders that server-gated value.
 
 ### Issue 18 -- Catalog Search: search by size (diameter)
 **Status:** done (frontend/API filter) - **Depends on:** none
@@ -314,28 +327,25 @@ as the Stampless catalog distinguishes Cumberland vs. Curdsville.
 - [ ] A "5" and a circled "5" render distinguishably
 - [ ] Cumberland and Curdsville display their correct rate styling
 
-### Issue 20 -- "Years Seen" model for marking dates
-**Status:** open - **Depends on:** none - **Source:** Greg Stone
-**WARNING Model change -- scope first; record decision in `docs/DECISIONS.md`.**
-Replace the strict Earliest/Latest pair with discrete known years/ranges to handle
-hiatuses (Greg's Aquila: **1811, 1849-1855**), for both handstamp and manuscript.
-Ian's counter-view: keep Earliest+Latest and note ranges in the detail notes -- to
-be resolved with the board. **Interacts with the `parse_head` year-peel (Issue 32),
-which currently *drops* trailing years this model would want to preserve.**
-- [ ] Design note: data model + migration from Earliest/Latest
-- [ ] Aquila shows "1811, 1849-1855" rather than a single 1811-1855 range
-- [ ] Handstamp listings extract years as shown in source
-- [ ] **Decision recorded in DECISIONS.md**
+### Issue 20 -- "Years Seen" model for marking dates -- [DONE]
+**Status:** done (decision resolved) - **Depends on:** none - **Source:** Greg Stone
+Decision, 2026-07-03: the separate "Years Seen" model-change question is closed.
+Keep ERD/LRD as the public earliest/latest bounds, backed by date-observation
+rows where the current model supports them. Do not replace the current approach
+with a separate free-form Years Seen field.
+- [x] Decision recorded in this tracker
+- [x] ERD/LRD remain the displayed earliest/latest bounds
+- [x] Discrete date observations stay in the existing date-observation model
 
-### Issue 21 -- Rate vs. Auxiliary classification decision
-**Status:** open - **Depends on:** 12 - **Source:** Greg Stone
-**WARNING Board decision; record in `docs/DECISIONS.md`.**
-Keep Ratemarks as a distinct class, or treat all non-townmarks as Auxiliary
-(Greg's proposal: "Paid" and "Paid 5" both Auxiliary)? Ian: *"a marking is a
-marking at the end of the day"* -- wants a board ruling before conventions harden.
-- [ ] Classification decision documented with rationale
-- [ ] Guidelines (Issue 12) reflect the final convention
-- [ ] **Decision recorded in DECISIONS.md**
+### Issue 21 -- Rate vs. Auxiliary classification decision -- [DONE]
+**Status:** done (decision + copy) - **Depends on:** 12 - **Source:** Greg Stone
+Decision, 2026-07-03: keep Ratemarks as a distinct marking type. Current
+submitter guidance uses the shipped rule of thumb: number-bearing markings are
+Rate; word-only markings are usually Auxiliary. This is no longer an open board
+decision.
+- [x] Classification decision documented with rationale
+- [x] Guidelines (Issue 12) reflect the final convention
+- [x] Decision removed from the open-decision table
 
 ## Content, branding & citations
 
@@ -370,14 +380,16 @@ listings from another catalog are accepted as genuine on that catalog's authorit
 ## Lower priority / later
 
 ### Issue 25 -- Marking with multiple states/territories
-**Status:** open - **Depends on:** none - related **[R5]**
+**Status:** done (display/search) - **Depends on:** none - related **[R5]**
 Support and display a single marking belonging to more than one state/territory.
 **Spike already answered by the Michigan run:** the `post_office_regions` junction
 is **already many-to-many** (`unique_together [post_office, region]`); Detroit
 links to four regions and `PostOffice.region` resolves the display region. So this
 is largely **display + filter UI**, not a schema change. See Issue 31.
-- [ ] A marking can be associated with multiple states/territories
-- [ ] Detail screen displays all associated states
+- [x] A marking can be associated with multiple states/territories
+- [x] Detail screen displays all associated states
+Resolution note, 2026-07-03: detail display and region-filter links are merged
+via PR #59. Broader territory alias/search-design questions remain in Issue 31.
 
 ### Issue 26 -- Submit a cover for additional markings
 **Status:** open - **Depends on:** none
@@ -385,11 +397,15 @@ After a cover is submitted for one marking, allow associating it with another
 marking without re-uploading (many covers carry multiple markings).
 - [ ] From a submitted cover, user can associate it with another marking without re-uploading
 
-### Issue 27 -- Submitter self-delete option (open question)
-**Status:** open - **Depends on:** none
-**WARNING Decision required.** Should submitters be able to delete their own submissions?
-- [ ] Decision recorded (yes/no) with rationale
-- [ ] If yes: submitter can delete own submission. If no: close in tracker.
+### Issue 27 -- Submitter self-delete / withdrawal policy -- [DONE]
+**Status:** done (policy + implementation) - **Depends on:** none
+Decision, 2026-07-03: submitters may withdraw their own unapproved submissions
+(`draft`, `pending`, `needs_revision`, or `rejected`). Approved contributions are
+not hard-deleted through this path; removing a published catalog record goes
+through the record remove / recycle-bin flow.
+- [x] Decision recorded with rationale
+- [x] Submitter can delete own unapproved submission
+- [x] Approved contributions cannot be hard-deleted by submitter withdrawal
 
 ---
 
@@ -553,14 +569,11 @@ Findings:
 | # | Decision | Owner | Blocks |
 |---|---|---|---|
 | 14 | Confirm the "year-and-month" date-format code (source listed YMDD twice) | Ian | 14 |
-| 20 | "Years Seen" vs. Earliest/Latest date model | Board + Greg | 20, 32 |
-| 21 | Rate vs. Auxiliary classification | Board | 12, 21 |
 | 23 | APMC branding / logo / Society links sign-off | Board | 23 |
-| 27 | Allow submitter self-delete? | Ian | 27 |
 | 28 | Strip territory suffixes in `parse_head`? | Michael | 28 |
 | 29 | `#N` office-name handling (allow `#` or `NO. N`) | Michael | 29 |
 | 30 | Bless territory region rows into canonical `regions.csv` + DB; territory abbrevs | Michael | 30 |
-| 31 | Territory search behavior (parent under successor state?) | Michael | 25, 31 |
+| 31 | Territory search behavior (parent under successor state?) | Michael | 31 |
 
 ---
 

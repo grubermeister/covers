@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,7 @@ const Collections = () => {
   const [editors, setEditors] = useState<CollectionEditor[]>([]);
   const [editorUserId, setEditorUserId] = useState<string>("");
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     setLoading(true);
     try {
       const items = await listCollections();
@@ -53,10 +53,13 @@ const Collections = () => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [toast]);
 
   useEffect(() => {
     reload();
+  }, [reload]);
+
+  useEffect(() => {
     // Pull a flat region list for the create-collection dropdown.
     apiClient
       .get("/regions/", { params: { page_size: 500 } })
@@ -255,7 +258,7 @@ const Collections = () => {
             <Card className="p-4 md:col-span-2">
               <h2 className="font-semibold mb-3">Collections</h2>
               {loading ? (
-                <p className="text-sm text-muted-foreground">Loading…</p>
+                <p className="text-sm text-muted-foreground">Loading...</p>
               ) : collections.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No Collections yet.</p>
               ) : (
@@ -332,7 +335,7 @@ const Collections = () => {
                         >
                           <span>
                             {e.username}
-                            <span className="text-muted-foreground"> · #{e.user_id}</span>
+                            <span className="text-muted-foreground"> - #{e.user_id}</span>
                           </span>
                           <Button
                             variant="ghost"
