@@ -129,7 +129,8 @@ The wrapper preserves the existing `tools/wip/in`, `tools/wip/cache`, and
 tools/wip/cache/v1/VA/catalog_rows.csv
 tools/wip/cache/v1/VA/image_refs.csv
 tools/wip/out/v1_va/
-tools/wip/out/v1_va/v1_reconciliation_report.csv
+tools/wip/out/v1_va/source_marking_map.csv
+tools/wip/out/v1_va/v1_pipeline_warnings.csv
 tools/wip/cache/v1/VA/run.json
 ```
 
@@ -147,9 +148,9 @@ Clean generated cache/output files without touching source PDFs or seed CSVs:
 ```
 
 With a state, `clean` removes generated cache files for that state plus
-`tools/wip/out/<state>/` and `tools/wip/cache/compare/<STATE>/`. Without a
-state, it clears generated contents under `tools/wip/cache/` and
-`tools/wip/out/` for all states while preserving placeholder files.
+`tools/wip/out/<state>/` and `tools/wip/out/v1_<state>/`. Without a state, it
+clears generated contents under `tools/wip/cache/` and `tools/wip/out/` for all
+states while preserving placeholder files.
 
 Expected exit code for each successful command: `0`.
 

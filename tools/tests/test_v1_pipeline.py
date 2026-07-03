@@ -471,7 +471,7 @@ class V1PipelineTests(unittest.TestCase):
                 },
             ]
         )
-        lineage_rows = [
+        source_map_rows = [
             {"chunk": "71", "marking_code": "ASCC1-VA-M1100"},
             {"chunk": "72", "marking_code": "ASCC1-VA-M1101"},
         ]
@@ -483,7 +483,7 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(rolled.loc[1, "rolled_catalog_text"], "RICHMOND (1850;Black) 10")
         self.assertEqual(rolled["raw_id"].tolist(), ["71", "72"])
         self.assertEqual(rolled["parsed_colors"].tolist(), [["BLACK"], ["RED"]])
-        self.assertEqual([row["chunk"] for row in lineage_rows], ["71", "72"])
+        self.assertEqual([row["chunk"] for row in source_map_rows], ["71", "72"])
 
     def test_v1_catalog_rows_drop_manual_color_split_duplicates(self):
         fields = [
@@ -729,7 +729,7 @@ class V1PipelineTests(unittest.TestCase):
             bundle = root / "bundle"
             slice_path = root / "slice.csv"
             refs_path = root / "image_refs.csv"
-            report_path = bundle / "v1_reconciliation_report.csv"
+            report_path = bundle / "v1_pipeline_warnings.csv"
 
             write_csv(
                 slice_path,
@@ -780,7 +780,7 @@ class V1PipelineTests(unittest.TestCase):
                 [stamped({"code": "ASCC2-WV-M1100", "type": "TOWNMARK", "is_manuscript": "False", "color": "BLACK", "post_office": "USA-WV1-5"})],
             )
             write_csv(
-                bundle / "marking_lineage.csv",
+                bundle / "source_marking_map.csv",
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:183756", "source_listing_idx": "0", "marking_code": "ASCC2-WV-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "183756", "catalog_txt": "BERKELEY SPRINGS"}],
             )
@@ -795,7 +795,7 @@ class V1PipelineTests(unittest.TestCase):
                 "--bundle-dir", str(bundle),
                 "--v1-image-root", str(root / "images"),
                 "--media-dir", str(root / "media" / "wv"),
-                "--report", str(report_path),
+                "--warnings", str(report_path),
                 "--preserve-images",
             ])
             markings = read_csv(bundle / "markings.csv")
@@ -812,7 +812,7 @@ class V1PipelineTests(unittest.TestCase):
             media_dir = root / "media" / "va"
             slice_path = root / "slice.csv"
             refs_path = root / "image_refs.csv"
-            report_path = bundle / "v1_reconciliation_report.csv"
+            report_path = bundle / "v1_pipeline_warnings.csv"
             image_root.mkdir()
             Image.new("RGB", (2, 3), color=(0, 0, 0)).save(image_root / "marking.png")
 
@@ -928,7 +928,7 @@ class V1PipelineTests(unittest.TestCase):
                 ],
             )
             write_csv(
-                bundle / "marking_lineage.csv",
+                bundle / "source_marking_map.csv",
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [
                     {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC1-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
@@ -946,7 +946,7 @@ class V1PipelineTests(unittest.TestCase):
                 "--bundle-dir", str(bundle),
                 "--v1-image-root", str(image_root),
                 "--media-dir", str(media_dir),
-                "--report", str(report_path),
+                "--warnings", str(report_path),
             ])
             markings = read_csv(bundle / "markings.csv")
             dates = read_csv(bundle / "dates_seen.csv")
@@ -974,14 +974,14 @@ class V1PipelineTests(unittest.TestCase):
         self.assertTrue(media_exists)
         self.assertIn("unsupported_column", {r["issue"] for r in report})
 
-    def test_attach_images_maps_refs_to_townmark_lineage(self):
+    def test_attach_images_maps_refs_to_townmark_source_map(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             bundle = root / "bundle"
             image_root = root / "v1_images"
             media_dir = root / "media" / "va"
             refs_path = root / "image_refs.csv"
-            report_path = bundle / "v1_image_report.csv"
+            report_path = bundle / "v1_pipeline_warnings.csv"
             image_root.mkdir()
             Image.new("RGB", (4, 5), color=(255, 0, 0)).save(image_root / "marking.png")
 
@@ -1009,7 +1009,7 @@ class V1PipelineTests(unittest.TestCase):
                 }],
             )
             write_csv(
-                bundle / "marking_lineage.csv",
+                bundle / "source_marking_map.csv",
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [
                     {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
@@ -1034,7 +1034,7 @@ class V1PipelineTests(unittest.TestCase):
                 "--bundle-dir", str(bundle),
                 "--v1-image-root", str(image_root),
                 "--media-dir", str(media_dir),
-                "--report", str(report_path),
+                "--warnings", str(report_path),
             ])
             images = read_csv(bundle / "images.csv")
             report = read_csv(report_path)
@@ -1054,7 +1054,7 @@ class V1PipelineTests(unittest.TestCase):
             media_dir = root / "media" / "va"
             slice_path = root / "slice.csv"
             refs_path = root / "image_refs.csv"
-            report_path = bundle / "v1_reconciliation_report.csv"
+            report_path = bundle / "v1_pipeline_warnings.csv"
 
             write_csv(
                 slice_path,
@@ -1109,7 +1109,7 @@ class V1PipelineTests(unittest.TestCase):
                 [stamped({"code": "ASCC2-VA-M1100", "type": "TOWNMARK", "is_manuscript": "False", "color": "BLACK", "post_office": "USA-VA1-5"})],
             )
             write_csv(
-                bundle / "marking_lineage.csv",
+                bundle / "source_marking_map.csv",
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"}],
             )
@@ -1138,7 +1138,7 @@ class V1PipelineTests(unittest.TestCase):
             )
             write_csv(
                 report_path,
-                v1_bundle_overlay.REPORT_COLUMNS,
+                v1_bundle_overlay.WARNING_COLUMNS,
                 [{"raw_id": "71", "issue": "missing_image_file", "detail": "missing.png"}],
             )
 
@@ -1149,7 +1149,7 @@ class V1PipelineTests(unittest.TestCase):
                 "--bundle-dir", str(bundle),
                 "--v1-image-root", str(image_root),
                 "--media-dir", str(media_dir),
-                "--report", str(report_path),
+                "--warnings", str(report_path),
                 "--preserve-images",
             ])
             images = read_csv(bundle / "images.csv")
@@ -1169,7 +1169,7 @@ class V1PipelineTests(unittest.TestCase):
             bundle = root / "bundle"
             slice_path = root / "slice.csv"
             refs_path = root / "image_refs.csv"
-            report_path = bundle / "v1_reconciliation_report.csv"
+            report_path = bundle / "v1_pipeline_warnings.csv"
 
             write_csv(
                 slice_path,
@@ -1232,7 +1232,7 @@ class V1PipelineTests(unittest.TestCase):
                 })],
             )
             write_csv(
-                bundle / "marking_lineage.csv",
+                bundle / "source_marking_map.csv",
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:40", "source_listing_idx": "39", "marking_code": "ASCC2-VA-M1042", "marking_type": "TOWNMARK", "page": "0", "chunk": "40", "catalog_txt": "Alex=(Alexandria)"}],
             )
@@ -1247,7 +1247,7 @@ class V1PipelineTests(unittest.TestCase):
                 "--bundle-dir", str(bundle),
                 "--v1-image-root", str(root / "images"),
                 "--media-dir", str(root / "media" / "va"),
-                "--report", str(report_path),
+                "--warnings", str(report_path),
                 "--preserve-images",
             ])
             markings = read_csv(bundle / "markings.csv")

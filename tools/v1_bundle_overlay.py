@@ -15,7 +15,7 @@ Expected exit code: 0.
 This script edits generated bundle CSVs before database import. It does not
 read v2 OCR data and it does not update database rows directly. Pass
 --preserve-images when v1_attach_images.py has already populated images.csv
-and this stage should only reconcile non-image bundle tables.
+and this stage should only apply non-image v1 field warnings.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ from v1_synthetic_listing import (
 
 AUDIT_TAIL = ["created_date", "modified_date", "created_by", "modified_by"]
 RAW_TEXT_COL = "txtRawStateData"
-REPORT_COLUMNS = ["raw_id", "issue", "detail"]
+WARNING_COLUMNS = ["raw_id", "issue", "detail"]
 UNSUPPORTED_COLUMNS = [
     "txtTownmarkFraming",
     "txtTownmarkRateLocation",
@@ -265,11 +265,11 @@ def audit_from(rows: list[dict[str, str]]) -> dict[str, str]:
     }
 
 
-def add_report(report: list[dict[str, str]], raw_id: str, issue: str, detail: str) -> None:
-    report.append({"raw_id": raw_id, "issue": issue, "detail": detail})
+def add_warning(warnings: list[dict[str, str]], raw_id: str, issue: str, detail: str) -> None:
+    warnings.append({"raw_id": raw_id, "issue": issue, "detail": detail})
 
 
-def read_existing_report(path: Path) -> list[dict[str, str]]:
+def read_existing_warnings(path: Path) -> list[dict[str, str]]:
     if not path.is_file():
         return []
     fields, rows = read_csv(path)
@@ -296,10 +296,10 @@ def load_raw_rows(slice_path: Path) -> dict[str, dict[str, str]]:
     }
 
 
-def build_lineage_maps(lineage_rows: list[dict[str, str]]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+def build_source_map_indexes(source_map_rows: list[dict[str, str]]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     by_raw = defaultdict(list)
     tm_by_raw = defaultdict(list)
-    for row in lineage_rows:
+    for row in source_map_rows:
         raw_id = clean(row.get("chunk"))
         marking_code = clean(row.get("marking_code") or row.get("marking_id"))
         if not raw_id or not marking_code:
@@ -628,23 +628,23 @@ def clone_townmark(
     color_name: str,
     raw_id: str,
     markings_fields: list[str],
-    lineage_rows: list[dict[str, str]],
+    source_map_rows: list[dict[str, str]],
 ) -> dict[str, str]:
     clone = {name: template.get(name, "") for name in markings_fields}
     clone["code"] = new_code
     clone["color"] = color_name
-    lineage_template = None
-    for row in lineage_rows:
+    source_map_template = None
+    for row in source_map_rows:
         if clean(row.get("marking_code") or row.get("marking_id")) == clean(template.get("code")):
-            lineage_template = row
+            source_map_template = row
             break
-    if lineage_template is not None:
-        lineage = dict(lineage_template)
-        lineage.pop("marking_id", None)
-        lineage["marking_code"] = new_code
-        lineage["marking_type"] = "TOWNMARK"
-        lineage["chunk"] = raw_id
-        lineage_rows.append(lineage)
+    if source_map_template is not None:
+        source_map_row = dict(source_map_template)
+        source_map_row.pop("marking_id", None)
+        source_map_row["marking_code"] = new_code
+        source_map_row["marking_type"] = "TOWNMARK"
+        source_map_row["chunk"] = raw_id
+        source_map_rows.append(source_map_row)
     return clone
 
 
@@ -653,14 +653,14 @@ def ensure_townmark_colors(
     raw_row: dict[str, str],
     markings: list[dict[str, str]],
     markings_fields: list[str],
-    lineage_rows: list[dict[str, str]],
+    source_map_rows: list[dict[str, str]],
     tm_by_raw: dict[str, list[str]],
     colors: list[dict[str, str]],
     color_fields: list[str],
     audit: dict[str, str],
     deleted_ids: set[str],
     clone_sources: dict[str, str],
-    report: list[dict[str, str]],
+    warnings: list[dict[str, str]],
 ) -> None:
     desired_names = v1_color_tokens(raw_row)
     if not desired_names:
@@ -668,7 +668,7 @@ def ensure_townmark_colors(
     by_code = {clean(row.get("code")): row for row in markings}
     tm_codes = [code for code in tm_by_raw.get(raw_id, []) if code in by_code]
     if not tm_codes:
-        add_report(report, raw_id, "missing_townmark", "v1 colors could not be applied")
+        add_warning(warnings, raw_id, "missing_townmark", "v1 colors could not be applied")
         return
     desired_color_names = [
         ensure_color(name, colors, color_fields, audit) for name in desired_names
@@ -684,7 +684,7 @@ def ensure_townmark_colors(
             desired_color_names[len(tm_codes)],
             raw_id,
             markings_fields,
-            lineage_rows,
+            source_map_rows,
         )
         markings.append(clone)
         by_code[new_code] = clone
@@ -707,7 +707,7 @@ def apply_row_fields(
     ratemark_ids: list[str],
     lookups: dict[str, dict[str, str]],
     tables: dict[str, object],
-    report: list[dict[str, str]],
+    warnings: list[dict[str, str]],
     carry_state: dict[str, str] | None = None,
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
@@ -745,7 +745,7 @@ def apply_row_fields(
                 if not truthy(row.get("is_manuscript")):
                     row["shape"] = shape_id
         else:
-            add_report(report, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
+            add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
     lettering_key = clean(raw_row.get("txtTownmarkLettering")).upper()
     if lettering_key:
         lettering_id = lookups["letterings"].get(lettering_key)
@@ -754,7 +754,7 @@ def apply_row_fields(
                 if not truthy(row.get("is_manuscript")):
                     row["lettering"] = lettering_id
         else:
-            add_report(report, raw_id, "unknown_lettering", raw_row.get("txtTownmarkLettering", ""))
+            add_warning(warnings, raw_id, "unknown_lettering", raw_row.get("txtTownmarkLettering", ""))
     date_fmt = normalized_date_fmt(raw_row.get("txtTownmarkDateFormat"))
     if date_fmt:
         for row in townmark_rows:
@@ -769,8 +769,8 @@ def apply_row_fields(
                 row["is_irreg"] = ""
                 continue
             if not clean(row.get("shape")):
-                add_report(
-                    report,
+                add_warning(
+                    warnings,
                     raw_id,
                     "manuscript_false_without_shape",
                     "ynManuscript is false but no handstamp shape is available",
@@ -802,8 +802,8 @@ def apply_row_fields(
             for row, value in zip(ratemark_rows, rate_values):
                 row["rate_val"] = value
         elif rate_values:
-            add_report(
-                report,
+            add_warning(
+                warnings,
                 raw_id,
                 "rate_structure",
                 "txtRatesText has {0} value(s), bundle has {1} ratemark(s)".format(
@@ -812,7 +812,7 @@ def apply_row_fields(
             )
     for column in UNSUPPORTED_COLUMNS:
         if nonblank(raw_row.get(column)):
-            add_report(report, raw_id, "unsupported_column", column)
+            add_warning(warnings, raw_id, "unsupported_column", column)
 
 
 def rebuild_dates(
@@ -849,14 +849,14 @@ def rebuild_dates(
 
 
 def rebuild_citations(
-    lineage_rows: list[dict[str, str]],
+    source_map_rows: list[dict[str, str]],
     reference_work: str,
     audit: dict[str, str],
 ) -> list[dict[str, str]]:
     rows = []
     seen = set()
-    for lineage in lineage_rows:
-        marking_code = clean(lineage.get("marking_code") or lineage.get("marking_id"))
+    for source_map_row in source_map_rows:
+        marking_code = clean(source_map_row.get("marking_code") or source_map_row.get("marking_id"))
         if not marking_code or marking_code in seen:
             continue
         seen.add(marking_code)
@@ -892,7 +892,7 @@ def build_images(
     media_dir: Path,
     allow_missing: bool,
     audit: dict[str, str],
-    report: list[dict[str, str]],
+    warnings: list[dict[str, str]],
 ) -> list[dict[str, object]]:
     media_dir.mkdir(parents=True, exist_ok=True)
     rows = []
@@ -901,12 +901,12 @@ def build_images(
         raw_id = clean(ref.get("source_row_id"))
         subject_ids = tm_by_raw.get(raw_id, [])
         if not subject_ids:
-            add_report(report, raw_id, "image_without_townmark", ref.get("source_filename", ""))
+            add_warning(warnings, raw_id, "image_without_townmark", ref.get("source_filename", ""))
             continue
         source_filename = clean(ref.get("source_filename"))
         source_path = resolve_image_source(image_root, source_filename)
         if source_path is None:
-            add_report(report, raw_id, "missing_image_file", source_filename)
+            add_warning(warnings, raw_id, "missing_image_file", source_filename)
             if allow_missing:
                 continue
             raise FileNotFoundError("missing v1 image file: {0}".format(source_filename))
@@ -983,7 +983,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
 
     paths = {
         "markings": bundle_dir / "markings.csv",
-        "lineage": bundle_dir / "marking_lineage.csv",
+        "source_map": bundle_dir / "source_marking_map.csv",
         "post_offices": bundle_dir / "post_offices.csv",
         "post_office_regions": bundle_dir / "post_office_regions.csv",
         "regions": bundle_dir / "regions.csv",
@@ -1002,7 +1002,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
             sys.exit("error: missing bundle CSV: {0}".format(path))
 
     markings_fields, markings = read_csv(paths["markings"])
-    lineage_fields, lineage_rows = read_csv(paths["lineage"])
+    source_map_fields, source_map_rows = read_csv(paths["source_map"])
     post_office_fields, post_offices = read_csv(paths["post_offices"])
     por_fields, post_office_regions = read_csv(paths["post_office_regions"])
     region_fields, regions = read_csv(paths["regions"])
@@ -1014,9 +1014,9 @@ def apply_overlay(args: argparse.Namespace) -> int:
     image_fields, existing_images = read_csv(paths["images"]) if paths["images"].is_file() else (IMAGE_COLUMNS, [])
     reference_work_fields, reference_works = read_csv(paths["reference_works"])
     audit = audit_from(markings or colors or post_offices)
-    report = read_existing_report(Path(args.report)) if args.preserve_images else []
+    warnings = read_existing_warnings(Path(args.warnings)) if args.preserve_images else []
 
-    by_raw, tm_by_raw = build_lineage_maps(lineage_rows)
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
     lookups = {
         "shapes": shape_lookup(shapes),
         "letterings": lettering_lookup(letterings),
@@ -1025,26 +1025,26 @@ def apply_overlay(args: argparse.Namespace) -> int:
     clone_sources = {}
     for raw_id, raw_row in raw_rows.items():
         if raw_id not in by_raw:
-            add_report(report, raw_id, "missing_lineage", "no generated marking rows")
+            add_warning(warnings, raw_id, "missing_source_map", "no generated marking rows")
             continue
         ensure_townmark_colors(
             raw_id,
             raw_row,
             markings,
             markings_fields,
-            lineage_rows,
+            source_map_rows,
             tm_by_raw,
             colors,
             color_fields,
             audit,
             deleted_ids,
             clone_sources,
-            report,
+            warnings,
         )
     if deleted_ids:
         markings = [row for row in markings if clean(row.get("code")) not in deleted_ids]
-        lineage_rows = [
-            row for row in lineage_rows
+        source_map_rows = [
+            row for row in source_map_rows
             if clean(row.get("marking_code") or row.get("marking_id")) not in deleted_ids
         ]
         dates = [row for row in dates if clean(row.get("subject_id")) not in deleted_ids]
@@ -1052,11 +1052,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
             row for row in citations
             if clean(row.get("subject_id")) not in deleted_ids
         ]
-    by_raw, tm_by_raw = build_lineage_maps(lineage_rows)
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
 
     markings_by_id = {clean(row.get("code")): row for row in markings}
     ratemark_by_raw = defaultdict(list)
-    for row in lineage_rows:
+    for row in source_map_rows:
         if clean(row.get("marking_type")).upper() == "RATEMARK":
             ratemark_by_raw[clean(row.get("chunk"))].append(clean(row.get("marking_code") or row.get("marking_id")))
     tables = {
@@ -1078,11 +1078,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
             ratemark_by_raw.get(raw_id, []),
             lookups,
             tables,
-            report,
+            warnings,
             carry_state,
         )
 
-    by_raw, tm_by_raw = build_lineage_maps(lineage_rows)
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
     dates = rebuild_dates(raw_rows, by_raw, dates, clone_sources, audit)
     reference_work_id = ""
     if citations:
@@ -1090,7 +1090,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
     if not reference_work_id and reference_works:
         reference_work_id = clean(reference_works[0].get("code"))
     reference_work_id = reference_work_id or "ASCC"
-    citations = rebuild_citations(lineage_rows, reference_work_id, audit)
+    citations = rebuild_citations(source_map_rows, reference_work_id, audit)
     if args.preserve_images:
         images = reconcile_preserved_images(existing_images, deleted_ids, clone_sources)
     else:
@@ -1102,18 +1102,18 @@ def apply_overlay(args: argparse.Namespace) -> int:
             Path(args.media_dir),
             bool(args.allow_missing_v1_images),
             audit_from(existing_images or markings),
-            report,
+            warnings,
         )
 
     write_csv(paths["markings"], markings_fields, markings)
-    write_csv(paths["lineage"], lineage_fields, lineage_rows)
+    write_csv(paths["source_map"], source_map_fields, source_map_rows)
     write_csv(paths["post_offices"], post_office_fields, post_offices)
     write_csv(paths["post_office_regions"], por_fields or POST_OFFICE_REGION_COLUMNS, post_office_regions)
     write_csv(paths["colors"], color_fields, colors)
     write_csv(paths["dates"], date_fields or DATE_COLUMNS, dates)
     write_csv(paths["citations"], citation_fields or CITATION_COLUMNS, citations)
     write_csv(paths["images"], image_fields or IMAGE_COLUMNS, images)
-    write_csv(Path(args.report), REPORT_COLUMNS, report)
+    write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
 
     print("v1 overlay rows: {0}".format(len(raw_rows)))
     print("markings: {0}".format(len(markings)))
@@ -1121,7 +1121,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
     print("citations: {0}".format(len(citations)))
     image_note = " (preserved)" if args.preserve_images else ""
     print("images: {0}{1}".format(len(images), image_note))
-    print("report rows: {0} -> {1}".format(len(report), args.report))
+    print("warnings rows: {0} -> {1}".format(len(warnings), args.warnings))
     return 0
 
 
@@ -1133,12 +1133,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--bundle-dir", required=True)
     parser.add_argument("--v1-image-root", required=True)
     parser.add_argument("--media-dir", required=True)
-    parser.add_argument("--report", required=True)
+    parser.add_argument("--warnings", required=True)
     parser.add_argument("--allow-missing-v1-images", action="store_true")
     parser.add_argument(
         "--preserve-images",
         action="store_true",
-        help="leave existing images.csv rows untouched and reconcile fields only",
+        help="leave existing images.csv rows untouched and apply fields only",
     )
     return parser
 

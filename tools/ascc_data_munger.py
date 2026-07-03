@@ -60,7 +60,7 @@ DEFAULT_MARKING_COLOR = "BLACK"
 
 
 def source_key_component(value):
-    """Return the Page/Chunk component used in marking_lineage.csv keys."""
+    """Return the Page/Chunk component used in source_marking_map.csv keys."""
     if value is None or pd.isna(value):
         return ""
     try:
@@ -3004,10 +3004,10 @@ def main(argv=None):
             _lines.append("Dates seen: " + ", ".join(dict.fromkeys(_decades)))
         if _lines:
             desc_by_listing[_lidx] = "\n".join(_lines)
-    # marking_lineage.csv is a compare-only sidecar. It is not imported by
+    # source_marking_map.csv is private pipeline metadata. It is not imported by
     # woco; it preserves the exact source row -> marking relationship while
     # source_listing_idx, Page, Chunk, and rolled catalog text are still in
-    # memory. The compare and v1 harnesses expect this exact CSV shape:
+    # memory. The v1 image and warning stages expect this exact CSV shape:
     # v2_key,source_listing_idx,marking_code,marking_type,page,chunk,catalog_txt
     v2_key_by_listing = {}
     v2_key_counts = {}
@@ -3019,7 +3019,7 @@ def main(argv=None):
         _suffix = v2_key_counts[_base_key]
         v2_key_by_listing[_lidx] = _base_key if _suffix == 1 else f"{_base_key}#{_suffix}"
     marking_rows = []
-    marking_lineage_rows = []
+    source_marking_map_rows = []
     marking_code_by_id = {}
     for kind, src_id, mk_id in emit_order:
         if kind == "TM":
@@ -3086,7 +3086,7 @@ def main(argv=None):
         })
         _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
         _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
-        marking_lineage_rows.append({
+        source_marking_map_rows.append({
             "v2_key": v2_key_by_listing.get(src_idx, ""),
             "source_listing_idx": src_idx,
             "marking_code": marking_code,
@@ -3097,7 +3097,7 @@ def main(argv=None):
         })
         _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
         _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
-        marking_lineage_rows.append({
+        source_marking_map_rows.append({
             "v2_key": v2_key_by_listing.get(src_idx, ""),
             "source_listing_idx": src_idx,
             "marking_id": mk_id,
@@ -3112,7 +3112,7 @@ def main(argv=None):
         "impression", "rate_val", "post_office",
     ])
     markings_out = _stamp(markings_out)
-    marking_lineage_out = pd.DataFrame(marking_lineage_rows) if marking_lineage_rows else pd.DataFrame(columns=[
+    source_marking_map_out = pd.DataFrame(source_marking_map_rows) if source_marking_map_rows else pd.DataFrame(columns=[
         "v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt",
     ])
     _missing_ct = markings_out["catalog_txt"].isna().sum() if len(markings_out) else 0
@@ -3205,7 +3205,7 @@ def main(argv=None):
         path = os.path.join(OUT_DIR, f"{stem}.csv")
         out.to_csv(path, index=False)
         print(f"  {stem + '.csv':<22s} {len(out):>5d} rows  ->  {path}")
-    _lineage_cols = [
+    _source_map_cols = [
         "v2_key",
         "source_listing_idx",
         "marking_code",
@@ -3214,11 +3214,11 @@ def main(argv=None):
         "chunk",
         "catalog_txt",
     ]
-    _lineage_path = os.path.join(OUT_DIR, "marking_lineage.csv")
-    marking_lineage_out[_lineage_cols].to_csv(_lineage_path, index=False)
+    _source_map_path = os.path.join(OUT_DIR, "source_marking_map.csv")
+    source_marking_map_out[_source_map_cols].to_csv(_source_map_path, index=False)
     print(
-        f"  {'marking_lineage.csv':<22s} "
-        f"{len(marking_lineage_out):>5d} rows  ->  {_lineage_path}  (sidecar)"
+        f"  {'source_marking_map.csv':<22s} "
+        f"{len(source_marking_map_out):>5d} rows  ->  {_source_map_path}  (metadata)"
     )
     for stem in ("regions", "reference_works"):
         src = os.path.join(INPUT_DIR, f"{stem}.csv")

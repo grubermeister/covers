@@ -49,7 +49,6 @@ class AsccCliTests(unittest.TestCase):
             "model": None,
             "pages": None,
             "reference_work": "ASCC5",
-            "legacy_status": "active",
             "import_check": "never",
             "force": False,
         }
@@ -97,8 +96,6 @@ class AsccCliTests(unittest.TestCase):
             "419-420",
             "--reference-work",
             "ASCC5",
-            "--legacy-status",
-            "active",
             "--import-check",
             "never",
             "--force",
@@ -202,7 +199,7 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(paths.catalog_rows.as_posix().split("/")[-4:], ["cache", "v1", "VA", "catalog_rows.csv"])
         self.assertEqual(paths.bundle_dir.as_posix().split("/")[-3:], ["wip", "out", "v1_va"])
-        self.assertEqual(paths.report.name, "v1_reconciliation_report.csv")
+        self.assertEqual(paths.warnings.name, "v1_pipeline_warnings.csv")
 
     def test_v1_state_paths_are_state_specific_for_mi(self):
         with tempfile.TemporaryDirectory() as td:
@@ -307,15 +304,13 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 4)
         self.assertTrue(commands[0][1].endswith("ascc_page_processor.py"))
         self.assertIn("--output-csv", commands[1])
         self.assertIn("VA_ocr_rows.csv", " ".join(commands[1]))
         self.assertIn("--catalog-rows-out", commands[2])
         self.assertIn("VA_catalog_rows.csv", " ".join(commands[2]))
         self.assertTrue(commands[3][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[4][1].endswith("ascc_compare.py"))
-        self.assertIn("--bundle-dir", commands[4])
 
     def test_main_dispatches_ocr_command(self):
         with patch.object(ascc_cli, "command_ocr_run", return_value=0) as command_ocr_run:
@@ -356,10 +351,9 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 3)
+        self.assertEqual(len(commands), 2)
         self.assertTrue(commands[0][1].endswith("ascc_image_extract.py"))
         self.assertTrue(commands[1][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[2][1].endswith("ascc_compare.py"))
 
     def test_ocr_skips_to_munger_when_catalog_rows_exist(self):
         with tempfile.TemporaryDirectory() as td:
@@ -383,9 +377,8 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 2)
+        self.assertEqual(len(commands), 1)
         self.assertTrue(commands[0][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[1][1].endswith("ascc_compare.py"))
 
     def test_ocr_force_rebuilds_existing_catalog_rows(self):
         with tempfile.TemporaryDirectory() as td:
@@ -413,7 +406,7 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 4)
         self.assertTrue(commands[0][1].endswith("ascc_page_processor.py"))
         self.assertTrue(commands[1][1].endswith("ascc_page_extract.py"))
 
@@ -542,7 +535,6 @@ class AsccCliTests(unittest.TestCase):
                     ascc_cli.WIP_CACHE / "VA_ocr_rows.csv",
                     ascc_cli.WIP_CACHE / "VA_catalog_rows.csv",
                     ascc_cli.WIP_CACHE / "VA-ASCC-CTLG_chunks",
-                    ascc_cli.WIP_CACHE / "compare" / "VA",
                     ascc_cli.WIP_CACHE / "v1" / "VA",
                     ascc_cli.WIP_OUT / "va",
                     ascc_cli.WIP_OUT / "v1_va",
@@ -550,6 +542,7 @@ class AsccCliTests(unittest.TestCase):
                 keep_paths = [
                     ascc_cli.WIP_CACHE / "WV_ocr_rows.csv",
                     ascc_cli.WIP_CACHE / "WV-ASCC-CTLG_chunks",
+                    ascc_cli.WIP_CACHE / "compare" / "VA",
                     ascc_cli.WIP_CACHE / "compare" / "WV",
                     ascc_cli.WIP_OUT / "wv",
                 ]
