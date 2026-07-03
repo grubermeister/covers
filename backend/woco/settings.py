@@ -23,9 +23,10 @@ REPO_ROOT = BASE_DIR.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 # Read from env (decouple). No default -- the app refuses to start if
 # DJANGO_SECRET_KEY is missing, which is the correct behaviour for a
-# secret. Generate a new value with:
-#   python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
-# and put it in the local .env (dev) or /srv/woco/.env (prod).
+# secret. Generate a new value with './woco secretkey' from the repo root
+# and put it in the repo-root .env (dev) or backend/.env (deployed hosts;
+# written by deploy/provision.sh). decouple searches upward from this
+# directory, so backend/.env wins when both exist.
 SECRET_KEY = config("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!

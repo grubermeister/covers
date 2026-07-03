@@ -84,7 +84,6 @@ const ContributionDetail = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Editor form state (only Value and Comment; lettering/framing/date format come from contribution's submitted_data when approving)
   const [comment, setComment] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
   const [catalogCode, setCatalogCode] = useState("");
@@ -96,7 +95,6 @@ const ContributionDetail = () => {
   // DELETE /contributions/{id}/ (status must not be "approved").
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  // Options to display names for lettering/framing/date format in Submitted data
   const [letteringOptions, setLetteringOptions] = useState<LetteringOption[]>([]);
   const [dateFormatOptions, setDateFormatOptions] = useState<DateFormatOption[]>([]);
   const [carouselApi, setCarouselApi] = useState<CarouselApi>();

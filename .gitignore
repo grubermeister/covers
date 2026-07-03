@@ -241,7 +241,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Frontend (React / Lovable)
+# Frontend (React)
 frontend/node_modules/
 frontend/dist/
 frontend/.env

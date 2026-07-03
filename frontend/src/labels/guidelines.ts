@@ -45,7 +45,7 @@ export const MARKING_TYPE_GUIDELINE: Guideline = {
   body:
     'A Rate Mark shows the postage rate paid or due (often a numeral, e.g. "3", ' +
     '"5", or "PAID 3"). An Auxiliary marking is any other handstamp that is ' +
-    'neither a town/postmark nor a rate — e.g. "FORWARDED", "MISSENT", or ' +
+    'neither a town mark nor a rate, e.g. "FORWARDED", "MISSENT", or ' +
     '"DUE". As a rule of thumb, a marking bearing a number is a Rate Mark, ' +
     'while one with only words is usually Auxiliary. If unsure, pick the ' +
     'closest type and add a note for the editor.',

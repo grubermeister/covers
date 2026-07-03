@@ -200,6 +200,13 @@ backend/media/va/
   and OCR extraction and resumes at image-count verification.
 - Pass `--force` to rebuild OCR rows and catalog rows from the PDF.
 
+Other `ocr` flags:
+
+- `--pages <range>`: process only the given page range of the PDF.
+- `--model <model>`: override the provider's default vision model.
+- `--import-check auto|always|never`: control the post-build dry-run
+  import validation (default: `auto`).
+
 ## OCR Internals
 
 Most users should use `./woco ascc ocr`. The lower-level steps below are useful
@@ -307,7 +314,8 @@ curl -s -o /dev/null -w '%{http_code} %{content_type}\n' \
 
 ## Known Caveats
 
-- The repo-root `.env` is used by the ASCC CLI.
+- The ASCC CLI loads the repo-root `.env` (not `backend/.env`); see
+  [BUILD.md](BUILD.md#environment-files) for the full env-file layout.
 - Free-tier OpenRouter keys without credit fail on paid vision models.
 - The OCR path requires `pdftoppm`; the v1 path does not.
 - `reference_works.csv` must contain the selected `--reference-work` code.
