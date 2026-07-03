@@ -2,8 +2,8 @@
 # Rebuild staging database: ensure DB exists, migrate, create admin, run imports.
 # Uses database "worldcovers" by default. One-time setup: run tools/setup_worldcovers_db.sql as MySQL root.
 # Run from repo root. Requires mysql.cnf in repo root (with database=worldcovers) and CSV files in backend/imports/.
-# Usage: ./tools/rebuild_staging_db.sh [--no-import]
-set -e
+# Usage: WOCO_ADMIN_PASSWORD=... ./tools/rebuild_staging_db.sh [--no-import]
+set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO_ROOT="$(pwd)"
 
@@ -23,10 +23,10 @@ if [[ ! -f "$MYSQL_CNF" ]]; then
   echo "Error: mysql.cnf not found at $MYSQL_CNF. Create it from mysql.cnf.example." >&2
   exit 1
 fi
-# One-time: run scripts/setup_worldcovers_db.sql as root to create DB and grant wocod
+# One-time: run tools/setup_worldcovers_db.sql as root to create DB and grant wocod
 if ! mysql --defaults-file="$MYSQL_CNF" --database="${DB_NAME}" -e "SELECT 1;" 2>/dev/null; then
   echo "Error: Cannot use database '${DB_NAME}'. Create it and grant the mysql.cnf user access, e.g.:" >&2
-  echo "  mysql -u root -p < scripts/setup_worldcovers_db.sql" >&2
+  echo "  mysql -u root -p < tools/setup_worldcovers_db.sql" >&2
   exit 1
 fi
 
@@ -34,21 +34,33 @@ export DB_NAME
 echo "[2/5] Running migrations..."
 uv run python backend/manage.py migrate --noinput
 
-echo "[3/5] Ensuring admin user (admin / admin; change password after first login)..."
-uv run python backend/manage.py shell -c "
+# The admin password comes from WOCO_ADMIN_PASSWORD and is only set when the
+# user is first created — a re-run must never reset an existing admin's
+# password (this box is internet-facing).
+echo "[3/5] Ensuring admin user..."
+if [[ -z "${WOCO_ADMIN_PASSWORD:-}" ]]; then
+  echo "Error: WOCO_ADMIN_PASSWORD is not set. Export a strong password first, e.g.:" >&2
+  echo "  WOCO_ADMIN_PASSWORD=\"\$(openssl rand -base64 18)\" ./tools/rebuild_staging_db.sh" >&2
+  echo "  (and record it — it is only applied when the admin user is first created)" >&2
+  exit 1
+fi
+WOCO_ADMIN_PASSWORD="$WOCO_ADMIN_PASSWORD" uv run python backend/manage.py shell -c "
+import os;
 from django.contrib.auth import get_user_model;
 User = get_user_model();
 u, created = User.objects.get_or_create(username='admin', defaults={'is_superuser': True, 'is_staff': True});
-u.set_password('admin');
-u.save();
-print('Admin user ready.' if not created else 'Admin user created.')
+if created:
+    u.set_password(os.environ['WOCO_ADMIN_PASSWORD']); u.save(); print('Admin user created.')
+else:
+    print('Admin user already exists; password left unchanged.')
 "
 
 echo "[4/5] Creating Site for Django..."
-uv run python backend/manage.py shell -c "
+SITE_DOMAIN="${DJANGO_APP_HOSTNAME:-hellowoco.app}" uv run python backend/manage.py shell -c "
+import os;
 from django.contrib.sites.models import Site;
 s, _ = Site.objects.get_or_create(pk=1, defaults={'domain': 'example.com', 'name': 'WorldCovers'});
-s.domain = 'hellowoco.app';
+s.domain = os.environ['SITE_DOMAIN'];
 s.name = 'WorldCovers';
 s.save();
 print('Site updated.')

@@ -356,6 +356,10 @@ def save_cache(path, cache):
 class Paths:
     """Per-run filesystem layout, derived from --basename."""
     def __init__(self, basename):
+        # basename becomes a path component under tools/wip/; reject anything
+        # that could escape it (e.g. "../../x").
+        if not basename or "/" in basename or "\\" in basename or ".." in basename:
+            raise ValueError(f"invalid basename {basename!r}: must be a bare name")
         self.basename     = basename
         self.pdf          = WIP_DIR / "in" / f"{basename}.pdf"
         self.full_dir     = WIP_DIR / "cache" / f"{basename}_full"
@@ -511,7 +515,8 @@ def detect_page_number(strip_im, llm, model):
     )
     data = _parse_strict_json(raw)
     pn = data["page_number"]
-    assert isinstance(pn, int) and pn >= 1, f"bad page_number {pn!r}"
+    if not (isinstance(pn, int) and pn >= 1):
+        raise ValueError(f"bad page_number {pn!r}")
     return pn
 
 
@@ -529,7 +534,8 @@ def confirm_single_column(im, llm, model):
     )
     data = _parse_strict_json(raw)
     htc = data["has_two_columns"]
-    assert isinstance(htc, bool), f"bad has_two_columns {htc!r}"
+    if not isinstance(htc, bool):
+        raise ValueError(f"bad has_two_columns {htc!r}")
     return htc
 
 
@@ -830,8 +836,9 @@ def classify_block(block_im, block_classify_cache, llm, model, verbose=False, la
     try:
         data = _parse_strict_json(raw)
         kind = data["kind"]
-        assert kind in ("illustration", "text"), f"bad kind {kind!r}"
-    except (json.JSONDecodeError, KeyError, AssertionError) as e:
+        if kind not in ("illustration", "text"):
+            raise ValueError(f"bad kind {kind!r}")
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
         # Fallback: word-search on the raw text. The original notebook took
         # this path always; we use it only when JSON parse fails so a single
         # malformed response does not abort the whole run.
@@ -1093,7 +1100,8 @@ def review_slice(slice_im, chunk_cuts_cache, llm, model, verbose=False, label=""
     try:
         data = _parse_strict_json(raw)
         cuts = data["cuts"]
-        assert isinstance(cuts, list), f"cuts not a list: {cuts!r}"
+        if not isinstance(cuts, list):
+            raise ValueError(f"cuts not a list: {cuts!r}")
         # Validate and sanitize: ints, in (0, h), strictly ascending.
         clean = []
         for c in cuts:

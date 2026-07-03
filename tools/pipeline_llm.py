@@ -89,7 +89,8 @@ def make_pipeline_llm(provider):
     """Create the configured provider client, validating required API key."""
     if provider == PROVIDER_OPENROUTER:
         key = os.environ.get("OPENROUTER_API_KEY")
-        assert key, "OPENROUTER_API_KEY not set in .env"
+        if not key:
+            raise RuntimeError("OPENROUTER_API_KEY not set in .env")
         from openai import OpenAI
         return PipelineLLM(
             provider=provider,
@@ -101,7 +102,8 @@ def make_pipeline_llm(provider):
 
     if provider == PROVIDER_ANTHROPIC:
         key = os.environ.get("ANTHROPIC_API_KEY")
-        assert key, "ANTHROPIC_API_KEY not set in .env"
+        if not key:
+            raise RuntimeError("ANTHROPIC_API_KEY not set in .env")
         from anthropic import Anthropic
         return PipelineLLM(provider=provider, client=Anthropic(api_key=key))
 

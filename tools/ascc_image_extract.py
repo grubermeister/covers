@@ -169,6 +169,10 @@ class Paths:
     """Per-run filesystem layout, derived from the basename."""
 
     def __init__(self, basename, input_csv=None):
+        # basename becomes a path component under tools/wip/; reject anything
+        # that could escape it (e.g. "../../x").
+        if not basename or "/" in basename or "\\" in basename or ".." in basename:
+            raise ValueError(f"invalid basename {basename!r}: must be a bare name")
         self.basename       = basename
         self.images_dir     = WIP_DIR / "cache" / f"{basename}_chunks"
         self.input_csv      = Path(input_csv) if input_csv else WIP_DIR / "cache" / f"{basename}.csv"
