@@ -196,7 +196,7 @@ is a .dev domain, so browsers require HTTPS. Finish setup:
   2. Once DNS resolves, issue the cert:
        certbot --nginx -d ${HOSTNAME_APP} --redirect -m <you@example.com> --agree-tos -n
   3. Load data (from your local checkout):
-       WOCO_HOST=root@${HOSTNAME_APP} ./tools/push_data.sh --import
+       WOCO_HOST=root@${HOSTNAME_APP} ./tools/push_data.sh --import --state VA
 
 See docs/devel/STAGING_WOCO_DEV.md for the full runbook.
 NEXT

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""catalog_edition_diff -- fuzzy diff between two catalog editions.
+"""catalog_edition_diff -- VA-only fuzzy diff between two catalog editions.
 
 Both inputs are catalog OCR in the v2 pipeline CSV shape:
 
@@ -1016,7 +1016,7 @@ def write_out(results, path):
 
 def parse_args(argv):
     p = argparse.ArgumentParser(
-        description="Fuzzy diff between two catalog editions in v2 CSV shape.")
+        description="VA-only fuzzy diff between two catalog editions in v2 CSV shape.")
     p.add_argument("--base", default="tools/wip/in/VA_ASCC_CTLG.csv",
                    help="BASE v2 OCR CSV (default: tools/wip/in/VA_ASCC_CTLG.csv)")
     p.add_argument("--compare", default="tools/wip/in/v1_VA_ocr.csv",

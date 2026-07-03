@@ -2,7 +2,7 @@
 
 The compare pipeline (`tools/ascc_compare.py`, implemented in `tools/compare/stages.py`)
 compares the existing live database against a newly OCR-extracted catalog scan and
-produces a per-entry review ledger. It runs automatically at the end of `./woco ascc run`.
+produces a per-entry review ledger. Run it explicitly with `./woco ascc compare`.
 
 ## Concepts
 

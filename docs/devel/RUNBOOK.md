@@ -50,15 +50,16 @@ From a local checkout with prepared `tools/wip/` and `backend/media/` data:
 
 ```sh
 ./tools/push_data.sh --dry-run
-./tools/push_data.sh --import
+./tools/push_data.sh --import --state VA
 ```
 
-`--import` runs `tools/reload_data.sh` on the server as `wocod`.
+`--import` runs `tools/reload_data.sh` on the server as `wocod` for the
+selected bundle.
 
 Current server-side reload sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
+./woco ascc import tools/wip/out/v1_va --truncate
 ```
 
 This refresh does not call `wipe_user_data`. It does pass `--truncate`, which
