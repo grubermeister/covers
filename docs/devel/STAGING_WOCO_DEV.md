@@ -1,7 +1,7 @@
 # woco.dev staging / demo box
 
-A disposable personal staging server for reviewing UI changes (e.g. with Ian) on
-a live URL. It mirrors the prod host (`hellowoco.app`, see `DEPLOY.md`) but runs
+A temporary staging server for reviewing UI changes (e.g. with Ian) on
+a live URL. It mirrors the prod host (currently `hellowoco.app`, see `DEPLOY.md`) but runs
 its own fresh Ubuntu host so prod data and secrets never touch it. Data is meant
 to be blasted away and reloaded one state at a time.
 
@@ -40,11 +40,13 @@ linode-cli linodes list   # note the IPv4
 ### 2. Clone the repo and provision
 
 SSH in as root, clone the repo to `/srv/woco` (provide your own git auth --
-deploy key or token), then run the provisioning script. Root SSH is for this
-initial provisioning ONLY — afterwards set `PermitRootLogin no` and use your
-own sudo-group user (see `DEPLOY.md` §sshd hardening):
+deploy key or token), then run the provisioning script. Root SSH is used for this
+initial provisioning step only. Once the server is running, disable root login
+by setting PermitRootLogin no and switch to a sudo-group user
+(see DEPLOY.md sshd hardening):
 
 ```sh
+# root only during first-time provisioning -- disable afterwards
 ssh root@<IP>
 git clone https://github.com/covercensus/worldcovers.git /srv/woco
 WOCO_HOSTNAME=woco.dev /srv/woco/tools/provision.sh
@@ -85,24 +87,24 @@ checkout:
 ```sh
 # 1. Build the Django-shape bundle from verified catalog rows.
 #    (Michigan's seed regions.csv already carries Michigan/Indiana Territory.)
-./woco ascc munge MI --import-check never
+./woco ascc munge MI
 
 # 2. Push the bundle + media and reload (truncate + import) on the box.
 #    push_data.sh honours WOCO_HOST / WOCO_REMOTE_ROOT. Root login is
-#    disabled after provisioning — connect as YOUR user (sudo group);
+#    disabled after provisioning -- connect as YOUR user (sudo group);
 #    files still land owned by wocod.
-WOCO_HOST=<your-user>@woco.dev ./tools/push_data.sh --import
+WOCO_HOST=<your-user>@woco.dev ./tools/push_data.sh --import --state MI
 ```
 
 `--import` runs `reload_data.sh` on the box, which is
-`import_ascc_bundle tools/wip/out --truncate` -- it wipes all 14 catalog tables
-and loads the pushed bundle. To swap to a different state later, re-munge that
-state locally and repeat step 2.
+`./woco ascc import tools/wip/out/v1_mi --truncate` -- it wipes all 14 catalog
+tables and loads the pushed bundle. To swap to a different state later,
+re-munge that state locally and repeat step 2 with that state code.
 
 ## Deploying a UI branch
 
-This is a personal box, so branch deploys can still be manual. SSH as `wocod`
-or switch to `wocod` first, then run:
+This is a development system, so direct branch deploys can still be manual.
+SSH as `wocod` or `su` switch to `wocod` first, then run:
 
 ```sh
 cd /srv/woco

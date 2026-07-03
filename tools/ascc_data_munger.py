@@ -14,7 +14,7 @@ Input contract for --input:
 
 Pipeline position:
   ascc_page_processor.py -> ascc_page_extract.py -> ascc_image_extract.py
-    -> THIS SCRIPT -> backend/manage.py import_ascc_bundle
+    -> THIS SCRIPT -> ./woco ascc import
 """
 import argparse
 import hashlib
@@ -39,7 +39,6 @@ from munger.fields.sizes import parse_size_field
 from munger.head import parse_head, parse_manuscript_row
 from munger.images import (
     MEDIA_ROOT,
-    catalog_region_abbrev,
     image_filename,
     region_media_slug,
 )
@@ -153,21 +152,20 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument(
         "--input",
-        default=WIP_DIR / "cache" / "VA_catalog_rows.csv",
+        required=True,
         help=(
             "path to verified catalog rows produced by ascc_image_extract.py "
             "(for example tools/wip/cache/VA_catalog_rows.csv)."
         ),
     )
-    ap.add_argument("--input-dir", default=WIP_DIR / "in")
-    ap.add_argument("--out-dir", default=WIP_DIR / "out")
-    ap.add_argument("--reference-work-code", default="ASCC1")
+    ap.add_argument("--input-dir", required=True)
+    ap.add_argument("--out-dir", required=True)
+    ap.add_argument("--reference-work-code", required=True)
     ap.add_argument(
         "--region-abbrev",
-        default=None,
+        required=True,
         help=(
-            "Two-letter catalog region abbreviation. Defaults to the first "
-            "two letters of the input CSV basename for OCR-derived rows."
+            "Two-letter catalog region abbreviation, for example VA."
         ),
     )
     args = ap.parse_args(argv)
@@ -181,11 +179,7 @@ def main(argv=None):
     # 0. Setup
     # ======================================================================
     # INPUT_CSV / INPUT_DIR / OUT_DIR supplied by main() argparse.
-    REGION_ABBREV = (
-        str(args.region_abbrev).strip().upper()
-        if args.region_abbrev
-        else catalog_region_abbrev(INPUT_CSV)
-    )
+    REGION_ABBREV = str(args.region_abbrev).strip().upper()
     if not re.fullmatch(r"[A-Z]{2}", REGION_ABBREV):
         raise ValueError(
             "region abbrev must be exactly two ASCII letters: "
@@ -3246,7 +3240,7 @@ def main(argv=None):
         _row_count = sum(1 for _ in open(dst, "r", encoding="utf-8")) - 1
         print(f"  {stem + '.csv':<22s} {_row_count:>5d} rows  ->  {dst}  (passthrough)")
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
-    print(f"Load via: ./woco import_ascc_bundle {OUT_DIR}")
+    print(f"Load via: ./woco ascc import {OUT_DIR}")
 
     # ======================================================================
     # Step 11: Images Table Assembly

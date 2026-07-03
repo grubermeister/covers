@@ -26,7 +26,7 @@ Use `./woco <command>` from repo root for Django management commands. The
 | `ascc_page_extract.py` | Extract ASCC listing text from page chunks | `tools/ascc_page_extract.py` |
 | `ascc_image_extract.py` | Extract marking images from page chunks | `tools/ascc_image_extract.py` |
 | `ascc_data_munger.py` | Build Django-shape ASCC CSV bundles | `tools/ascc_data_munger.py` |
-| `import_ascc_bundle` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
+| `ascc import` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
 | `purge_recycle_bin` | Permanently delete recycle-bin catalog rows | `backend/common/management/commands/purge_recycle_bin.py` |
@@ -66,20 +66,22 @@ Run from a local checkout:
 ```sh
 ./tools/push_data.sh
 ./tools/push_data.sh --dry-run
-./tools/push_data.sh --import
+./tools/push_data.sh --import --state VA
+./tools/push_data.sh --import --bundle-dir tools/wip/out/v1_va
 ```
 
 Expected exit code: `0`.
 
 Syncs local `tools/wip/` and `backend/media/` to the staging host. With
-`--import`, it runs `/srv/woco/tools/reload_data.sh` remotely as `wocod`.
+`--import`, it runs `/srv/woco/tools/reload_data.sh` remotely as `wocod` for
+the selected bundle. `--state VA` resolves to `tools/wip/out/v1_va`.
 
 ### `tools/reload_data.sh`
 
 Run on the staging host as `wocod`:
 
 ```sh
-sudo -u wocod /srv/woco/tools/reload_data.sh
+sudo -u wocod /srv/woco/tools/reload_data.sh tools/wip/out/v1_va
 ```
 
 Expected exit code: `0`.
@@ -87,7 +89,7 @@ Expected exit code: `0`.
 Current sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
+./woco ascc import tools/wip/out/v1_va --truncate
 ```
 
 This reload does not call `wipe_user_data`. It does pass `--truncate`, which
@@ -110,33 +112,32 @@ This drops and recreates the staging database using
 
 ## ASCC Pipeline Tools
 
-The canonical ASCC PDF-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
+The canonical ASCC v1-export-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
 Use the state-centered wrapper for demos and normal runs:
 
 ```sh
 ./woco ascc doctor VA
-./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+./woco ascc munge VA
+./woco ascc run VA --dry-run
+./woco ascc run VA
 ```
 
 The wrapper preserves the existing `tools/wip/in`, `tools/wip/cache`, and
 `tools/wip/out` layout. For state `VA`, the main handoff files are:
 
 ```text
-tools/wip/in/VA.pdf
-tools/wip/cache/VA_ocr_rows.csv
-tools/wip/cache/VA_catalog_rows.csv
-tools/wip/out/va/
-tools/wip/cache/compare/VA/review_ledger_VA.csv
-tools/wip/cache/VA_run.json
+tools/wip/cache/v1/VA/catalog_rows.csv
+tools/wip/cache/v1/VA/image_refs.csv
+tools/wip/out/v1_va/
+tools/wip/out/v1_va/v1_reconciliation_report.csv
+tools/wip/cache/v1/VA/run.json
 ```
 
-`./woco ascc run VA` resumes by default:
-
-- if `tools/wip/cache/VA_catalog_rows.csv` exists, it skips OCR and image-count
-  verification and resumes at munger;
-- if only `tools/wip/cache/VA_ocr_rows.csv` exists, it skips page processing and
-  OCR extraction and resumes at image-count verification;
-- pass `--force` to rebuild OCR rows and catalog rows from the PDF.
+`./woco ascc munge VA` builds the bundle without importing it.
+`./woco ascc run VA` runs the same munge step and then imports the generated
+bundle. Pass `--dry-run` to validate through the importer and roll back.
+`./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf` runs the legacy scanned
+PDF OCR pipeline.
 
 Clean generated cache/output files without touching source PDFs or seed CSVs:
 
@@ -152,17 +153,16 @@ state, it clears generated contents under `tools/wip/cache/` and
 
 Expected exit code for each successful command: `0`.
 
-The API-dependent tools, `ascc_page_processor.py` stages `halves` and
-`chunks` plus `ascc_page_extract.py`, default to OpenRouter:
+The API-dependent OCR command, `./woco ascc ocr`, defaults to OpenRouter:
 
 ```sh
-OPENROUTER_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+OPENROUTER_API_KEY=<key> ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 Use the direct Anthropic Claude API with `--provider anthropic`:
 
 ```sh
-ANTHROPIC_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf --provider anthropic
+ANTHROPIC_API_KEY=<key> ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf --provider anthropic
 ```
 
 Or select the provider through environment variables:
@@ -171,7 +171,7 @@ Or select the provider through environment variables:
 PIPELINE_LLM_PROVIDER=anthropic \
 PIPELINE_LLM_MODEL=claude-sonnet-4-6 \
 ANTHROPIC_API_KEY=<key> \
-./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 OpenRouter's default model is `anthropic/claude-sonnet-4.6`. Anthropic's
@@ -179,13 +179,13 @@ direct default model is `claude-sonnet-4-6`.
 
 ## Management Commands
 
-### `import_ascc_bundle`
+### `ascc import`
 
 Load a Django-shape ASCC CSV bundle into catalog tables.
 
 ```sh
-./woco import_ascc_bundle tools/wip/out --dry-run
-./woco import_ascc_bundle tools/wip/out
+./woco ascc import tools/wip/out/v1_va --dry-run
+./woco ascc import tools/wip/out/v1_va
 ```
 
 Useful flags:
@@ -273,9 +273,9 @@ not copy image files; restored Image rows still point at
 Run from repo root, with `backend/.env` and `mysql.cnf` present:
 
 ```sh
-./woco backup_marking ASCC1-VA-M0001 backups/ASCC1-VA-M0001.json
-./woco restore_marking backups/ASCC1-VA-M0001.json --dry-run
-./woco restore_marking backups/ASCC1-VA-M0001.json
+./woco backup_marking ASCC6-VA-M0001 backups/ASCC6-VA-M0001.json
+./woco restore_marking backups/ASCC6-VA-M0001.json --dry-run
+./woco restore_marking backups/ASCC6-VA-M0001.json
 ```
 
 Matching auth users must already exist locally. `restore_marking` fails before
