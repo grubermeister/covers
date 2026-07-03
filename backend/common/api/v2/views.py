@@ -1236,11 +1236,8 @@ class MarkingViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options", "trace"]
     search_fields = [
         "code",
-        # Rate/aux keywords ("PAID", "FREE", "DUE", "STEAM", rate amounts) live
-        # as free text in catalog_txt/inscription_txt, so a top-search for
-        # "paid"/"free" already matches here -- no structured rate keyword field
-        # exists. (#40)
-        "catalog_txt",
+        # Search intentionally skips source catalog text. Public searches use
+        # display fields plus CitationAwareMarkingSearchFilter's citation union.
         "inscription_txt",
         "desc",
         # `type` holds the stored enum value (TOWNMARK/RATEMARK/AUXMARK), so a

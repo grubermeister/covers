@@ -16,19 +16,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
       - name: Malware fingerprint scan
         run: bash tools/fingerprint.sh
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8
         with:
           version: "0.11.2"
           enable-cache: true
 
       - name: Set up Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
@@ -37,11 +37,20 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --no-dev --frozen
 
-      - name: Build frontend
+      - name: Verify frontend
         run: |
           cd frontend
           npm ci
+          npm audit --audit-level=moderate
+          npm run lint
+          npm run typecheck
+          npm test -- --runInBand
           npm run build
+
+      - name: Verify tools
+        run: |
+          cd tools
+          uv run python -m unittest discover -s tests
 
       - name: Django system checks
         env:
@@ -49,7 +58,7 @@ jobs:
         run: uv run python backend/manage.py check
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist/
@@ -59,7 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Deploy to hellowoco.app
-        uses: appleboy/ssh-action@v1.0.0
+        uses: appleboy/ssh-action@v1.2.5
         with:
           host: hellowoco.app
           username: wocod

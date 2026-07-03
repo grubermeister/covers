@@ -458,7 +458,6 @@ def main(argv=None):
     pd.set_option('display.max_rows', None)
     pd.set_option('display.max_colwidth', 82)
     pd.set_option('display.width', 200)
-    report
     total = len(df)
 
     # ======================================================================
@@ -3237,7 +3236,8 @@ def main(argv=None):
         else:
             seed = seed.drop(columns=["id"])
         seed.to_csv(dst, index=False)
-        _row_count = sum(1 for _ in open(dst, "r", encoding="utf-8")) - 1
+        with open(dst, "r", encoding="utf-8") as handle:
+            _row_count = sum(1 for _ in handle) - 1
         print(f"  {stem + '.csv':<22s} {_row_count:>5d} rows  ->  {dst}  (passthrough)")
     print(f"Wrote {len(GENERATED) + 3} tables to {OUT_DIR}")
     print(f"Load via: ./woco ascc import {OUT_DIR}")
