@@ -18,11 +18,11 @@ A reference for the terminology used in WorldCovers data, interface, and support
 
 **Collection.** The curatorial grouping for a Region. In the APMC, Collections are organized as Regions: every Region has its Collection, and submitting a Marking or Cover for a Region submits it into that Collection.
 
-**Color.** Ink color of the Marking, identified by name. May also include a hexadecimal value (used for screen display) and a Pantone code (used for precise color matching). Defaults to black.
+**Color.** Ink color of a Marking or material color of a Cover, identified by name. May also include a hexadecimal value (used for screen display) and a Pantone code (used for precise color matching). The field may be blank when the source does not state a color.
 
 **Contributor.** Authenticated user. Can submit entries, edits, and comments. Inherits Guest capabilities.
 
-**Cover.** A folded letter or folded cover that carries one or more recorded Markings. The Cover record holds the cover type and a single observation date.
+**Cover.** A folded letter or folded cover that carries one or more recorded Markings. The Cover record holds the cover type, physical details, and date observations.
 
 **Dates.** The earliest and latest dates recorded for a Marking, derived from two sources: dates carried directly on the Marking from the source catalog text, and the observation dates of Covers bearing the Marking. New dates are contributed only as part of Cover data.
 
@@ -44,7 +44,7 @@ A reference for the terminology used in WorldCovers data, interface, and support
 
 **Manuscript Marking.** Any Marking applied by hand rather than by handstamp. Set independently of Marking type: manuscript Townmarks, manuscript Ratemarks, and manuscript Auxmarks are all valid. A Manuscript Marking has no Shape.
 
-**Marking.** Either a Townmark, Ratemark, or Auxmark, applied to a Cover (struck by handstamp or written by hand) to identify origin, state the postage rate, or convey instruction. Each Marking is recorded with its Inscription Text, dimensions, Color, Shape, and the Post Office that produced it.
+**Marking.** Either a Townmark, Ratemark, or Auxmark, applied to a Cover (struck by handstamp or written by hand) to identify origin, state the postage rate, or convey instruction. Each Marking is recorded with its Inscription Text, dimensions, optional Color, optional Shape, and the Post Office that produced it.
 
 **Post Office.** A postal facility identified by its town name within a Region. Every Marking belongs to exactly one Post Office.
 
@@ -58,7 +58,7 @@ A reference for the terminology used in WorldCovers data, interface, and support
 
 **Shape.** The base geometric form of the Marking, such as Circle, Oval, Straight Line, Box, Fancy, or Pictorial. Compound ASCC codes (DC, DLC, DLDC, etc.) are carried verbatim. Not set on Manuscript Markings.
 
-**Submission.** A proposed contribution (a new Entry or an edit) pending Editor review. Lifecycle: draft, pending, approved, rejected, or returned (for revisions).
+**Submission.** A proposed contribution (a new Entry or an edit) pending Editor review. Lifecycle states are draft, pending, approved, needs revision, or rejected. Editors use the Return action to move a Submission into needs revision.
 
 **Townmark** (`TOWNMARK`). A Marking whose function is to identify the origin Post Office. Bears the town name, and frequently a date.
 
@@ -87,7 +87,7 @@ Codes carried verbatim from the ASCC.
 | `Box` | Single Line Box or rectangle |
 | `DL Box` | Double Line Box |
 | `Arc` | Arc or semi-circle |
-| `Pmk` | Postmark / Townmark (generic) |
+| `Pmk` | post mark/town mark (generic) |
 | `CD` | Circle Date (Bishop or Franklin Mark) |
 
 ### Date Format Codes

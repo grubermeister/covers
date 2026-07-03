@@ -2,13 +2,64 @@
 
 This document describes the secure hosted deploy flow for WorldCovers.
 
+WorldCovers hosted deployments target Ubuntu 24.04 LTS servers. The deploy
+pipeline assumes systemd, nginx, MySQL 8, Node 22, uv, and Python 3.13 on a
+host laid out as described below. `deploy/provision.sh` is the supported path
+for creating that host profile; it is not a generic Linux provisioning script.
+
 Source of truth:
 
 - `.github/workflows/build-and-deploy.yml`: staging deploy to `woco.dev`
 - `.github/workflows/deploy-prod.yml`: production deploy to `hellowoco.app`
+- `deploy/provision.sh`: one-time Ubuntu 24.04 root host build (see below)
 - `deploy/deploy.sh`: unprivileged app build and migration steps
 - `deploy/worldcovers.service`: gunicorn systemd service definition
 - `deploy/worldcovers-apply-unit.sh`: staging-only root-owned unit helper
+
+## Provisioning vs Deploying
+
+Two scripts, two distinct jobs. Do not confuse them:
+
+- `deploy/provision.sh` -- **build the host, once, as root.** Installs system
+  packages (nginx, MySQL, Node, certbot, build tools), creates the `wocod`
+  service user, installs uv/Python, creates the MySQL database and user,
+  writes `mysql.cnf` and `backend/.env` (with generated secrets), and
+  installs the systemd unit, sudoers drop-in, nginx site, and firewall. It
+  finishes by calling `deploy.sh` once. It is idempotent. Use it only for
+  first-time host provisioning or deliberate host rebuilds.
+- `deploy/deploy.sh` -- **build the app, every release, as `wocod`
+  (unprivileged).** Only `uv sync`, migrate, frontend build, collectstatic.
+  No apt, no user creation, no MySQL, no nginx, no root. This is what CI runs
+  on every deploy, and what `./woco setup prod` aliases.
+
+The privilege boundary is deliberate: per-release deploys never need root, so
+a compromised CI key cannot touch the OS, MySQL, or nginx. Provisioning is a
+separate, rare, root-only event.
+
+## Provisioning A Fresh Host
+
+Run this only on a fresh Ubuntu 24.04 host. The repo must exist at
+`/srv/woco` before the script starts, and the script must run as `root`.
+Expected exit code: `0`.
+
+```sh
+git clone <repo-url> /srv/woco
+WOCO_HOSTNAME=woco.dev WOCO_REPO_REF=staging /srv/woco/deploy/provision.sh
+```
+
+For production, set `WOCO_HOSTNAME=hellowoco.app` and
+`WOCO_REPO_REF=main`. The script creates or reuses the `wocod` service user,
+writes `/srv/woco/mysql.cnf`, writes `/srv/woco/backend/.env`, installs the
+systemd unit, installs nginx, and runs `deploy/deploy.sh` once as `wocod`.
+
+The script does not issue TLS certificates. After DNS points at the host, run
+certbot as `root`:
+
+```sh
+certbot --nginx -d woco.dev --redirect -m <you@example.com> --agree-tos -n
+```
+
+Use the production hostname in that command when provisioning production.
 
 ## Hosts
 
@@ -90,17 +141,26 @@ Run from repo root on the server:
 ./deploy/deploy.sh
 ```
 
+`./woco setup prod` is a thin alias for this same script, for symmetry with
+`./woco setup dev`. It runs the build steps only, never provisioning -- see
+[Provisioning vs Deploying](#provisioning-vs-deploying) above.
+
 Expected exit code: `0`.
 
 Steps:
 
-1. `uv sync --no-dev --frozen`
-2. `uv run python backend/manage.py migrate --noinput`
-3. `cd frontend && npm ci && npm run build`
-4. `uv run python backend/manage.py collectstatic --noinput`
+1. Source `frontend/.env` if present, exporting its variables for the
+   frontend build (Vite build-time settings; optional, not in git).
+2. `uv sync --no-dev --frozen`
+3. `uv run python backend/manage.py migrate --noinput`
+4. `cd frontend && npm ci && npm run build`
+5. `uv run python backend/manage.py collectstatic --noinput`
 
 The script does not stop, start, or restart systemd. The caller owns service
 lifecycle.
+
+For the manual (non-CI) deploy sequence, see
+[RUNBOOK.md](RUNBOOK.md#manual-deploy).
 
 ## Sudoers
 

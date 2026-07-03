@@ -457,7 +457,6 @@ const Contribute = () => {
     lrd?: string;
   }>({});
 
-  // Contributor: lettering, framing, date format (loaded for all)
   const [letteringOptions, setLetteringOptions] = useState<LetteringOption[]>([]);
   const [dateFormatOptions, setDateFormatOptions] = useState<DateFormatOption[]>([]);
   const [catalogOptionsLoading, setCatalogOptionsLoading] = useState(false);

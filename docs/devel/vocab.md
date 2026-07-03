@@ -8,7 +8,9 @@ When writing a design spec, a bug report, or a stakeholder note about the UI, re
 
 ## UI Vocabulary
 
-Selection rules for the route-level and component-level surfaces currently in use under `frontend/src/`. When a designer, stakeholder, or product writer says "popup," "modal," "side thing," "panel," "screen," or "view," map back to one of these names before responding or implementing. The shadcn library also ships Sheet, Drawer, and AlertDialog primitives. Sheet and Drawer are not used today; AlertDialog is structurally just a Dialog with a confirmation idiom, and we treat destructive confirmations as a Dialog with the canonical Remove / Discard verbs on the action button. None of the three has its own rule here -- add an entry when an actual divergent use case lands, not before.
+Selection rules for the route-level and component-level surfaces currently in use under `frontend/src/`. When a designer, stakeholder, or product writer says "popup," "modal," "side thing," "panel," "screen," or "view," map back to one of these names before responding or implementing.
+
+The shadcn library also ships Sheet, Drawer, and AlertDialog primitives. Sheet and Drawer are not used today. AlertDialog is structurally a Dialog with a confirmation idiom, so destructive confirmations use Dialog with the canonical Remove / Discard verbs on the action button. Add a separate entry for Sheet, Drawer, or AlertDialog only when a divergent use case lands.
 
 **Page.** A top-level route surface, addressable by URL. Examples: Search at `/search`, Record Detail at `/record/:id`, Contributor Dashboard at `/contribute`, Editor Dashboard at `/dashboard`. Use Page, not Screen -- WorldCovers is a web SPA and the codebase organizes top-level routes under `frontend/src/pages/`.
 

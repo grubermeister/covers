@@ -1,6 +1,5 @@
 /**
  * Auth utilities using localStorage for session storage.
- * Replaces Supabase session for Django API login.
  */
 
 const AUTH_STORAGE_KEY = "worldcovers_user";

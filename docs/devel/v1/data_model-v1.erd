@@ -211,11 +211,11 @@ erDiagram
     TBLRAWSTATEDATA ||--o{ TBLTOWNMARKIMAGES     : "has images"
     TBLRAWSTATEDATA ||--o{ TBLRAWSTATEDATA_PENDINGUPDATE : "edit proposals"
 
-    %% Covers ↔ ASCC entries (via PublishedID, StateAbv)
+    %% Covers <-> ASCC entries (via PublishedID, StateAbv)
     TBLSTATES ||--o{ TBLCOVERS                   : "covers in state"
     TBLRAWSTATEDATA ||..o{ TBLCOVERS             : "same txtPublishedID"
 
-    %% User–state mapping (User entity is external to this CSV set)
+    %% User-state mapping (User entity is external to this CSV set)
     CTUSERSTATES }o--|| TBLSTATES                : "state scope"
 
     %% Lookup / classification tables (logical links via text codes)

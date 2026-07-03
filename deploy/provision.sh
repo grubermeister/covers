@@ -14,7 +14,7 @@
 #
 # This script does NOT issue the TLS cert: `.dev` forces HTTPS but certbot needs
 # DNS pointing at this host first. After DNS resolves, run (see the printed
-# next-steps and docs/devel/STAGING_WOCO_DEV.md):
+# next-steps and docs/devel/DEPLOY.md):
 #
 #   certbot --nginx -d "$WOCO_HOSTNAME" --redirect -m <email> --agree-tos -n
 #
@@ -198,5 +198,5 @@ is a .dev domain, so browsers require HTTPS. Finish setup:
   3. Load data (from your local checkout):
        WOCO_HOST=root@${HOSTNAME_APP} ./tools/push_data.sh --import --state VA
 
-See docs/devel/STAGING_WOCO_DEV.md for the full runbook.
+See docs/devel/DEPLOY.md for the full deploy and provisioning runbook.
 NEXT
