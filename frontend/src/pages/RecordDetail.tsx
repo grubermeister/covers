@@ -63,6 +63,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import { useToast } from "@/hooks/use-toast";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { useAuth } from "@/hooks/useAuth";
+import { Input } from "@/components/ui/input";
+import { createCoverMarking, getCoverById } from "@/services/covers";
+import { parseCoverIdInput } from "@/lib/recordLinking";
 
 type GalleryImage = {
   imageUrl: string | null;
@@ -303,6 +306,10 @@ const RecordDetail = () => {
   const [removing, setRemoving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [linkCoverOpen, setLinkCoverOpen] = useState(false);
+  const [linkCoverInput, setLinkCoverInput] = useState("");
+  const [linkCoverBusy, setLinkCoverBusy] = useState(false);
+  const [linkCoverError, setLinkCoverError] = useState<string | null>(null);
   const [savingReviewed, setSavingReviewed] = useState(false);
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
@@ -718,6 +725,45 @@ const RecordDetail = () => {
       state: { from: location.pathname + location.search },
     });
   };
+
+  // Creates a CoverMarking junction row between this marking and an
+  // already-existing cover. The endpoint is editor/admin-gated
+  // (IsEditorOrAdminWrite), so the button only renders for isStaff.
+  const handleLinkExistingCover = async () => {
+    if (markingId == null) return;
+    const coverId = parseCoverIdInput(linkCoverInput);
+    if (coverId == null) {
+      setLinkCoverError("Enter a valid cover ID (e.g. 42 or C-42).");
+      return;
+    }
+    setLinkCoverBusy(true);
+    setLinkCoverError(null);
+    try {
+      const cover = await getCoverById(coverId);
+      if (!cover) {
+        setLinkCoverError(`Cover ${coverId} not found.`);
+        return;
+      }
+      await createCoverMarking({ cover: coverId, marking: markingId });
+      toast({
+        title: "Cover linked",
+        description: `Cover ${cover.code ?? coverId} is now linked to this marking.`,
+      });
+      setLinkCoverOpen(false);
+      setLinkCoverInput("");
+      const { covers: rows, error: coversErr } = await loadAssociatedCoversForMarking(markingId);
+      setCoversLoadError(coversErr);
+      setAssociatedCovers(rows);
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string; non_field_errors?: string[] } } };
+      const detail = ax.response?.data?.detail ?? ax.response?.data?.non_field_errors?.[0];
+      setLinkCoverError(
+        typeof detail === "string" ? detail : "Could not link cover. It may already be linked.",
+      );
+    } finally {
+      setLinkCoverBusy(false);
+    }
+  };
   const goCoverView = (cover: AssociatedCover) => {
     if (markingId == null) return;
     if (cover.contributionDraftId != null) {
@@ -1086,14 +1132,30 @@ const RecordDetail = () => {
                     </CardTitle>
                     {/* No new covers can be attached to a removed marking. */}
                     {!record.isRemoved && (
-                      <Button
-                        size="sm"
-                        onClick={openNewCoverDialog}
-                        className="bg-green-800 hover:bg-green-900 text-white"
-                      >
-                        <Plus className="mr-2 h-4 w-4" />
-                        {SUBMISSION_LABELS.action.submitNewCover}
-                      </Button>
+                      <div className="flex gap-2">
+                        {isStaff && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setLinkCoverInput("");
+                              setLinkCoverError(null);
+                              setLinkCoverOpen(true);
+                            }}
+                          >
+                            <Plus className="mr-2 h-4 w-4" />
+                            Link Existing Cover
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          onClick={openNewCoverDialog}
+                          className="bg-green-800 hover:bg-green-900 text-white"
+                        >
+                          <Plus className="mr-2 h-4 w-4" />
+                          {SUBMISSION_LABELS.action.submitNewCover}
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </CardHeader>
@@ -1412,6 +1474,64 @@ const RecordDetail = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={linkCoverOpen}
+        onOpenChange={(open) => {
+          if (linkCoverBusy) return;
+          setLinkCoverOpen(open);
+          if (!open) {
+            setLinkCoverInput("");
+            setLinkCoverError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link Existing Cover</DialogTitle>
+            <DialogDescription>
+              Enter the cover ID or code (e.g. 42 or C-42) to link it to this marking.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              placeholder="Cover ID or code"
+              value={linkCoverInput}
+              onChange={(e) => {
+                setLinkCoverInput(e.target.value);
+                setLinkCoverError(null);
+              }}
+              disabled={linkCoverBusy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleLinkExistingCover();
+                }
+              }}
+              autoFocus
+            />
+            {linkCoverError && <p className="text-sm text-destructive">{linkCoverError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkCoverOpen(false)} disabled={linkCoverBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleLinkExistingCover()}
+              disabled={linkCoverBusy || !linkCoverInput.trim()}
+            >
+              {linkCoverBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Linking…
+                </>
+              ) : (
+                "Link Cover"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Footer />
     </div>
