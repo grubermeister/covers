@@ -248,7 +248,11 @@ const CoverDetailPage = () => {
         setRemoveReason("");
         await reloadCover();
       } else {
-        toast({ title: "Could not remove", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not remove",
+          description: "message" in res ? res.message : "Could not remove cover.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRemoving(false);
@@ -265,7 +269,11 @@ const CoverDetailPage = () => {
         setRestoreOpen(false);
         await reloadCover();
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore cover.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoring(false);
@@ -481,7 +489,7 @@ const CoverDetailPage = () => {
         } else {
           toast({
             title: "Could not delete image",
-            description: res.message,
+            description: "message" in res ? res.message : "Could not delete image.",
             variant: "destructive",
           });
         }

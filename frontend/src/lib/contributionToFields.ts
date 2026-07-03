@@ -269,7 +269,7 @@ export function submittedDataToFieldInput(
     earliestSeen: earliest,
     latestSeen: latest,
     shapeName,
-    rateValFormatted: formatRateValue(sd.rate_val ?? sd.rateVal),
+    rateValFormatted: formatRateValue(toStr(sd.rate_val ?? sd.rateVal)),
     dateFmt: resolveDateFormat(sd, lookups),
     impression: readImpression(sd),
     isIrreg: readIsIrreg(sd),

@@ -900,6 +900,7 @@ export interface AssociatedCoverDetails {
   height: string | null;
   hasAdhesive: boolean | null;
   isInstitutional: boolean | null;
+  displaySubmitterName: boolean;
   /** Free-text description / notes; prefilled into the cover edit form. */
   description: string;
   datesSeen: AssociatedDateSeen[];
@@ -979,6 +980,7 @@ function mapAssociatedCoverDetails(raw: unknown): AssociatedCoverDetails | null 
     height: decimalToString(o.height),
     hasAdhesive: o.has_adhesive == null ? null : Boolean(o.has_adhesive),
     isInstitutional: o.is_institutional == null ? null : Boolean(o.is_institutional),
+    displaySubmitterName: Boolean(o.display_submitter_name),
     description: typeof o.description === "string" ? o.description : "",
     datesSeen,
   };
@@ -1271,6 +1273,7 @@ function mapCoverContributionToAssociatedCover(
           : typeof sd.isInstitutional === "boolean"
             ? sd.isInstitutional
             : null,
+      displaySubmitterName: Boolean(sd.display_submitter_name ?? sd.displaySubmitterName),
       description: typeof sd.description === "string" ? sd.description : "",
       datesSeen: datesSeenFromCoverSubmission(sd),
     },
