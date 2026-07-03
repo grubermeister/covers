@@ -214,6 +214,43 @@ export async function updateImage(
 }
 
 /**
+ * PATCH /api/v2/images/{image_id}/ -- reassign an image to another subject
+ * (issue #48). image_view must be valid for the target subject type
+ * (MARKING: FULL/DETAIL; COVER: FRONT/BACK/INTERIOR/DETAIL); the backend
+ * validates target existence and view pairing and handles default-image
+ * promotion on the source subject.
+ */
+export async function moveImageSubject(
+  imageId: number,
+  subjectType: "MARKING" | "COVER",
+  subjectId: number,
+  imageView: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    await ensureCsrfToken();
+    await apiClient.patch(`/images/${imageId}/`, {
+      subject_type: subjectType,
+      subject_id: subjectId,
+      image_view: imageView,
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    const ax = err as {
+      response?: {
+        data?: { detail?: string; subject_id?: string[]; image_view?: string[] };
+      };
+    };
+    const data = ax.response?.data;
+    const message =
+      data?.detail ?? data?.subject_id?.[0] ?? data?.image_view?.[0];
+    return {
+      ok: false,
+      message: typeof message === "string" ? message : "Could not reassign image.",
+    };
+  }
+}
+
+/**
  * DELETE /api/v2/images/{image_id}/ -- remove one image row.
  *
  * Cwd for manual verification: frontend/.

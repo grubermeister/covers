@@ -449,7 +449,45 @@ class ImageViewSet(viewsets.ModelViewSet):
         )
 
     def perform_update(self, serializer):
-        serializer.save(modified_by=self.request.user)
+        # Moving an image to another subject (issue #48) has the same
+        # default-image bookkeeping needs as deletion: the source subject may
+        # lose its display_order=0 row, and the moved image must not collide
+        # with the target's existing default. Ordinary metadata updates skip
+        # all of this.
+        old_subject = (
+            serializer.instance.subject_type,
+            serializer.instance.subject_id,
+        )
+        with transaction.atomic():
+            instance = serializer.save(modified_by=self.request.user)
+            new_subject = (instance.subject_type, instance.subject_id)
+            if new_subject == old_subject:
+                return
+            target_siblings = Image.objects.filter(
+                subject_type=new_subject[0],
+                subject_id=new_subject[1],
+            ).exclude(pk=instance.pk)
+            if target_siblings.exists():
+                max_order = target_siblings.aggregate(
+                    max_order=Max("display_order")
+                )["max_order"]
+                instance.display_order = (max_order or 0) + 1
+            else:
+                instance.display_order = 0
+            instance.save(update_fields=["display_order", "modified_date"])
+
+            source_siblings = Image.objects.filter(
+                subject_type=old_subject[0],
+                subject_id=old_subject[1],
+            ).order_by("display_order", "image_id")
+            if not source_siblings.filter(display_order=0).exists():
+                next_default = source_siblings.first()
+                if next_default is not None:
+                    next_default.display_order = 0
+                    next_default.modified_by = self.request.user
+                    next_default.save(
+                        update_fields=["display_order", "modified_by", "modified_date"]
+                    )
 
     def perform_destroy(self, instance):
         # "Default image" is implicit: for a given (subject_type, subject_id),
