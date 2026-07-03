@@ -570,3 +570,43 @@ Findings:
 - **Billing/naming** -- confirm "Covercensus" == "Worldcovers" for tax/billing (pending Michael).
 - **ASCC data-model doc** -- reference only (Google Doc linked in `06-09-emails.md` -> "ASCC database" thread).
 - **IanThom.org / ChinaOverprints / account admin / Jay Logan transition** -- separate, lower-precedence track. Not tracked here.
+
+---
+
+# Feature implementation surfaces (current state, 2026-07-03)
+
+Where each `docs/devel/design.md` feature (F1-F11) is implemented today.
+The design doc is pure spec and points here for status. Routes are the ones
+registered in `frontend/src/App.tsx`; re-verify against that file when
+updating this table.
+
+| Feature | Where implemented |
+|---------|-------------------|
+| F1 Authentication | SPA (`/auth`, `/reset-password`) |
+| F2 Collection Discovery | SPA (`/`, `/search`, `/record/:id`, `/covers/:coverId`) |
+| F3 Submission Workflow | SPA, all roles (see notes below) |
+| F4 Comment Workflow | Partial: comments to the Editor travel inside Submissions; no standalone Entry comments yet |
+| F5 Image Attachments | SPA (image upload inside contribution forms) |
+| F6 Reference Work Management | Django `/admin/` only; the SPA exposes reference works for citation but has no management UI |
+| F7 Collection Administration | SPA `/admin/collections` (superuser only) + Django `/admin/` |
+| F8 Audit Trail | Submission transactions in SPA (`/contribution/:id`); version history via django-reversion in Django `/admin/` |
+| F9 Documentation & Help | SPA (`/help`, `/help/:docSlug`) |
+| F10 System Maintenance | Not in the application yet; operator CLI only -- see `docs/devel/RUNBOOK.md` |
+| F11 Catalog Data Pipeline | Offline tooling only -- see `docs/devel/TOOLS.md` and `docs/devel/PIPELINE.md` |
+
+Notes:
+
+- **F3**: Contributors submit new Entries via `/contribute`, edit pending
+  submissions via `/edit/:id`, and see any submission's status at
+  `/contribution/:id`. Editors review, approve, reject, and return
+  submissions from `/dashboard` (Editor Dashboard) and `/contribution/:id`
+  (`ContributionDetail`). Django `/admin/` has a `ContributionAdmin` with
+  bulk approve/reject actions, but that is a secondary convenience for
+  administrators, not the primary Editor interface.
+- **F4**: The standalone comment-on-Entry flow from the design is not
+  implemented yet. What exists today is the contributor's
+  comment-to-Editor, carried inside the submission payload and shown on
+  `/contribution/:id`.
+- **F10**: Backup, restore, and update through the application interface
+  remain unimplemented; these are operator tasks run from the command
+  line today.

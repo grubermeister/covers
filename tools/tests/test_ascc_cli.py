@@ -7,6 +7,7 @@ Run from repo root:
 Expected exit code: 0.
 """
 
+import argparse
 import os
 import tempfile
 import unittest
@@ -40,9 +41,52 @@ class _PatchedRoots:
 
 
 class AsccCliTests(unittest.TestCase):
+    def ocr_run_args(self, state, source_pdf, **overrides):
+        values = {
+            "state": state,
+            "pdf": source_pdf,
+            "provider": None,
+            "model": None,
+            "pages": None,
+            "reference_work": "ASCC5",
+            "import_check": "never",
+            "force": False,
+        }
+        values.update(overrides)
+        return argparse.Namespace(**values)
+
     def test_parser_accepts_run_public_options(self):
         args = ascc_cli.build_parser().parse_args([
             "run",
+            "va",
+            "--reference-work",
+            "ASCC6",
+            "--v1-image-root",
+            "legacy-images",
+            "--allow-missing-v1-images",
+            "--dry-run",
+            "--truncate",
+            "--only",
+            "markings,images",
+            "--allow-missing",
+            "--skip-report",
+            "skips.csv",
+        ])
+
+        self.assertEqual(args.command, "run")
+        self.assertEqual(args.state, "va")
+        self.assertEqual(args.reference_work, "ASCC6")
+        self.assertEqual(str(args.v1_image_root), "legacy-images")
+        self.assertTrue(args.allow_missing_v1_images)
+        self.assertTrue(args.dry_run)
+        self.assertTrue(args.truncate)
+        self.assertEqual(args.only, "markings,images")
+        self.assertTrue(args.allow_missing)
+        self.assertEqual(args.skip_report, "skips.csv")
+
+    def test_parser_accepts_ocr_public_options(self):
+        args = ascc_cli.build_parser().parse_args([
+            "ocr",
             "va",
             "--pdf",
             "input.pdf",
@@ -51,52 +95,85 @@ class AsccCliTests(unittest.TestCase):
             "--pages",
             "419-420",
             "--reference-work",
-            "ASCC1",
-            "--legacy-status",
-            "active",
+            "ASCC5",
             "--import-check",
             "never",
             "--force",
         ])
 
-        self.assertEqual(args.command, "run")
+        self.assertEqual(args.command, "ocr")
         self.assertEqual(args.state, "va")
+        self.assertEqual(str(args.pdf), "input.pdf")
         self.assertEqual(args.provider, "anthropic")
+        self.assertEqual(args.pages, "419-420")
         self.assertEqual(args.import_check, "never")
         self.assertTrue(args.force)
 
-    def test_parser_accepts_v1_run_public_options(self):
+    def test_parser_accepts_doctor_public_options(self):
         args = ascc_cli.build_parser().parse_args([
-            "v1-run",
+            "doctor",
             "va",
-            "--reference-work",
-            "ASCC1",
             "--v1-image-root",
             "legacy-images",
             "--allow-missing-v1-images",
-            "--import-check",
-            "never",
-            "--load",
         ])
 
-        self.assertEqual(args.command, "v1-run")
+        self.assertEqual(args.command, "doctor")
         self.assertEqual(args.state, "va")
-        self.assertEqual(args.reference_work, "ASCC1")
         self.assertEqual(str(args.v1_image_root), "legacy-images")
         self.assertTrue(args.allow_missing_v1_images)
-        self.assertEqual(args.import_check, "never")
-        self.assertTrue(args.load)
 
-    def test_parser_v1_run_defaults_to_ascc2(self):
+    def test_parser_accepts_munge_public_options(self):
         args = ascc_cli.build_parser().parse_args([
-            "v1-run",
+            "munge",
+            "va",
+            "--reference-work",
+            "ASCC6",
+            "--v1-image-root",
+            "legacy-images",
+            "--allow-missing-v1-images",
+        ])
+
+        self.assertEqual(args.command, "munge")
+        self.assertEqual(args.state, "va")
+        self.assertEqual(args.reference_work, "ASCC6")
+        self.assertEqual(str(args.v1_image_root), "legacy-images")
+        self.assertTrue(args.allow_missing_v1_images)
+
+    def test_parser_munge_defaults_to_ascc6(self):
+        args = ascc_cli.build_parser().parse_args([
+            "munge",
+            "va",
+        ])
+
+        self.assertEqual(args.command, "munge")
+        self.assertEqual(args.reference_work, "ASCC6")
+
+    def test_parser_ocr_defaults_to_ascc5(self):
+        args = ascc_cli.build_parser().parse_args([
+            "ocr",
             "va",
             "--import-check",
             "never",
         ])
 
-        self.assertEqual(args.command, "v1-run")
-        self.assertEqual(args.reference_work, "ASCC2")
+        self.assertEqual(args.command, "ocr")
+        self.assertEqual(args.reference_work, "ASCC5")
+
+    def test_parser_accepts_import_passthrough_options(self):
+        args = ascc_cli.build_parser().parse_args([
+            "import",
+            "tools/wip/out/v1_va",
+            "--dry-run",
+            "--only",
+            "markings,images",
+        ])
+
+        self.assertEqual(args.command, "import")
+        self.assertEqual(
+            args.import_args,
+            ["tools/wip/out/v1_va", "--dry-run", "--only", "markings,images"],
+        )
 
     def test_parser_accepts_clean_with_optional_state(self):
         all_args = ascc_cli.build_parser().parse_args(["clean"])
@@ -122,7 +199,24 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(paths.catalog_rows.as_posix().split("/")[-4:], ["cache", "v1", "VA", "catalog_rows.csv"])
         self.assertEqual(paths.bundle_dir.as_posix().split("/")[-3:], ["wip", "out", "v1_va"])
-        self.assertEqual(paths.report.name, "v1_reconciliation_report.csv")
+        self.assertEqual(paths.warnings.name, "v1_pipeline_warnings.csv")
+
+    def test_v1_state_paths_are_state_specific_for_mi(self):
+        with tempfile.TemporaryDirectory() as td:
+            with _PatchedRoots(td):
+                paths = ascc_cli.v1_state_paths("mi")
+
+        self.assertEqual(paths.catalog_rows.as_posix().split("/")[-4:], ["cache", "v1", "MI", "catalog_rows.csv"])
+        self.assertEqual(paths.bundle_dir.as_posix().split("/")[-3:], ["wip", "out", "v1_mi"])
+
+    def test_ocr_state_paths_are_state_specific_for_wv(self):
+        with tempfile.TemporaryDirectory() as td:
+            with _PatchedRoots(td):
+                paths = ascc_cli.state_paths("wv")
+
+        self.assertEqual(paths.pdf.name, "WV.pdf")
+        self.assertEqual(paths.catalog_rows.name, "WV_catalog_rows.csv")
+        self.assertEqual(paths.bundle_dir.as_posix().split("/")[-3:], ["wip", "out", "wv"])
 
     def test_discover_state_pdf_accepts_unique_state_prefix(self):
         with tempfile.TemporaryDirectory() as td:
@@ -187,24 +281,18 @@ class AsccCliTests(unittest.TestCase):
 
         self.assertEqual(image_root, backup)
 
-    def test_run_orchestrates_stage_commands_with_canonical_paths(self):
+    def test_ocr_orchestrates_stage_commands_with_canonical_paths(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             source_pdf = root / "source.pdf"
             source_pdf.write_bytes(b"%PDF")
             with _PatchedRoots(root):
-                args = ascc_cli.build_parser().parse_args([
-                    "run",
+                args = self.ocr_run_args(
                     "VA",
-                    "--pdf",
-                    str(source_pdf),
-                    "--provider",
-                    "anthropic",
-                    "--pages",
-                    "419",
-                    "--import-check",
-                    "never",
-                ])
+                    source_pdf,
+                    provider="anthropic",
+                    pages="419",
+                )
                 ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
                 with patch.object(ascc_cli, "doctor_checks", return_value=ok_checks):
                     with patch.object(ascc_cli, "run_command") as run_command:
@@ -212,21 +300,36 @@ class AsccCliTests(unittest.TestCase):
                             with patch.object(ascc_cli, "clean_bundle_dir"):
                                 with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
                                     with patch.object(ascc_cli, "write_run_manifest"):
-                                        rc = ascc_cli.command_run(args)
+                                        rc = ascc_cli.command_ocr_run(args)
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 4)
         self.assertTrue(commands[0][1].endswith("ascc_page_processor.py"))
         self.assertIn("--output-csv", commands[1])
         self.assertIn("VA_ocr_rows.csv", " ".join(commands[1]))
         self.assertIn("--catalog-rows-out", commands[2])
         self.assertIn("VA_catalog_rows.csv", " ".join(commands[2]))
         self.assertTrue(commands[3][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[4][1].endswith("ascc_compare.py"))
-        self.assertIn("--bundle-dir", commands[4])
 
-    def test_run_skips_to_image_verification_when_ocr_rows_exist(self):
+    def test_main_dispatches_ocr_command(self):
+        with patch.object(ascc_cli, "command_ocr_run", return_value=0) as command_ocr_run:
+            rc = ascc_cli.main([
+                "ocr",
+                "VA",
+                "--pdf",
+                "input.pdf",
+                "--import-check",
+                "never",
+            ])
+
+        self.assertEqual(rc, 0)
+        args = command_ocr_run.call_args.args[0]
+        self.assertEqual(args.command, "ocr")
+        self.assertEqual(args.state, "VA")
+        self.assertEqual(str(args.pdf), "input.pdf")
+
+    def test_ocr_skips_to_image_verification_when_ocr_rows_exist(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             source_pdf = root / "source.pdf"
@@ -236,14 +339,7 @@ class AsccCliTests(unittest.TestCase):
                     "listing_text,catalog_page,chunk_number,image_count,row_type,is_manuscript,default_shape,institutional_owner\n",
                     encoding="utf-8",
                 )
-                args = ascc_cli.build_parser().parse_args([
-                    "run",
-                    "VA",
-                    "--pdf",
-                    str(source_pdf),
-                    "--import-check",
-                    "never",
-                ])
+                args = self.ocr_run_args("VA", source_pdf)
                 ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
                 with patch.object(ascc_cli, "doctor_checks", return_value=ok_checks):
                     with patch.object(ascc_cli, "run_command") as run_command:
@@ -251,49 +347,40 @@ class AsccCliTests(unittest.TestCase):
                             with patch.object(ascc_cli, "clean_bundle_dir"):
                                 with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
                                     with patch.object(ascc_cli, "write_run_manifest"):
-                                        rc = ascc_cli.command_run(args)
-
-        self.assertEqual(rc, 0)
-        commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 3)
-        self.assertTrue(commands[0][1].endswith("ascc_image_extract.py"))
-        self.assertTrue(commands[1][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[2][1].endswith("ascc_compare.py"))
-
-    def test_run_skips_to_munger_when_catalog_rows_exist(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            source_pdf = root / "source.pdf"
-            source_pdf.write_bytes(b"%PDF")
-            with _PatchedRoots(root):
-                (ascc_cli.WIP_CACHE / "VA_catalog_rows.csv").write_text(
-                    "listing_text,catalog_page,chunk_number,image_count,row_type,is_manuscript,default_shape,institutional_owner\n",
-                    encoding="utf-8",
-                )
-                args = ascc_cli.build_parser().parse_args([
-                    "run",
-                    "VA",
-                    "--pdf",
-                    str(source_pdf),
-                    "--import-check",
-                    "never",
-                ])
-                ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
-                with patch.object(ascc_cli, "doctor_checks", return_value=ok_checks):
-                    with patch.object(ascc_cli, "run_command") as run_command:
-                        with patch.object(ascc_cli, "copy_marking_images", return_value=0):
-                            with patch.object(ascc_cli, "clean_bundle_dir"):
-                                with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
-                                    with patch.object(ascc_cli, "write_run_manifest"):
-                                        rc = ascc_cli.command_run(args)
+                                        rc = ascc_cli.command_ocr_run(args)
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
         self.assertEqual(len(commands), 2)
-        self.assertTrue(commands[0][1].endswith("ascc_data_munger.py"))
-        self.assertTrue(commands[1][1].endswith("ascc_compare.py"))
+        self.assertTrue(commands[0][1].endswith("ascc_image_extract.py"))
+        self.assertTrue(commands[1][1].endswith("ascc_data_munger.py"))
 
-    def test_run_force_rebuilds_existing_catalog_rows(self):
+    def test_ocr_skips_to_munger_when_catalog_rows_exist(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            source_pdf = root / "source.pdf"
+            source_pdf.write_bytes(b"%PDF")
+            with _PatchedRoots(root):
+                (ascc_cli.WIP_CACHE / "VA_catalog_rows.csv").write_text(
+                    "listing_text,catalog_page,chunk_number,image_count,row_type,is_manuscript,default_shape,institutional_owner\n",
+                    encoding="utf-8",
+                )
+                args = self.ocr_run_args("VA", source_pdf)
+                ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
+                with patch.object(ascc_cli, "doctor_checks", return_value=ok_checks):
+                    with patch.object(ascc_cli, "run_command") as run_command:
+                        with patch.object(ascc_cli, "copy_marking_images", return_value=0):
+                            with patch.object(ascc_cli, "clean_bundle_dir"):
+                                with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
+                                    with patch.object(ascc_cli, "write_run_manifest"):
+                                        rc = ascc_cli.command_ocr_run(args)
+
+        self.assertEqual(rc, 0)
+        commands = [call.args[0] for call in run_command.call_args_list]
+        self.assertEqual(len(commands), 1)
+        self.assertTrue(commands[0][1].endswith("ascc_data_munger.py"))
+
+    def test_ocr_force_rebuilds_existing_catalog_rows(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             source_pdf = root / "source.pdf"
@@ -307,15 +394,7 @@ class AsccCliTests(unittest.TestCase):
                     "listing_text,catalog_page,chunk_number,image_count,row_type,is_manuscript,default_shape,institutional_owner\n",
                     encoding="utf-8",
                 )
-                args = ascc_cli.build_parser().parse_args([
-                    "run",
-                    "VA",
-                    "--pdf",
-                    str(source_pdf),
-                    "--import-check",
-                    "never",
-                    "--force",
-                ])
+                args = self.ocr_run_args("VA", source_pdf, force=True)
                 ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
                 with patch.object(ascc_cli, "doctor_checks", return_value=ok_checks):
                     with patch.object(ascc_cli, "run_command") as run_command:
@@ -323,36 +402,32 @@ class AsccCliTests(unittest.TestCase):
                             with patch.object(ascc_cli, "clean_bundle_dir"):
                                 with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
                                     with patch.object(ascc_cli, "write_run_manifest"):
-                                        rc = ascc_cli.command_run(args)
+                                        rc = ascc_cli.command_ocr_run(args)
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
-        self.assertEqual(len(commands), 5)
+        self.assertEqual(len(commands), 4)
         self.assertTrue(commands[0][1].endswith("ascc_page_processor.py"))
         self.assertTrue(commands[1][1].endswith("ascc_page_extract.py"))
 
-    def test_v1_run_orchestrates_v1_only_commands(self):
+    def test_munge_orchestrates_v1_only_commands(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             with _PatchedRoots(root):
                 image_root = root / "legacy-images"
                 image_root.mkdir()
                 args = ascc_cli.build_parser().parse_args([
-                    "v1-run",
+                    "munge",
                     "VA",
                     "--v1-image-root",
                     str(image_root),
-                    "--import-check",
-                    "never",
                 ])
                 ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
                 with patch.object(ascc_cli, "v1_doctor_checks", return_value=ok_checks):
                     with patch.object(ascc_cli, "run_command") as run_command:
                         with patch.object(ascc_cli, "clean_bundle_dir"):
-                            with patch.object(ascc_cli, "maybe_import_check", return_value={"status": "skipped"}):
-                                with patch.object(ascc_cli, "maybe_load_bundle", return_value={"status": "skipped"}):
-                                    with patch.object(ascc_cli, "write_v1_run_manifest"):
-                                        rc = ascc_cli.command_v1_run(args)
+                            with patch.object(ascc_cli, "write_v1_run_manifest"):
+                                rc = ascc_cli.command_munge(args)
 
         self.assertEqual(rc, 0)
         commands = [call.args[0] for call in run_command.call_args_list]
@@ -364,7 +439,7 @@ class AsccCliTests(unittest.TestCase):
         self.assertIn("--reference-work-code", commands[1])
         self.assertEqual(
             commands[1][commands[1].index("--reference-work-code") + 1],
-            "ASCC2",
+            "ASCC6",
         )
         self.assertIn("--region-abbrev", commands[1])
         self.assertEqual(commands[1][commands[1].index("--region-abbrev") + 1], "VA")
@@ -375,22 +450,55 @@ class AsccCliTests(unittest.TestCase):
         self.assertIn("--bundle-dir", commands[3])
         self.assertNotIn("ascc_page_extract.py", " ".join(" ".join(c) for c in commands))
 
-    def test_load_bundle_uses_additive_import_without_dry_run(self):
+    def test_run_orchestrates_munge_then_import(self):
         with tempfile.TemporaryDirectory() as td:
-            with _PatchedRoots(td):
-                paths = ascc_cli.v1_state_paths("VA")
-                with patch.object(ascc_cli, "run_command") as run_command:
-                    result = ascc_cli.maybe_load_bundle(paths, True)
+            root = Path(td)
+            with _PatchedRoots(root):
+                image_root = root / "legacy-images"
+                image_root.mkdir()
+                args = ascc_cli.build_parser().parse_args([
+                    "run",
+                    "VA",
+                    "--v1-image-root",
+                    str(image_root),
+                    "--dry-run",
+                    "--allow-missing",
+                ])
+                ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
+                with patch.object(ascc_cli, "v1_doctor_checks", return_value=ok_checks):
+                    with patch.object(ascc_cli, "run_command") as run_command:
+                        with patch.object(ascc_cli, "clean_bundle_dir"):
+                            with patch.object(ascc_cli, "write_v1_run_manifest"):
+                                rc = ascc_cli.command_run(args)
 
-        self.assertEqual(
-            result,
-            {"mode": "load", "status": "passed", "check": "additive-load"},
-        )
+        self.assertEqual(rc, 0)
+        commands = [call.args[0] for call in run_command.call_args_list]
+        self.assertEqual(len(commands), 5)
+        self.assertTrue(commands[0][1].endswith("v1_catalog_rows.py"))
+        self.assertTrue(commands[1][1].endswith("ascc_data_munger.py"))
+        self.assertTrue(commands[2][1].endswith("v1_attach_images.py"))
+        self.assertTrue(commands[3][1].endswith("v1_bundle_overlay.py"))
+        self.assertTrue(commands[4][1].endswith("backend/manage.py"))
+        self.assertEqual(commands[4][2], "import_ascc_bundle")
+        self.assertTrue(commands[4][3].endswith("tools/wip/out/v1_va"))
+        self.assertIn("--dry-run", commands[4])
+        self.assertIn("--allow-missing", commands[4])
+
+    def test_import_delegates_to_ascc_bundle_management_command(self):
+        args = ascc_cli.build_parser().parse_args([
+            "import",
+            "tools/wip/out/v1_va",
+            "--dry-run",
+            "--allow-missing",
+        ])
+        with patch.object(ascc_cli, "run_command") as run_command:
+            rc = ascc_cli.command_import(args)
+
+        self.assertEqual(rc, 0)
         cmd = run_command.call_args.args[0]
+        self.assertTrue(cmd[1].endswith("backend/manage.py"))
         self.assertEqual(cmd[2], "import_ascc_bundle")
-        self.assertEqual(cmd[3], str(paths.bundle_dir))
-        self.assertNotIn("--truncate", cmd)
-        self.assertNotIn("--dry-run", cmd)
+        self.assertEqual(cmd[3:], ["tools/wip/out/v1_va", "--dry-run", "--allow-missing"])
 
     def test_import_check_uses_additive_dry_run(self):
         with tempfile.TemporaryDirectory() as td:
@@ -427,7 +535,6 @@ class AsccCliTests(unittest.TestCase):
                     ascc_cli.WIP_CACHE / "VA_ocr_rows.csv",
                     ascc_cli.WIP_CACHE / "VA_catalog_rows.csv",
                     ascc_cli.WIP_CACHE / "VA-ASCC-CTLG_chunks",
-                    ascc_cli.WIP_CACHE / "compare" / "VA",
                     ascc_cli.WIP_CACHE / "v1" / "VA",
                     ascc_cli.WIP_OUT / "va",
                     ascc_cli.WIP_OUT / "v1_va",
@@ -435,6 +542,7 @@ class AsccCliTests(unittest.TestCase):
                 keep_paths = [
                     ascc_cli.WIP_CACHE / "WV_ocr_rows.csv",
                     ascc_cli.WIP_CACHE / "WV-ASCC-CTLG_chunks",
+                    ascc_cli.WIP_CACHE / "compare" / "VA",
                     ascc_cli.WIP_CACHE / "compare" / "WV",
                     ascc_cli.WIP_OUT / "wv",
                 ]

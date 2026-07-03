@@ -8,6 +8,7 @@
     "build": "NODE_NO_WARNINGS=1 vite build",
     "build:dev": "NODE_NO_WARNINGS=1 vite build --mode development",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "preview": "vite preview",
     "test": "jest",
     "test:watch": "jest --watchAll",

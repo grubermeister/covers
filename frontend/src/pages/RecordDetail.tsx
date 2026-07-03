@@ -591,7 +591,7 @@ const RecordDetail = () => {
       } else {
         toast({
           title: "Could not delete image",
-          description: res.message,
+          description: "message" in res ? res.message : "Could not delete image.",
           variant: "destructive",
         });
       }
@@ -632,7 +632,11 @@ const RecordDetail = () => {
         setRemoveReason("");
         await refetchRecord();
       } else {
-        toast({ title: "Could not remove", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not remove",
+          description: "message" in res ? res.message : "Could not remove marking.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRemoving(false);
@@ -649,7 +653,11 @@ const RecordDetail = () => {
         setRestoreOpen(false);
         await refetchRecord();
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore marking.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoring(false);

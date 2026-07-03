@@ -3,28 +3,33 @@
 This module keeps the demo-facing workflow small:
 
     ./woco ascc doctor VA
-    ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+    ./woco ascc munge VA
+    ./woco ascc run VA --dry-run
+    ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
 
 It preserves the existing tools/wip/in, tools/wip/cache, and tools/wip/out
-layout. The older tools remain stage implementations; this CLI owns the public
-argument names, canonical filenames, and run manifest.
+layout. The older OCR tools remain stage implementations; this CLI owns the
+public argument names, canonical filenames, and run manifest.
 """
 
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
-from collections import Counter
-from dataclasses import dataclass
+import csv
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from ascc_pipeline import checks as pipeline_checks
+from ascc_pipeline import commands as pipeline_commands
+from ascc_pipeline import manifest as pipeline_manifest
+from ascc_pipeline import paths as pipeline_paths
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -35,96 +40,48 @@ WIP_CACHE = WIP_DIR / "cache"
 WIP_OUT = WIP_DIR / "out"
 BACKEND_MEDIA = REPO_ROOT / "backend" / "media"
 
-IMPORT_STEMS = (
-    "colors",
-    "letterings",
-    "shapes",
-    "regions",
-    "reference_works",
-    "post_offices",
-    "post_office_regions",
-    "markings",
-    "covers",
-    "cover_valuations",
-    "dates_seen",
-    "cover_markings",
-    "citations",
-    "images",
-    "marking_lineage",
-)
+GENERATED_BUNDLE_STEMS = pipeline_paths.GENERATED_BUNDLE_STEMS
+DEFAULT_OCR_REFERENCE_WORK = pipeline_paths.DEFAULT_OCR_REFERENCE_WORK
+DEFAULT_V1_REFERENCE_WORK = pipeline_paths.DEFAULT_V1_REFERENCE_WORK
+StatePaths = pipeline_paths.StatePaths
+V1StatePaths = pipeline_paths.V1StatePaths
 
 
 class AsccCliError(Exception):
     """Raised for user-correctable ASCC CLI failures."""
 
 
-@dataclass(frozen=True)
-class StatePaths:
-    state: str
-    basename: str
-    pdf: Path
-    ocr_rows: Path
-    catalog_rows: Path
-    images_dir: Path
-    image_report: Path
-    bundle_dir: Path
-    compare_dir: Path
-    compare_ledger: Path
-    manifest: Path
-    media_dir: Path
-
-
-@dataclass(frozen=True)
-class V1StatePaths:
-    state: str
-    catalog_rows: Path
-    slice_rows: Path
-    image_refs: Path
-    bundle_dir: Path
-    report: Path
-    manifest: Path
-    media_dir: Path
+def pipeline_roots() -> pipeline_paths.PipelineRoots:
+    return pipeline_paths.PipelineRoots(
+        repo_root=REPO_ROOT,
+        tools_dir=TOOLS_DIR,
+        wip_dir=WIP_DIR,
+        wip_in=WIP_IN,
+        wip_cache=WIP_CACHE,
+        wip_out=WIP_OUT,
+        backend_media=BACKEND_MEDIA,
+    )
 
 
 def state_paths(state: str) -> StatePaths:
-    state = normalize_state(state)
-    return StatePaths(
-        state=state,
-        basename=state,
-        pdf=WIP_IN / f"{state}.pdf",
-        ocr_rows=WIP_CACHE / f"{state}_ocr_rows.csv",
-        catalog_rows=WIP_CACHE / f"{state}_catalog_rows.csv",
-        images_dir=WIP_CACHE / f"{state}_images",
-        image_report=WIP_CACHE / f"{state}_subchunks_report.csv",
-        bundle_dir=WIP_OUT / state.lower(),
-        compare_dir=WIP_CACHE / "compare" / state,
-        compare_ledger=WIP_CACHE / "compare" / state / f"review_ledger_{state}.csv",
-        manifest=WIP_CACHE / f"{state}_run.json",
-        media_dir=BACKEND_MEDIA / state.lower(),
-    )
+    try:
+        return pipeline_paths.ocr_state_paths(state, pipeline_roots())
+    except ValueError as exc:
+        raise AsccCliError(str(exc)) from exc
 
 
 def v1_state_paths(state: str) -> V1StatePaths:
-    state = normalize_state(state)
-    cache_dir = WIP_CACHE / "v1" / state
-    bundle_dir = WIP_OUT / f"v1_{state.lower()}"
-    return V1StatePaths(
-        state=state,
-        catalog_rows=cache_dir / "catalog_rows.csv",
-        slice_rows=cache_dir / "slice.csv",
-        image_refs=cache_dir / "image_refs.csv",
-        bundle_dir=bundle_dir,
-        report=bundle_dir / "v1_reconciliation_report.csv",
-        manifest=cache_dir / "run.json",
-        media_dir=BACKEND_MEDIA / state.lower(),
-    )
+    try:
+        return pipeline_paths.v1_state_paths(state, pipeline_roots())
+    except ValueError as exc:
+        raise AsccCliError(str(exc)) from exc
 
 
 def normalize_state(value: str) -> str:
-    state = str(value or "").strip().upper()
-    if len(state) != 2 or not state.isalpha():
-        raise AsccCliError("STATE must be a two-letter abbreviation, for example VA.")
-    return state
+    try:
+        return pipeline_paths.normalize_state(value)
+    except ValueError as exc:
+        raise AsccCliError(str(exc)) from exc
 
 
 def discover_state_pdf(state: str) -> tuple[Path | None, str | None]:
@@ -172,42 +129,45 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="./woco ascc")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    doctor = sub.add_parser("doctor", help="check ASCC pipeline prerequisites")
+    doctor = sub.add_parser("doctor", help="check v1 ASCC import prerequisites")
     doctor.add_argument("state")
-    add_shared_options(doctor, include_import_check=False)
+    add_v1_options(doctor)
 
-    run = sub.add_parser("run", help="run PDF to catalog rows, bundle, and compare ledger")
+    munge = sub.add_parser("munge", help="build a fresh v2 bundle from v1 exports")
+    munge.add_argument("state")
+    add_v1_options(munge)
+
+    run = sub.add_parser("run", help="build a fresh v2 bundle from v1 exports and import it")
     run.add_argument("state")
-    run.add_argument("--pdf", type=Path, default=None)
-    run.add_argument(
+    add_v1_options(run)
+    add_run_import_options(run)
+
+    ocr = sub.add_parser("ocr", help="run the legacy PDF OCR pipeline")
+    ocr.add_argument("state")
+    ocr.add_argument("--pdf", type=Path, default=None)
+    ocr.add_argument(
         "--force",
         action="store_true",
         help=(
-            "rebuild OCR and catalog rows even when VA_ocr_rows.csv or "
-            "VA_catalog_rows.csv already exists"
+            "rebuild OCR and catalog rows even when STATE_ocr_rows.csv or "
+            "STATE_catalog_rows.csv already exists"
         ),
     )
-    add_shared_options(run, include_import_check=True)
+    add_shared_options(ocr, include_import_check=True)
 
-    munge = sub.add_parser("munge", help="build the import bundle from catalog rows")
-    munge.add_argument("state")
-    add_shared_options(munge, include_import_check=True)
-
-    compare = sub.add_parser("compare", help="run the compare ledger from catalog rows and bundle")
-    compare.add_argument("state")
-    add_shared_options(compare, include_import_check=False)
-
-    v1_doctor = sub.add_parser("v1-doctor", help="check v1-only pipeline prerequisites")
-    v1_doctor.add_argument("state")
-    add_v1_options(v1_doctor, include_import_check=False)
-
-    v1_run = sub.add_parser("v1-run", help="build a fresh v2 bundle from v1 exports only")
-    v1_run.add_argument("state")
-    add_v1_options(v1_run, include_import_check=True)
-    v1_run.add_argument(
-        "--load",
-        action="store_true",
-        help="commit import_ascc_bundle after bundle generation",
+    import_bundle = sub.add_parser(
+        "import",
+        add_help=False,
+        help="load an ASCC CSV bundle into Django",
+    )
+    import_bundle.add_argument(
+        "import_args",
+        nargs=argparse.REMAINDER,
+        metavar="ARG",
+        help=(
+            "arguments passed to import_ascc_bundle, for example: "
+            "tools/wip/out/v1_va --dry-run"
+        ),
     )
 
     clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
@@ -220,22 +180,21 @@ def add_shared_options(parser: argparse.ArgumentParser, include_import_check: bo
     parser.add_argument("--provider", choices=("openrouter", "anthropic"), default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--pages", default=None)
-    parser.add_argument("--reference-work", default="ASCC1")
-    parser.add_argument("--legacy-status", choices=("active", "approved"), default="active")
+    parser.add_argument("--reference-work", default=DEFAULT_OCR_REFERENCE_WORK)
     if include_import_check:
         parser.add_argument(
             "--import-check",
             choices=("auto", "always", "never"),
             default="auto",
             help=(
-                "Run import_ascc_bundle as a dry-run truncate check after "
-                "bundle generation. Use never to skip the database check."
+                "Run ./woco ascc import as a dry-run check after bundle "
+                "generation. Use never to skip the database check."
             ),
         )
 
 
-def add_v1_options(parser: argparse.ArgumentParser, include_import_check: bool) -> None:
-    parser.add_argument("--reference-work", default="ASCC6")
+def add_v1_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--reference-work", default=DEFAULT_V1_REFERENCE_WORK)
     parser.add_argument(
         "--v1-image-root",
         type=Path,
@@ -247,24 +206,57 @@ def add_v1_options(parser: argparse.ArgumentParser, include_import_check: bool) 
         ),
     )
     parser.add_argument(
-        "--strict",
+        "--allow-missing-v1-images",
         action="store_true",
-        help="fail on missing v1 image files instead of writing report rows",
+        default=False,
+        help="write warning rows for missing v1 image files instead of failing",
     )
-    if include_import_check:
-        parser.add_argument(
-            "--import-check",
-            choices=("auto", "always", "never"),
-            default="auto",
-            help=(
-                "Run import_ascc_bundle as a dry-run truncate check after "
-                "bundle generation. Use never to skip the database check."
-            ),
-        )
+    parser.add_argument(
+        "--strict",
+        dest="allow_missing_v1_images",
+        action="store_false",
+        default=argparse.SUPPRESS,
+        help=argparse.SUPPRESS,
+    )
+
+
+def add_run_import_options(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="validate the generated bundle through import_ascc_bundle and roll back",
+    )
+    parser.add_argument(
+        "--truncate",
+        action="store_true",
+        help="delete catalog rows before importing the generated bundle",
+    )
+    parser.add_argument(
+        "--only",
+        default=None,
+        help="comma-separated import stems to load in dependency order",
+    )
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        help="skip missing bundle CSV stems during import",
+    )
+    parser.add_argument(
+        "--skip-report",
+        default=None,
+        help="path for skipped-row diagnostics",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
     load_dotenv(REPO_ROOT / ".env")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["import"]:
+        try:
+            return command_import(argparse.Namespace(import_args=argv[1:]))
+        except AsccCliError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
@@ -274,12 +266,10 @@ def main(argv: list[str] | None = None) -> int:
             return command_run(args)
         if args.command == "munge":
             return command_munge(args)
-        if args.command == "compare":
-            return command_compare(args)
-        if args.command == "v1-doctor":
-            return command_v1_doctor(args)
-        if args.command == "v1-run":
-            return command_v1_run(args)
+        if args.command == "ocr":
+            return command_ocr_run(args)
+        if args.command == "import":
+            return command_import(args)
         if args.command == "clean":
             return command_clean(args)
     except AsccCliError as exc:
@@ -289,16 +279,30 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def command_doctor(args) -> int:
-    state = normalize_state(args.state)
-    checks = doctor_checks(state, provider=args.provider)
-    print_doctor(state, checks)
-    return 0 if not any(c["required"] and not c["ok"] for c in checks) else 2
+    return command_v1_doctor(args)
 
 
 def command_run(args) -> int:
+    paths, image_root = munge_v1_bundle(args)
+    load_result = import_generated_bundle(paths, args)
+    write_v1_run_manifest(
+        paths,
+        args,
+        image_root,
+        skipped_import_check(),
+        load_result,
+    )
+    print()
+    print(f"v1 catalog rows: {paths.catalog_rows}")
+    print(f"v1 bundle:       {paths.bundle_dir}")
+    print(f"v1 manifest:     {paths.manifest}")
+    return 0
+
+
+def command_ocr_run(args) -> int:
     paths = state_paths(args.state)
     copy_state_pdf(paths.state, args.pdf)
-    require_doctor(paths.state, args.provider)
+    require_doctor(paths.state, args.provider, args.reference_work)
 
     if args.force or not paths.catalog_rows.exists():
         if args.force or not paths.ocr_rows.exists():
@@ -314,33 +318,40 @@ def command_run(args) -> int:
     copied_images = copy_marking_images(paths)
     clean_bundle_dir(paths.bundle_dir)
     run_command(munger_cmd(paths, args))
-    run_command(compare_cmd(paths, args))
     import_result = maybe_import_check(paths, args.import_check)
     write_run_manifest(paths, args, copied_images, import_result)
     print()
-    print(f"catalog rows:   {paths.catalog_rows}")
-    print(f"bundle:         {paths.bundle_dir}")
-    print(f"compare ledger: {paths.compare_ledger}")
-    print(f"manifest:       {paths.manifest}")
+    print(f"ocr rows:      {paths.ocr_rows}")
+    print(f"catalog rows:  {paths.catalog_rows}")
+    print(f"bundle:        {paths.bundle_dir}")
+    print(f"media images:  {copied_images} -> {paths.media_dir}")
+    print(f"manifest:      {paths.manifest}")
     return 0
 
 
 def command_munge(args) -> int:
-    paths = state_paths(args.state)
-    require_file(paths.catalog_rows, "catalog rows")
-    copied_images = copy_marking_images(paths)
-    clean_bundle_dir(paths.bundle_dir)
-    run_command(munger_cmd(paths, args))
-    import_result = maybe_import_check(paths, args.import_check)
-    write_run_manifest(paths, args, copied_images, import_result)
+    paths, image_root = munge_v1_bundle(args)
+    write_v1_run_manifest(
+        paths,
+        args,
+        image_root,
+        skipped_import_check(),
+        skipped_load(),
+    )
+    print()
+    print(f"v1 catalog rows: {paths.catalog_rows}")
+    print(f"v1 bundle:       {paths.bundle_dir}")
+    print(f"v1 manifest:     {paths.manifest}")
     return 0
 
 
-def command_compare(args) -> int:
-    paths = state_paths(args.state)
-    require_file(paths.catalog_rows, "catalog rows")
-    require_dir(paths.bundle_dir, "bundle")
-    run_command(compare_cmd(paths, args))
+def command_import(args) -> int:
+    if not args.import_args:
+        raise AsccCliError(
+            "usage: ./woco ascc import <directory> "
+            "[--dry-run] [--truncate] [--only STEMS] [--allow-missing]"
+        )
+    run_command(import_bundle_cmd(args.import_args))
     return 0
 
 
@@ -349,30 +360,29 @@ def command_v1_doctor(args) -> int:
     checks = v1_doctor_checks(
         state,
         resolve_v1_image_root(args.v1_image_root, state),
-        args.strict,
+        args.allow_missing_v1_images,
+        args.reference_work,
     )
     print_doctor(f"v1 {state}", checks)
     return 0 if not any(c["required"] and not c["ok"] for c in checks) else 2
 
 
-def command_v1_run(args) -> int:
+def munge_v1_bundle(args) -> tuple[V1StatePaths, Path]:
     paths = v1_state_paths(args.state)
     image_root = resolve_v1_image_root(args.v1_image_root, paths.state)
-    require_v1_doctor(paths.state, image_root, args.strict)
+    require_v1_doctor(
+        paths.state,
+        image_root,
+        args.allow_missing_v1_images,
+        args.reference_work,
+    )
     paths.catalog_rows.parent.mkdir(parents=True, exist_ok=True)
     clean_bundle_dir(paths.bundle_dir)
     run_command(v1_catalog_cmd(paths, args))
     run_command(munger_cmd(paths, args))
     run_command(v1_image_cmd(paths, args, image_root))
     run_command(v1_overlay_cmd(paths, args, image_root, preserve_images=True))
-    import_result = maybe_import_check(paths, args.import_check)
-    load_result = maybe_load_bundle(paths, bool(args.load))
-    write_v1_run_manifest(paths, args, image_root, import_result, load_result)
-    print()
-    print(f"v1 catalog rows: {paths.catalog_rows}")
-    print(f"v1 bundle:       {paths.bundle_dir}")
-    print(f"v1 manifest:     {paths.manifest}")
-    return 0
+    return paths, image_root
 
 
 def command_clean(args) -> int:
@@ -382,7 +392,11 @@ def command_clean(args) -> int:
     return 0
 
 
-def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, object]]:
+def doctor_checks(
+    state: str,
+    provider: str | None = None,
+    reference_work: str = DEFAULT_OCR_REFERENCE_WORK,
+) -> list[dict[str, object]]:
     paths = state_paths(state)
     found_pdf, pdf_error = discover_state_pdf(state)
     selected_provider = provider or os.environ.get("PIPELINE_LLM_PROVIDER") or "openrouter"
@@ -396,6 +410,7 @@ def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, obj
     return [
         check_item("pdf", found_pdf is not None, str(found_pdf or pdf_error), True),
         check_path("reference works", WIP_IN / "reference_works.csv", True),
+        pipeline_checks.check_reference_work(WIP_IN, reference_work, True),
         check_path("regions", WIP_IN / "regions.csv", True),
         check_path("legacy states", WIP_IN / "tblStates.csv", True),
         check_path("legacy rows", WIP_IN / "tblRawStateData.csv", True),
@@ -408,20 +423,21 @@ def doctor_checks(state: str, provider: str | None = None) -> list[dict[str, obj
         check_item("database", db_ok, db_message, False),
         check_item("catalog rows", paths.catalog_rows.exists(), str(paths.catalog_rows), False),
         check_item("bundle", paths.bundle_dir.exists(), str(paths.bundle_dir), False),
-        check_item("compare ledger", paths.compare_ledger.exists(), str(paths.compare_ledger), False),
     ]
 
 
 def v1_doctor_checks(
     state: str,
     image_root: Path,
-    strict: bool,
+    allow_missing_images: bool,
+    reference_work: str = DEFAULT_V1_REFERENCE_WORK,
 ) -> list[dict[str, object]]:
     paths = v1_state_paths(state)
     db_ok, db_message = check_db()
-    image_required = strict
+    image_required = not allow_missing_images
     return [
         check_path("reference works", WIP_IN / "reference_works.csv", True),
+        pipeline_checks.check_reference_work(WIP_IN, reference_work, True),
         check_path("regions", WIP_IN / "regions.csv", True),
         check_path("legacy states", WIP_IN / "tblStates.csv", True),
         check_path("legacy rows", WIP_IN / "tblRawStateData.csv", True),
@@ -437,11 +453,11 @@ def v1_doctor_checks(
 
 
 def check_path(name: str, path: Path, required: bool) -> dict[str, object]:
-    return check_item(name, path.exists(), str(path), required)
+    return pipeline_checks.check_path(name, path, required)
 
 
 def check_item(name: str, ok: bool, detail: str, required: bool) -> dict[str, object]:
-    return {"name": name, "ok": ok, "detail": detail, "required": required}
+    return pipeline_checks.check_item(name, ok, detail, required)
 
 
 def print_doctor(state: str, checks: list[dict[str, object]]) -> None:
@@ -456,9 +472,17 @@ def print_doctor(state: str, checks: list[dict[str, object]]) -> None:
         print(f"  {status:<4} {check['name']:<18} {check['detail']}")
 
 
-def require_doctor(state: str, provider: str | None) -> None:
+def require_doctor(
+    state: str,
+    provider: str | None,
+    reference_work: str = DEFAULT_OCR_REFERENCE_WORK,
+) -> None:
     failures = [
-        c for c in doctor_checks(state, provider=provider)
+        c for c in doctor_checks(
+            state,
+            provider=provider,
+            reference_work=reference_work,
+        )
         if c["required"] and not c["ok"]
     ]
     if failures:
@@ -469,10 +493,16 @@ def require_doctor(state: str, provider: str | None) -> None:
 def require_v1_doctor(
     state: str,
     image_root: Path,
-    strict: bool,
+    allow_missing_images: bool,
+    reference_work: str = DEFAULT_V1_REFERENCE_WORK,
 ) -> None:
     failures = [
-        c for c in v1_doctor_checks(state, image_root, strict)
+        c for c in v1_doctor_checks(
+            state,
+            image_root,
+            allow_missing_images,
+            reference_work,
+        )
         if c["required"] and not c["ok"]
     ]
     if failures:
@@ -588,10 +618,10 @@ def v1_overlay_cmd(
         str(image_root),
         "--media-dir",
         str(paths.media_dir),
-        "--report",
-        str(paths.report),
+        "--warnings",
+        str(paths.warnings),
     ]
-    if not args.strict:
+    if args.allow_missing_v1_images:
         cmd.append("--allow-missing-v1-images")
     if preserve_images:
         cmd.append("--preserve-images")
@@ -612,27 +642,39 @@ def v1_image_cmd(paths: V1StatePaths, args, image_root: Path) -> list[str]:
         str(image_root),
         "--media-dir",
         str(paths.media_dir),
-        "--report",
-        str(paths.report),
+        "--warnings",
+        str(paths.warnings),
     ]
-    if not args.strict:
+    if args.allow_missing_v1_images:
         cmd.append("--allow-missing-v1-images")
     return cmd
 
 
-def compare_cmd(paths: StatePaths, args) -> list[str]:
-    return [
-        sys.executable,
-        str(TOOLS_DIR / "ascc_compare.py"),
-        paths.state,
-        "--all",
-        "--status",
-        args.legacy_status,
-        "--catalog-rows",
-        str(paths.catalog_rows),
-        "--bundle-dir",
-        str(paths.bundle_dir),
-    ]
+def import_bundle_cmd(import_args: list[str]) -> list[str]:
+    return pipeline_commands.import_bundle_cmd(REPO_ROOT, import_args)
+
+
+def run_import_args(args) -> list[str]:
+    return pipeline_commands.run_import_args(args)
+
+
+def import_generated_bundle(paths: V1StatePaths, args) -> dict[str, object]:
+    import_args = [str(paths.bundle_dir), *run_import_args(args)]
+    run_command(import_bundle_cmd(import_args))
+    return {
+        "mode": "dry-run" if args.dry_run else "load",
+        "status": "passed",
+        "check": "import_ascc_bundle",
+        "args": import_args,
+    }
+
+
+def skipped_import_check() -> dict[str, object]:
+    return {"mode": "manual", "status": "skipped", "check": "dry-run-additive"}
+
+
+def skipped_load() -> dict[str, object]:
+    return {"mode": "manual", "status": "skipped", "check": "additive-load"}
 
 
 def add_provider_args(cmd: list[str], args) -> None:
@@ -643,14 +685,12 @@ def add_provider_args(cmd: list[str], args) -> None:
 
 
 def run_command(cmd: list[str]) -> None:
-    print()
-    print("==> " + " ".join(cmd))
-    subprocess.run(cmd, cwd=REPO_ROOT, check=True)
+    pipeline_commands.run_command(cmd, REPO_ROOT)
 
 
 def clean_bundle_dir(bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    for stem in IMPORT_STEMS:
+    for stem in GENERATED_BUNDLE_STEMS:
         (bundle_dir / f"{stem}.csv").unlink(missing_ok=True)
 
 
@@ -677,11 +717,8 @@ def clean_generated_state(state: str) -> int:
     cache_prefixes = state_cache_prefixes(state)
     if WIP_CACHE.exists():
         for path in WIP_CACHE.iterdir():
-            if path.name == "compare":
-                continue
             if any(path.name.startswith(prefix) for prefix in cache_prefixes):
                 removed += remove_path(path)
-    removed += remove_path(paths.compare_dir)
     removed += remove_path(paths.bundle_dir)
     removed += remove_path(WIP_CACHE / "v1" / state)
     removed += remove_path(WIP_OUT / f"v1_{state.lower()}")
@@ -768,49 +805,20 @@ def maybe_import_check(paths: StatePaths, mode: str) -> dict[str, object]:
             "check": check_kind,
             "reason": db_message,
         }
-    cmd = [
-        sys.executable,
-        str(REPO_ROOT / "backend" / "manage.py"),
-        "import_ascc_bundle",
+    cmd = import_bundle_cmd([
         str(paths.bundle_dir),
         "--dry-run",
-    ]
+    ])
     run_command(cmd)
     return {"mode": mode, "status": "passed", "check": check_kind}
 
 
-def maybe_load_bundle(paths: StatePaths, load: bool) -> dict[str, object]:
-    check_kind = "additive-load"
-    if not load:
-        return {"mode": "manual", "status": "skipped", "check": check_kind}
-    cmd = [
-        sys.executable,
-        str(REPO_ROOT / "backend" / "manage.py"),
-        "import_ascc_bundle",
-        str(paths.bundle_dir),
-    ]
-    run_command(cmd)
-    return {"mode": "load", "status": "passed", "check": check_kind}
-
-
 def count_csv_rows(path: Path) -> int | None:
-    if not path.exists():
-        return None
-    with path.open(newline="") as fh:
-        reader = csv.reader(fh)
-        try:
-            next(reader)
-        except StopIteration:
-            return 0
-        return sum(1 for _ in reader)
+    return pipeline_manifest.count_csv_rows(path)
 
 
 def image_status_counts(path: Path) -> dict[str, int]:
-    if not path.exists():
-        return {}
-    with path.open(newline="") as fh:
-        reader = csv.DictReader(fh)
-        return dict(Counter(row.get("Status", "") for row in reader))
+    return pipeline_manifest.image_status_counts(path)
 
 
 def write_run_manifest(
@@ -839,20 +847,17 @@ def write_run_manifest(
         "provider": args.provider or os.environ.get("PIPELINE_LLM_PROVIDER") or "openrouter",
         "model": args.model or os.environ.get("PIPELINE_LLM_MODEL") or "",
         "reference_work": args.reference_work,
-        "legacy_status": args.legacy_status,
         "paths": {
             "pdf": str(paths.pdf),
             "ocr_rows": str(paths.ocr_rows),
             "catalog_rows": str(paths.catalog_rows),
             "images_dir": str(paths.images_dir),
             "bundle": str(paths.bundle_dir),
-            "compare_ledger": str(paths.compare_ledger),
         },
         "counts": {
             "ocr_rows": count_csv_rows(paths.ocr_rows),
             "catalog_rows": count_csv_rows(paths.catalog_rows),
             "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
-            "compare_ledger": count_csv_rows(paths.compare_ledger),
             "copied_images": copied_images,
         },
         "image_status_counts": image_status_counts(paths.image_report),
@@ -928,7 +933,7 @@ def write_v1_run_manifest(
     manifest = {
         "state": paths.state,
         "source": "v1",
-        "mode": "munger-plus-v1-reconciliation",
+        "mode": "munger-plus-v1-warnings",
         "reference_work": args.reference_work,
         "v1_image_root": str(image_root),
         "paths": {
@@ -936,8 +941,7 @@ def write_v1_run_manifest(
             "catalog_rows": str(paths.catalog_rows),
             "image_refs": str(paths.image_refs),
             "bundle": str(paths.bundle_dir),
-            "image_report": str(paths.report),
-            "reconciliation_report": str(paths.report),
+            "warnings": str(paths.warnings),
         },
         "counts": {
             "slice": count_csv_rows(paths.slice_rows),
@@ -945,8 +949,7 @@ def write_v1_run_manifest(
             "image_refs": count_csv_rows(paths.image_refs),
             "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
             "bundle_images": count_csv_rows(paths.bundle_dir / "images.csv"),
-            "image_report": count_csv_rows(paths.report),
-            "reconciliation_report": count_csv_rows(paths.report),
+            "warnings": count_csv_rows(paths.warnings),
         },
         "import_check": import_result,
         "load": load_result,

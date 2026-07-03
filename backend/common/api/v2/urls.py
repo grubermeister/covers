@@ -3,7 +3,7 @@
 ##
 ## Unified routes per docs/model.md: markings is polymorphic across
 ## TOWNMARK/RATEMARK/AUXMARK; images is polymorphic; cover-dates and
-## cover-valuations are cover-scoped; framing routes are gone.
+## cover-valuations are cover-scoped.
 ###################################################################################################
 from django.urls import include, path
 from django.views.decorators.csrf import csrf_exempt

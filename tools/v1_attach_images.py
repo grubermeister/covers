@@ -12,7 +12,7 @@ Run from repo root:
 Expected exit code: 0.
 
 This stage intentionally attaches only images. It does not apply v1
-split-column reconciliation and it does not edit non-image bundle tables.
+split-column warnings and it does not edit non-image bundle tables.
 """
 
 from __future__ import annotations
@@ -26,19 +26,19 @@ from v1_bundle_overlay import (
     IMAGE_REF_COLUMNS,
     audit_from,
     build_images,
-    build_lineage_maps,
+    build_source_map_indexes,
     read_csv,
     write_csv,
 )
 
 
-REPORT_COLUMNS = ["raw_id", "issue", "detail"]
+WARNING_COLUMNS = ["raw_id", "issue", "detail"]
 
 
 def attach_images(args: argparse.Namespace) -> int:
     state = str(args.state or "").strip().upper()
     bundle_dir = Path(args.bundle_dir)
-    lineage_path = bundle_dir / "marking_lineage.csv"
+    source_map_path = bundle_dir / "source_marking_map.csv"
     images_path = bundle_dir / "images.csv"
     markings_path = bundle_dir / "markings.csv"
 
@@ -46,18 +46,18 @@ def attach_images(args: argparse.Namespace) -> int:
     missing_image_columns = [c for c in IMAGE_REF_COLUMNS if c not in image_ref_fields]
     if missing_image_columns:
         sys.exit("error: image refs missing columns: {0}".format(missing_image_columns))
-    if not lineage_path.is_file():
-        sys.exit("error: missing bundle CSV: {0}".format(lineage_path))
+    if not source_map_path.is_file():
+        sys.exit("error: missing bundle CSV: {0}".format(source_map_path))
     if not markings_path.is_file():
         sys.exit("error: missing bundle CSV: {0}".format(markings_path))
 
-    lineage_fields, lineage_rows = read_csv(lineage_path)
+    source_map_fields, source_map_rows = read_csv(source_map_path)
     marking_fields, markings = read_csv(markings_path)
     image_fields, existing_images = (
         read_csv(images_path) if images_path.is_file() else (IMAGE_COLUMNS, [])
     )
-    report = []
-    _, tm_by_raw = build_lineage_maps(lineage_rows)
+    warnings = []
+    _, tm_by_raw = build_source_map_indexes(source_map_rows)
     images = build_images(
         state,
         image_refs,
@@ -66,17 +66,17 @@ def attach_images(args: argparse.Namespace) -> int:
         Path(args.media_dir),
         bool(args.allow_missing_v1_images),
         audit_from(existing_images or markings),
-        report,
+        warnings,
     )
 
     write_csv(images_path, image_fields or IMAGE_COLUMNS, images)
-    if args.report:
-        write_csv(Path(args.report), REPORT_COLUMNS, report)
+    if args.warnings:
+        write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
 
     print("v1 image refs: {0}".format(len(image_refs)))
     print("v1 images:     {0} -> {1}".format(len(images), images_path))
-    if report:
-        print("v1 image report: {0} -> {1}".format(len(report), args.report))
+    if warnings:
+        print("v1 image warnings: {0} -> {1}".format(len(warnings), args.warnings))
     return 0
 
 
@@ -89,11 +89,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--bundle-dir", required=True)
     parser.add_argument("--v1-image-root", required=True)
     parser.add_argument("--media-dir", required=True)
-    parser.add_argument("--report", default=None)
+    parser.add_argument("--warnings", default=None)
     parser.add_argument(
         "--allow-missing-v1-images",
         action="store_true",
-        help="write missing-image report rows instead of failing",
+        help="write missing-image warning rows instead of failing",
     )
     args = parser.parse_args(argv)
     return attach_images(args)

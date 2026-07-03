@@ -10,11 +10,11 @@
 # PREREQUISITE: the repo must already be checked out at /srv/woco. Clone it as
 # root first (auth is yours to provide -- deploy key or token), then run this:
 #
-#   git clone <repo-url> /srv/woco && /srv/woco/tools/provision.sh
+#   git clone <repo-url> /srv/woco && /srv/woco/deploy/provision.sh
 #
 # This script does NOT issue the TLS cert: `.dev` forces HTTPS but certbot needs
 # DNS pointing at this host first. After DNS resolves, run (see the printed
-# next-steps and docs/devel/STAGING_WOCO_DEV.md):
+# next-steps and docs/devel/DEPLOY.md):
 #
 #   certbot --nginx -d "$WOCO_HOSTNAME" --redirect -m <email> --agree-tos -n
 #
@@ -148,12 +148,12 @@ ENV
 fi
 
 log "Installing systemd unit"
-install -m 644 "${ROOT}/tools/worldcovers.service" /etc/systemd/system/worldcovers.service
+install -m 644 "${ROOT}/deploy/worldcovers.service" /etc/systemd/system/worldcovers.service
 systemctl daemon-reload
 systemctl enable worldcovers
 
 log "Installing staging unit helper"
-install -o root -g root -m 0755 "${ROOT}/tools/worldcovers-apply-unit.sh" /usr/local/sbin/worldcovers-apply-unit
+install -o root -g root -m 0755 "${ROOT}/deploy/worldcovers-apply-unit.sh" /usr/local/sbin/worldcovers-apply-unit
 
 log "Installing sudoers drop-in for ${APP_USER} (staging deploy commands only)"
 cat > /etc/sudoers.d/wocod-deploy <<SUDO
@@ -166,7 +166,7 @@ visudo -cf /etc/sudoers.d/wocod-deploy
 
 log "Installing nginx site (HTTP only; certbot adds TLS later)"
 sed "s/__HOSTNAME__/${HOSTNAME_APP}/g; s#__ROOT__#${ROOT}#g" \
-  "${ROOT}/tools/nginx-woco.conf.template" > /etc/nginx/sites-available/woco
+  "${ROOT}/deploy/nginx-woco.conf.template" > /etc/nginx/sites-available/woco
 ln -sf /etc/nginx/sites-available/woco /etc/nginx/sites-enabled/woco
 rm -f /etc/nginx/sites-enabled/default
 nginx -t
@@ -179,7 +179,7 @@ ufw allow 443/tcp
 ufw --force enable
 
 log "Building + migrating app (deploy.sh as ${APP_USER})"
-sudo -u "$APP_USER" -H bash -lc "cd '${ROOT}' && export PATH=\"\$HOME/.local/bin:\$PATH\" && ./tools/deploy.sh"
+sudo -u "$APP_USER" -H bash -lc "cd '${ROOT}' && export PATH=\"\$HOME/.local/bin:\$PATH\" && ./deploy/deploy.sh"
 
 log "Starting service"
 systemctl restart worldcovers
@@ -196,7 +196,7 @@ is a .dev domain, so browsers require HTTPS. Finish setup:
   2. Once DNS resolves, issue the cert:
        certbot --nginx -d ${HOSTNAME_APP} --redirect -m <you@example.com> --agree-tos -n
   3. Load data (from your local checkout):
-       WOCO_HOST=root@${HOSTNAME_APP} ./tools/push_data.sh --import
+       WOCO_HOST=root@${HOSTNAME_APP} ./tools/push_data.sh --import --state VA
 
-See docs/devel/STAGING_WOCO_DEV.md for the full runbook.
+See docs/devel/DEPLOY.md for the full deploy and provisioning runbook.
 NEXT

@@ -1,34 +1,43 @@
 # Tools Reference
 
-This document covers host scripts and checked-in Django management commands.
+This document covers data/tooling scripts and checked-in Django management commands.
 
 Source of truth for command availability:
 
-- Host scripts live under `tools/`.
+- Data and utility scripts live under `tools/`.
+- Deployment scripts and host config templates live under `deploy/`.
 - Django commands live under `backend/common/management/commands/`.
 - Run `./woco help` from repo root to list commands in the current checkout.
 
 Use `./woco <command>` from repo root for Django management commands. The
 `./woco` shim wraps `uv run woco`, which calls `woco_cli.py` and then Django's
-`execute_from_command_line`.
+`execute_from_command_line`. Several shortcuts bypass Django entirely:
+`./woco setup dev` and `./woco setup prod` run the environment setup in
+`tools/setup.sh` (see [BUILD.md](BUILD.md) and [DEPLOY.md](DEPLOY.md)),
+`./woco push [args]` runs `tools/push_data.sh`, `./woco reload [args]`
+runs `tools/reload_data.sh` with the same arguments, and `./woco secretkey`
+prints a fresh `DJANGO_SECRET_KEY` value (it works before `.env` exists,
+which is exactly when you need it).
 
 ## Overview
 
 | Tool | Purpose | Location |
 |------|---------|----------|
-| `deploy.sh` | Sync deps, migrate, build frontend, collect static | `tools/deploy.sh` |
+| `setup.sh` | One-command dev/prod environment setup | `tools/setup.sh` |
 | `push_data.sh` | Sync local catalog data and media to staging | `tools/push_data.sh` |
 | `reload_data.sh` | Reload staging catalog data on the server | `tools/reload_data.sh` |
-| `worldcovers.service` | systemd unit for gunicorn | `tools/worldcovers.service` |
-| `rebuild_staging_db.sh` | Drop and recreate the staging database | `tools/rebuild_staging_db.sh` |
-| `setup_worldcovers_db.sql` | Create database/user grants | `tools/setup_worldcovers_db.sql` |
+| `rebuild_staging_db.sh` | Ensure DB exists, migrate, create admin, import | `tools/rebuild_staging_db.sh` |
+| `wipe_user_data.sh` | Wipe submissions, optionally reload a bundle | `tools/wipe_user_data.sh` |
+| `setup_worldcovers_db.sql` | Create database, app user, and grants | `tools/setup_worldcovers_db.sql` |
 | `ascc_page_processor.py` | Render and split ASCC catalog pages | `tools/ascc_page_processor.py` |
 | `ascc_page_extract.py` | Extract ASCC listing text from page chunks | `tools/ascc_page_extract.py` |
 | `ascc_image_extract.py` | Extract marking images from page chunks | `tools/ascc_image_extract.py` |
 | `ascc_data_munger.py` | Build Django-shape ASCC CSV bundles | `tools/ascc_data_munger.py` |
-| `import_ascc_bundle` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
+| `ascc import` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
+| `drop_ascc_state` | Delete one state's imported catalog data | `backend/common/management/commands/drop_ascc_state.py` |
+| `consolidate_superseded_contributions` | Delete superseded non-draft contributions | `backend/common/management/commands/consolidate_superseded_contributions.py` |
 | `purge_recycle_bin` | Permanently delete recycle-bin catalog rows | `backend/common/management/commands/purge_recycle_bin.py` |
 | `prune_revisions` | Prune django-reversion rows safely | `backend/common/management/commands/prune_revisions.py` |
 | `backup_marking` | Export one marking graph to JSON | `backend/common/management/commands/backup_marking.py` |
@@ -39,26 +48,6 @@ Use `./woco <command>` from repo root for Django management commands. The
 
 ## Host Scripts
 
-### `tools/deploy.sh`
-
-Run from repo root on the staging host:
-
-```sh
-./tools/deploy.sh
-```
-
-Expected exit code: `0`.
-
-Steps:
-
-1. `uv sync --no-dev --frozen`
-2. `uv run python backend/manage.py migrate --noinput`
-3. `cd frontend && npm ci && npm run build`
-4. `uv run python backend/manage.py collectstatic --noinput`
-
-The script does not manage systemd. The caller must stop/start/restart the
-service. In staging, `.github/workflows/build-and-deploy.yml` is the caller.
-
 ### `tools/push_data.sh`
 
 Run from a local checkout:
@@ -66,20 +55,24 @@ Run from a local checkout:
 ```sh
 ./tools/push_data.sh
 ./tools/push_data.sh --dry-run
-./tools/push_data.sh --import
+./tools/push_data.sh --import --state VA
+./tools/push_data.sh --import --bundle-dir tools/wip/out/v1_va
 ```
 
 Expected exit code: `0`.
 
 Syncs local `tools/wip/` and `backend/media/` to the staging host. With
-`--import`, it runs `/srv/woco/tools/reload_data.sh` remotely as `wocod`.
+`--import`, it runs `/srv/woco/tools/reload_data.sh` remotely as `wocod` for
+the selected bundle. `--state VA` resolves to `tools/wip/out/v1_va`.
+
+<a id="toolsreload_datash"></a>
 
 ### `tools/reload_data.sh`
 
 Run on the staging host as `wocod`:
 
 ```sh
-sudo -u wocod /srv/woco/tools/reload_data.sh
+sudo -u wocod /srv/woco/tools/reload_data.sh tools/wip/out/v1_va
 ```
 
 Expected exit code: `0`.
@@ -87,7 +80,7 @@ Expected exit code: `0`.
 Current sequence:
 
 ```sh
-uv run python backend/manage.py import_ascc_bundle tools/wip/out --truncate
+./woco ascc import tools/wip/out/v1_va --truncate
 ```
 
 This reload does not call `wipe_user_data`. It does pass `--truncate`, which
@@ -97,46 +90,66 @@ history must also be cleared.
 
 ### `tools/rebuild_staging_db.sh`
 
-Run only when staging must be reset from scratch:
+Run from repo root, with `mysql.cnf` present:
 
 ```sh
-./tools/rebuild_staging_db.sh
+WOCO_ADMIN_PASSWORD=<password> ./tools/rebuild_staging_db.sh
+WOCO_ADMIN_PASSWORD=<password> ./tools/rebuild_staging_db.sh --no-import
 ```
 
 Expected exit code: `0`.
 
-This drops and recreates the staging database using
-`tools/setup_worldcovers_db.sql`, then runs migrations. It is destructive.
+Ensures the `worldcovers` database exists, runs migrations, creates the
+Django admin user, and imports CSVs from `backend/imports/` (skipped with
+`--no-import`). It does not drop the database. One-time prerequisite: run
+`tools/setup_worldcovers_db.sql` as MySQL root to create the database and
+app user.
+
+### `tools/wipe_user_data.sh`
+
+Shell wrapper around the `wipe_user_data` management command (below), with
+an optional one-step catalog reload:
+
+```sh
+./tools/wipe_user_data.sh              # wipe (prompts for confirmation)
+./tools/wipe_user_data.sh --dry-run    # report counts, change nothing
+./tools/wipe_user_data.sh --reload tools/wip/out/v1_va
+```
+
+Expected exit code: `0`.
+
+`--reload` wipes without prompting and then imports the given bundle, so
+you end up with a fresh catalog-only system in one step.
 
 ## ASCC Pipeline Tools
 
-The canonical ASCC PDF-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
+The canonical ASCC v1-export-to-bundle workflow is documented in [PIPELINE.md](PIPELINE.md).
 Use the state-centered wrapper for demos and normal runs:
 
 ```sh
 ./woco ascc doctor VA
-./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+./woco ascc munge VA
+./woco ascc run VA --dry-run
+./woco ascc run VA
 ```
 
 The wrapper preserves the existing `tools/wip/in`, `tools/wip/cache`, and
 `tools/wip/out` layout. For state `VA`, the main handoff files are:
 
 ```text
-tools/wip/in/VA.pdf
-tools/wip/cache/VA_ocr_rows.csv
-tools/wip/cache/VA_catalog_rows.csv
-tools/wip/out/va/
-tools/wip/cache/compare/VA/review_ledger_VA.csv
-tools/wip/cache/VA_run.json
+tools/wip/cache/v1/VA/catalog_rows.csv
+tools/wip/cache/v1/VA/image_refs.csv
+tools/wip/out/v1_va/
+tools/wip/out/v1_va/source_marking_map.csv
+tools/wip/out/v1_va/v1_pipeline_warnings.csv
+tools/wip/cache/v1/VA/run.json
 ```
 
-`./woco ascc run VA` resumes by default:
-
-- if `tools/wip/cache/VA_catalog_rows.csv` exists, it skips OCR and image-count
-  verification and resumes at munger;
-- if only `tools/wip/cache/VA_ocr_rows.csv` exists, it skips page processing and
-  OCR extraction and resumes at image-count verification;
-- pass `--force` to rebuild OCR rows and catalog rows from the PDF.
+`./woco ascc munge VA` builds the bundle without importing it.
+`./woco ascc run VA` runs the same munge step and then imports the generated
+bundle. Pass `--dry-run` to validate through the importer and roll back.
+`./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf` runs the legacy scanned
+PDF OCR pipeline.
 
 Clean generated cache/output files without touching source PDFs or seed CSVs:
 
@@ -146,23 +159,22 @@ Clean generated cache/output files without touching source PDFs or seed CSVs:
 ```
 
 With a state, `clean` removes generated cache files for that state plus
-`tools/wip/out/<state>/` and `tools/wip/cache/compare/<STATE>/`. Without a
-state, it clears generated contents under `tools/wip/cache/` and
-`tools/wip/out/` for all states while preserving placeholder files.
+`tools/wip/out/<state>/` and `tools/wip/out/v1_<state>/`. Without a state, it
+clears generated contents under `tools/wip/cache/` and `tools/wip/out/` for all
+states while preserving placeholder files.
 
 Expected exit code for each successful command: `0`.
 
-The API-dependent tools, `ascc_page_processor.py` stages `halves` and
-`chunks` plus `ascc_page_extract.py`, default to OpenRouter:
+The API-dependent OCR command, `./woco ascc ocr`, defaults to OpenRouter:
 
 ```sh
-OPENROUTER_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+OPENROUTER_API_KEY=<key> ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 Use the direct Anthropic Claude API with `--provider anthropic`:
 
 ```sh
-ANTHROPIC_API_KEY=<key> ./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf --provider anthropic
+ANTHROPIC_API_KEY=<key> ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf --provider anthropic
 ```
 
 Or select the provider through environment variables:
@@ -171,7 +183,7 @@ Or select the provider through environment variables:
 PIPELINE_LLM_PROVIDER=anthropic \
 PIPELINE_LLM_MODEL=claude-sonnet-4-6 \
 ANTHROPIC_API_KEY=<key> \
-./woco ascc run VA --pdf ~/Downloads/va-catalog.pdf
+./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
 ```
 
 OpenRouter's default model is `anthropic/claude-sonnet-4.6`. Anthropic's
@@ -179,13 +191,13 @@ direct default model is `claude-sonnet-4-6`.
 
 ## Management Commands
 
-### `import_ascc_bundle`
+### `ascc import`
 
 Load a Django-shape ASCC CSV bundle into catalog tables.
 
 ```sh
-./woco import_ascc_bundle tools/wip/out --dry-run
-./woco import_ascc_bundle tools/wip/out
+./woco ascc import tools/wip/out/v1_va --dry-run
+./woco ascc import tools/wip/out/v1_va
 ```
 
 Useful flags:
@@ -194,8 +206,10 @@ Useful flags:
 - `--truncate`: delete catalog rows before loading.
 - `--only colors,markings`: load selected stems in dependency order.
 - `--allow-missing`: skip absent CSV stems.
+- `--skip-report PATH`: write skipped-row diagnostics to `PATH`; defaults to
+  `import_ascc_bundle_skips.csv` inside the bundle directory.
 
-Required stems for current bundles:
+Canonical load order:
 
 ```text
 colors
@@ -206,12 +220,15 @@ reference_works
 post_offices
 post_office_regions
 markings
+covers (optional)
+cover_valuations (optional)
 dates_seen
+cover_markings (optional)
 citations
 images
 ```
 
-Optional stems:
+The only stems that may be absent without `--allow-missing` are:
 
 ```text
 covers
@@ -273,9 +290,9 @@ not copy image files; restored Image rows still point at
 Run from repo root, with `backend/.env` and `mysql.cnf` present:
 
 ```sh
-./woco backup_marking ASCC1-VA-M0001 backups/ASCC1-VA-M0001.json
-./woco restore_marking backups/ASCC1-VA-M0001.json --dry-run
-./woco restore_marking backups/ASCC1-VA-M0001.json
+./woco backup_marking ASCC6-VA-M0001 backups/ASCC6-VA-M0001.json
+./woco restore_marking backups/ASCC6-VA-M0001.json --dry-run
+./woco restore_marking backups/ASCC6-VA-M0001.json
 ```
 
 Matching auth users must already exist locally. `restore_marking` fails before
@@ -300,16 +317,45 @@ The dry run reports what would be deleted and rolls back. Expected exit code:
 ### `backup_auth` And `restore_auth`
 
 Export and restore users, groups, email addresses, collections, and collection
-assignments.
+assignments. Both take a single path: a JSON file by default, or a directory
+of per-table CSVs with `--emit-csv`.
 
 ```sh
-./woco backup_auth users.csv groups.csv emails.csv collections.csv assignments.csv
-./woco restore_auth users.csv groups.csv emails.csv collections.csv assignments.csv
-./woco restore_auth users.csv groups.csv emails.csv collections.csv assignments.csv --dry-run
+./woco backup_auth /tmp/woco-auth.json
+./woco restore_auth /tmp/woco-auth.json --dry-run
+./woco restore_auth /tmp/woco-auth.json
+./woco backup_auth /tmp/woco-auth/ --emit-csv
 ```
 
-The exported files may contain email addresses and password hashes. Store them
-as sensitive artifacts.
+The exported data contains email addresses and password hashes. Store it as
+a sensitive artifact. For the full host-to-host sync procedure, see
+[RUNBOOK.md](RUNBOOK.md#auth-sync-between-hosts).
+
+### `drop_ascc_state`
+
+Delete one state's imported catalog data.
+
+```sh
+./woco drop_ascc_state VA --dry-run
+./woco drop_ascc_state VA
+./woco drop_ascc_state --region-code USA-VA1
+```
+
+Expected exit code: `0`. The state argument is a two or three letter
+`Region.abbrev`; `--region-code` targets an exact `Region.code` instead.
+The dry run reports delete counts and rolls back.
+
+### `consolidate_superseded_contributions`
+
+Delete superseded non-draft Contribution rows per contributor and target.
+
+```sh
+./woco consolidate_superseded_contributions --dry-run
+./woco consolidate_superseded_contributions --no-input
+```
+
+Expected exit code: `0`. The dry run reports what would be deleted, then
+rolls back.
 
 ### `set_user_password`
 
@@ -320,3 +366,23 @@ Set a password without opening the Django shell.
 ```
 
 Expected exit code: `0`.
+
+## Internal Modules (Not Operator Entry Points)
+
+`tools/` also contains modules and one-off scripts that operators do not run
+directly. Listed here so nobody mistakes their absence above for missing
+documentation:
+
+- `v1_catalog_rows.py`, `v1_attach_images.py`, `v1_bundle_overlay.py`,
+  `v1_to_v2_catalog_format.py`, `v1_synthetic_listing.py`: v1 pipeline
+  stages, orchestrated by `./woco ascc munge` / `run`.
+- `catalog_rows.py`, `pipeline_llm.py`, `ascc_pipeline/`: shared helpers for
+  the ASCC pipeline (CSV schema, LLM provider selection, orchestration).
+- `merge_ascc_bundles.py`: merges per-state bundles into one importable
+  bundle; run manually only for multi-state imports.
+- `run_ascc_pipeline.sh`: legacy wrapper that delegates to `./woco ascc ocr`.
+- `fingerprint.sh`: malware fingerprint scan run by CI before builds.
+- `schema_diff.py`, `export_azure_sql_to_csv.py`,
+  `extract_state_cross_section.py`: one-off data-migration utilities.
+- `apmc_data_explorer.ipynb`: Jupyter notebook with the v1 source-data
+  analysis behind [v1/v1-legacy-summary.md](v1/v1-legacy-summary.md).
