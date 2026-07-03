@@ -49,7 +49,7 @@ by setting PermitRootLogin no and switch to a sudo-group user
 # root only during first-time provisioning -- disable afterwards
 ssh root@<IP>
 git clone https://github.com/covercensus/worldcovers.git /srv/woco
-WOCO_HOSTNAME=woco.dev /srv/woco/tools/provision.sh
+WOCO_HOSTNAME=woco.dev /srv/woco/deploy/provision.sh
 ```
 
 `provision.sh` installs all packages, creates the `wocod` user, sets up MySQL +
@@ -112,7 +112,7 @@ git fetch origin
 git reset --hard origin/<your-ui-branch>
 export PATH=$HOME/.local/bin:$PATH
 sudo -n /bin/systemctl stop worldcovers
-./tools/deploy.sh
+./deploy/deploy.sh
 sudo -n /bin/systemctl start worldcovers
 ```
 

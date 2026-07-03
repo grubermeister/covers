@@ -71,11 +71,11 @@ SPA through Django at `http://127.0.0.1:8000`.
 The staging deployment source of truth is:
 
 - [.github/workflows/build-and-deploy.yml](./.github/workflows/build-and-deploy.yml)
-- [tools/deploy.sh](./tools/deploy.sh)
-- [tools/worldcovers.service](./tools/worldcovers.service)
+- [deploy/deploy.sh](./deploy/deploy.sh)
+- [deploy/worldcovers.service](./deploy/worldcovers.service)
 
 The GitHub Actions workflow stops and starts the `worldcovers` service and
-installs the systemd unit when it changes. `tools/deploy.sh` runs dependency
+installs the systemd unit when it changes. `deploy/deploy.sh` runs dependency
 sync, migrations, frontend build, and Django static collection.
 
 For deployment details, see [docs/devel/DEPLOY.md](./docs/devel/DEPLOY.md).

@@ -1,10 +1,11 @@
 # Tools Reference
 
-This document covers host scripts and checked-in Django management commands.
+This document covers data/tooling scripts and checked-in Django management commands.
 
 Source of truth for command availability:
 
-- Host scripts live under `tools/`.
+- Data and utility scripts live under `tools/`.
+- Deployment scripts and host config templates live under `deploy/`.
 - Django commands live under `backend/common/management/commands/`.
 - Run `./woco help` from repo root to list commands in the current checkout.
 
@@ -16,10 +17,8 @@ Use `./woco <command>` from repo root for Django management commands. The
 
 | Tool | Purpose | Location |
 |------|---------|----------|
-| `deploy.sh` | Sync deps, migrate, build frontend, collect static | `tools/deploy.sh` |
 | `push_data.sh` | Sync local catalog data and media to staging | `tools/push_data.sh` |
 | `reload_data.sh` | Reload staging catalog data on the server | `tools/reload_data.sh` |
-| `worldcovers.service` | systemd unit for gunicorn | `tools/worldcovers.service` |
 | `rebuild_staging_db.sh` | Drop and recreate the staging database | `tools/rebuild_staging_db.sh` |
 | `setup_worldcovers_db.sql` | Create database/user grants | `tools/setup_worldcovers_db.sql` |
 | `ascc_page_processor.py` | Render and split ASCC catalog pages | `tools/ascc_page_processor.py` |
@@ -38,26 +37,6 @@ Use `./woco <command>` from repo root for Django management commands. The
 | `set_user_password` | Set a user's password from the CLI | `backend/common/management/commands/set_user_password.py` |
 
 ## Host Scripts
-
-### `tools/deploy.sh`
-
-Run from repo root on the staging host:
-
-```sh
-./tools/deploy.sh
-```
-
-Expected exit code: `0`.
-
-Steps:
-
-1. `uv sync --no-dev --frozen`
-2. `uv run python backend/manage.py migrate --noinput`
-3. `cd frontend && npm ci && npm run build`
-4. `uv run python backend/manage.py collectstatic --noinput`
-
-The script does not manage systemd. The caller must stop/start/restart the
-service. In staging, `.github/workflows/build-and-deploy.yml` is the caller.
 
 ### `tools/push_data.sh`
 

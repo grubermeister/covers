@@ -82,11 +82,11 @@ jobs:
             git -C /srv/woco reset --hard origin/main
             git -C /srv/woco clean -fd backend/common/migrations
 
-            if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
+            if ! diff -q /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
                 echo "Production systemd unit differs from git."
                 echo "Apply manually as root after review:"
-                echo "  systemd-analyze verify /srv/woco/tools/worldcovers.service"
-                echo "  install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service"
+                echo "  systemd-analyze verify /srv/woco/deploy/worldcovers.service"
+                echo "  install -m 644 /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service"
                 echo "  systemctl daemon-reload"
                 exit 1
             fi
@@ -101,7 +101,7 @@ jobs:
 
             sudo -n /bin/systemctl stop worldcovers
             service_stopped=1
-            cd /srv/woco && ./tools/deploy.sh
+            cd /srv/woco && ./deploy/deploy.sh
             sudo -n /bin/systemctl start worldcovers
             service_stopped=0
             trap - EXIT
