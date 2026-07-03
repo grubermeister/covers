@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { CheckCircle, Info, Loader2, MessageSquare, Pencil, Trash2, XCircle } from "lucide-react";
+import { CheckCircle, Info, Loader2, MessageSquare, Pencil, Plus, Trash2, XCircle } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
   getImagesForSubject,
+  getMarkingById,
   getMarkingChangelog,
   getCoverMarkingsByCover,
   deleteImage,
@@ -55,12 +56,15 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createCoverMarking,
   getCoverById,
   removeCover,
   restoreCover,
   type CoverDetail,
   type CoverDateSeenItem,
 } from "@/services/covers";
+import { Input } from "@/components/ui/input";
+import { parseMarkingIdInput } from "@/lib/recordLinking";
 import { listCitationsForSubject } from "@/services/citations";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import { SUBMISSION_LABELS } from "@/labels/submission";
@@ -157,6 +161,10 @@ const CoverDetailPage = () => {
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
+  const [linkMarkingOpen, setLinkMarkingOpen] = useState(false);
+  const [linkMarkingInput, setLinkMarkingInput] = useState("");
+  const [linkMarkingBusy, setLinkMarkingBusy] = useState(false);
+  const [linkMarkingError, setLinkMarkingError] = useState<string | null>(null);
 
   const isStaff =
     !!user &&
@@ -498,6 +506,50 @@ const CoverDetailPage = () => {
     return false;
   };
 
+  // Creates a CoverMarking junction row between this cover and an
+  // already-existing marking. The endpoint is editor/admin-gated
+  // (IsEditorOrAdminWrite), so the button only renders for isStaff.
+  const handleLinkExistingMarking = async () => {
+    if (coverPk == null) return;
+    const markingIdTarget = parseMarkingIdInput(linkMarkingInput);
+    if (markingIdTarget == null) {
+      setLinkMarkingError("Enter a valid marking ID.");
+      return;
+    }
+    setLinkMarkingBusy(true);
+    setLinkMarkingError(null);
+    try {
+      const marking = await getMarkingById(markingIdTarget);
+      if (!marking) {
+        setLinkMarkingError(`Marking ${markingIdTarget} not found.`);
+        return;
+      }
+      await createCoverMarking({ cover: coverPk, marking: markingIdTarget });
+      toast({
+        title: "Marking linked",
+        description: `Marking ${marking.code ?? markingIdTarget} is now linked to this cover.`,
+      });
+      setLinkMarkingOpen(false);
+      setLinkMarkingInput("");
+      const linksResult = await getCoverMarkingsByCover(coverPk);
+      const linkForMarking =
+        markingId != null
+          ? linksResult.links.find((l) => l.markingId === markingId) ?? null
+          : linksResult.links[0] ?? null;
+      setCoverMarkingLink(linkForMarking);
+      const markings = await loadAssociatedMarkingsForCover(linksResult.links);
+      setAssociatedMarkings(markings);
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string; non_field_errors?: string[] } } };
+      const detail = ax.response?.data?.detail ?? ax.response?.data?.non_field_errors?.[0];
+      setLinkMarkingError(
+        typeof detail === "string" ? detail : "Could not link marking. It may already be linked.",
+      );
+    } finally {
+      setLinkMarkingBusy(false);
+    }
+  };
+
   const openEditCover = () => {
     if (markingId == null || coverPk == null) return;
     if (!requireAuth()) return;
@@ -743,9 +795,25 @@ const CoverDetailPage = () => {
 
             <Card className="shadow-archival-md">
               <CardHeader>
-                <CardTitle className="font-heading text-lg">
-                  Associated Markings ({associatedMarkingCount})
-                </CardTitle>
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="font-heading text-lg">
+                    Associated Markings ({associatedMarkingCount})
+                  </CardTitle>
+                  {isStaff && !cover.isRemoved && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setLinkMarkingInput("");
+                        setLinkMarkingError(null);
+                        setLinkMarkingOpen(true);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Link Existing Marking
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent className="space-y-4 pt-0">
                 {markingsLoadError && (
@@ -777,6 +845,64 @@ const CoverDetailPage = () => {
           </>
         }
       />
+
+      <Dialog
+        open={linkMarkingOpen}
+        onOpenChange={(open) => {
+          if (linkMarkingBusy) return;
+          setLinkMarkingOpen(open);
+          if (!open) {
+            setLinkMarkingInput("");
+            setLinkMarkingError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link Existing Marking</DialogTitle>
+            <DialogDescription>
+              Enter the marking ID to link it to this cover.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              placeholder="Marking ID"
+              value={linkMarkingInput}
+              onChange={(e) => {
+                setLinkMarkingInput(e.target.value);
+                setLinkMarkingError(null);
+              }}
+              disabled={linkMarkingBusy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleLinkExistingMarking();
+                }
+              }}
+              autoFocus
+            />
+            {linkMarkingError && <p className="text-sm text-destructive">{linkMarkingError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkMarkingOpen(false)} disabled={linkMarkingBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleLinkExistingMarking()}
+              disabled={linkMarkingBusy || !linkMarkingInput.trim()}
+            >
+              {linkMarkingBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Linking…
+                </>
+              ) : (
+                "Link Marking"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={removeOpen} onOpenChange={(open) => !removing && setRemoveOpen(open)}>
         <DialogContent>
