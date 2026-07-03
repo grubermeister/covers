@@ -82,7 +82,7 @@ jobs:
             git -C /srv/woco reset --hard origin/staging
             git -C /srv/woco clean -fd backend/common/migrations
 
-            if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
+            if ! diff -q /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
                 echo "Updating staging systemd unit through root-owned helper..."
                 sudo -n /usr/local/sbin/worldcovers-apply-unit
             fi
@@ -97,7 +97,7 @@ jobs:
 
             sudo -n /bin/systemctl stop worldcovers
             service_stopped=1
-            cd /srv/woco && ./tools/deploy.sh
+            cd /srv/woco && ./deploy/deploy.sh
             sudo -n /bin/systemctl start worldcovers
             service_stopped=0
             trap - EXIT

@@ -2,7 +2,7 @@
 # Install the staging systemd unit from the checked-out repo.
 #
 # Install this file as root:
-#   install -o root -g root -m 0755 /srv/woco/tools/worldcovers-apply-unit.sh /usr/local/sbin/worldcovers-apply-unit
+#   install -o root -g root -m 0755 /srv/woco/deploy/worldcovers-apply-unit.sh /usr/local/sbin/worldcovers-apply-unit
 #
 # Sudoers entry for staging:
 #   wocod ALL=(root) NOPASSWD: /usr/local/sbin/worldcovers-apply-unit
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-SOURCE="/srv/woco/tools/worldcovers.service"
+SOURCE="/srv/woco/deploy/worldcovers.service"
 TARGET="/etc/systemd/system/worldcovers.service"
 EXPECTED_OWNER="wocod:wocod"
 

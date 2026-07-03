@@ -6,9 +6,9 @@ Source of truth:
 
 - Staging deployment flow: `.github/workflows/build-and-deploy.yml`
 - Production deployment flow: `.github/workflows/deploy-prod.yml`
-- App build steps: `tools/deploy.sh`
+- App build steps: `deploy/deploy.sh`
 - Data refresh: `tools/reload_data.sh`
-- Service definition: `tools/worldcovers.service`
+- Service definition: `deploy/worldcovers.service`
 
 ## Service Management
 
@@ -34,11 +34,11 @@ cd /srv/woco
 git fetch origin
 git reset --hard origin/staging
 sudo -n /bin/systemctl stop worldcovers
-./tools/deploy.sh
+./deploy/deploy.sh
 sudo -n /bin/systemctl start worldcovers
 ```
 
-`tools/deploy.sh` syncs Python dependencies, runs migrations, builds the
+`deploy/deploy.sh` syncs Python dependencies, runs migrations, builds the
 frontend, and collects static files. It does not start or stop the service.
 
 For the full key-rotation, unit-file update, and sudoers requirements, see

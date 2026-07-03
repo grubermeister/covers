@@ -1,13 +1,13 @@
 # nginx site for the WorldCovers staging/demo box (e.g. woco.dev).
 #
-# tools/provision.sh renders this template (substituting __HOSTNAME__ and
+# deploy/provision.sh renders this template (substituting __HOSTNAME__ and
 # __ROOT__) into /etc/nginx/sites-available/woco. It is HTTP-only on purpose:
 # `certbot --nginx -d <hostname>` rewrites this file in place to add the TLS
 # (443) server block and the 80->443 redirect once DNS resolves. Do not add a
 # ssl_certificate path here by hand -- the cert does not exist until certbot
 # runs, and nginx will refuse to start if it points at a missing file.
 #
-# gunicorn listens on 127.0.0.1:8000 (see tools/worldcovers.service). Django
+# gunicorn listens on 127.0.0.1:8000 (see deploy/worldcovers.service). Django
 # trusts X-Forwarded-Proto for its HTTPS detection (SECURE_PROXY_SSL_HEADER in
 # backend/woco/settings.py), so it must be forwarded.
 

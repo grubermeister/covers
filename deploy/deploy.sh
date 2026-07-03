@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run this on the server after "git pull" (or in CI). From project root: ./tools/deploy.sh
+# Run this on the server after "git pull" (or in CI). From project root: ./deploy/deploy.sh
 # Note: privileged operations (unit file install, daemon-reload, service restart) are handled
 # by the caller; either the CI workflow or a sysadmin with sudo, not by this script.
 set -e
