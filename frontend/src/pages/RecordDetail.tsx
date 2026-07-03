@@ -762,7 +762,7 @@ const RecordDetail = () => {
         coverId,
         moveImageView,
       );
-      if (!res.ok) {
+      if (res.ok === false) {
         setMoveImageError(res.message);
         return;
       }

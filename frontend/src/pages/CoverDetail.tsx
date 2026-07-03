@@ -537,7 +537,7 @@ const CoverDetailPage = () => {
     setMoveImageError(null);
     try {
       const res = await moveImageSubject(image.imageId, "MARKING", targetId, moveImageView);
-      if (!res.ok) {
+      if (res.ok === false) {
         setMoveImageError(res.message);
         return;
       }
