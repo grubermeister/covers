@@ -9,7 +9,7 @@ from pathlib import Path
 DEFAULT_OCR_REFERENCE_WORK = "ASCC5"
 DEFAULT_V1_REFERENCE_WORK = "ASCC6"
 
-IMPORT_STEMS = (
+IMPORT_BUNDLE_STEMS = (
     "colors",
     "letterings",
     "shapes",
@@ -24,8 +24,14 @@ IMPORT_STEMS = (
     "cover_markings",
     "citations",
     "images",
-    "marking_lineage",
 )
+
+GENERATED_METADATA_STEMS = (
+    "source_marking_map",
+)
+
+GENERATED_BUNDLE_STEMS = IMPORT_BUNDLE_STEMS + GENERATED_METADATA_STEMS
+IMPORT_STEMS = IMPORT_BUNDLE_STEMS
 
 
 @dataclass(frozen=True)
@@ -49,8 +55,6 @@ class StatePaths:
     images_dir: Path
     image_report: Path
     bundle_dir: Path
-    compare_dir: Path
-    compare_ledger: Path
     manifest: Path
     media_dir: Path
 
@@ -62,7 +66,7 @@ class V1StatePaths:
     slice_rows: Path
     image_refs: Path
     bundle_dir: Path
-    report: Path
+    warnings: Path
     manifest: Path
     media_dir: Path
 
@@ -85,8 +89,6 @@ def ocr_state_paths(state: str, roots: PipelineRoots) -> StatePaths:
         images_dir=roots.wip_cache / f"{state}_images",
         image_report=roots.wip_cache / f"{state}_subchunks_report.csv",
         bundle_dir=roots.wip_out / state.lower(),
-        compare_dir=roots.wip_cache / "compare" / state,
-        compare_ledger=roots.wip_cache / "compare" / state / f"review_ledger_{state}.csv",
         manifest=roots.wip_cache / f"{state}_run.json",
         media_dir=roots.backend_media / state.lower(),
     )
@@ -101,8 +103,7 @@ def v1_state_paths(state: str, roots: PipelineRoots) -> V1StatePaths:
         slice_rows=cache_dir / "slice.csv",
         image_refs=cache_dir / "image_refs.csv",
         bundle_dir=roots.wip_out / f"v1_{state.lower()}",
-        report=roots.wip_out / f"v1_{state.lower()}" / "v1_reconciliation_report.csv",
+        warnings=roots.wip_out / f"v1_{state.lower()}" / "v1_pipeline_warnings.csv",
         manifest=cache_dir / "run.json",
         media_dir=roots.backend_media / state.lower(),
     )
-

@@ -72,10 +72,9 @@ STATUS_ACTIVE = "active"
 STATUS_APPROVED = "approved"
 STATUS_NOT_DELETED = "not-deleted"
 
-# Continuation rules mirror the practical family logic in
-# tools/catalog_edition_diff.py. Keep the exact import context small for the
-# next maintainer: stdlib imports are above; these are plain re.Pattern values
-# and do not require loading catalog_edition_diff.py.
+# Continuation rules keep v1 family slices intact. A child row that begins with
+# Same, (L), (E), a marker continuation, or a lowercase continuation inherits
+# inclusion from its nearest parent row.
 _REL_CONTINUATION_RE = re.compile(
     r"^\s*\+?(?:same\b|\*?[(\[{][le][)\]}]\*?)",
     re.IGNORECASE,

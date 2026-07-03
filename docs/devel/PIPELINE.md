@@ -6,8 +6,8 @@ checkout, `/srv/woco` on staging). Unless noted otherwise, the expected
 successful exit code is `0`.
 
 The canonical path uses the legacy v1 export as source data, builds a v2 import
-bundle, reconciles v1 split-column evidence into that bundle, and optionally
-imports it. The scanned-PDF OCR pipeline is still available, but it is now
+bundle, applies supported v1 split-column evidence into that bundle, and
+optionally imports it. The scanned-PDF OCR pipeline is independent and is
 explicitly named `./woco ascc ocr`.
 
 ## Command Summary
@@ -41,10 +41,10 @@ user-facing help.
 - `checks.py`: doctor check records and reference-work validation.
 - `manifest.py`: CSV counting helpers used by run manifests.
 
-Stage scripts remain implementation units. The v1 stage scripts build and
-reconcile v1-derived bundles. The OCR stage scripts process scanned PDFs into
-catalog rows and then bundles. Direct script use is for debugging and must pass
-explicit inputs; it must not rely on hidden VA, ASCC1, ASCC2, or flat
+Stage scripts remain implementation units. The v1 stage scripts build
+v1-derived bundles and warnings. The OCR stage scripts process scanned PDFs
+into catalog rows and then bundles. Direct script use is for debugging and must
+pass explicit inputs; it must not rely on hidden VA, ASCC1, ASCC2, or flat
 `tools/wip/out` defaults.
 
 Bundle import stays in Django through `import_ascc_bundle`. Deployment scripts
@@ -55,8 +55,8 @@ move files and then import one explicit bundle directory; they do not guess
 
 Use this path when the source of truth is the legacy v1 export. It reads
 `tblRawStateData.txtRawStateData`, creates synthetic catalog rows, runs the
-munger, attaches v1 images, and reconciles generated values against v1
-split-column fields before import.
+munger, attaches v1 images, and applies supported v1 split-column fields before
+import.
 
 By default, `munge` and `run` cite `ASCC6`, the sixth edition. Pass
 `--reference-work CODE` only when a different citation is intended.
@@ -106,7 +106,8 @@ tools/wip/cache/v1/VA/image_refs.csv
 tools/wip/cache/v1/VA/slice.csv
 tools/wip/cache/v1/VA/run.json
 tools/wip/out/v1_va/
-tools/wip/out/v1_va/v1_reconciliation_report.csv
+tools/wip/out/v1_va/source_marking_map.csv
+tools/wip/out/v1_va/v1_pipeline_warnings.csv
 ```
 
 The munger receives `--region-abbrev VA` explicitly. That matters because v1
@@ -114,7 +115,7 @@ catalog rows are stored under the generic filename `catalog_rows.csv`; without
 the explicit region, the munger would derive `CA` from the filename.
 
 The v1 overlay records unsupported split-column evidence in
-`v1_reconciliation_report.csv` instead of importing unsupported values silently.
+`v1_pipeline_warnings.csv` instead of importing unsupported values silently.
 
 ### 3. Validate Or Import
 
@@ -186,7 +187,6 @@ tools/wip/in/VA.pdf
 tools/wip/cache/VA_ocr_rows.csv
 tools/wip/cache/VA_catalog_rows.csv
 tools/wip/cache/VA_images/
-tools/wip/cache/compare/VA/review_ledger_VA.csv
 tools/wip/cache/VA_run.json
 tools/wip/out/va/
 backend/media/va/
@@ -199,9 +199,6 @@ backend/media/va/
 - If only `tools/wip/cache/VA_ocr_rows.csv` exists, it skips page processing
   and OCR extraction and resumes at image-count verification.
 - Pass `--force` to rebuild OCR rows and catalog rows from the PDF.
-
-`ocr` also runs the compare ledger at the end. For an explanation of compare
-outputs, see `docs/devel/COMPARE.md`.
 
 ## OCR Internals
 

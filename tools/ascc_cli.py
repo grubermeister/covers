@@ -40,7 +40,7 @@ WIP_CACHE = WIP_DIR / "cache"
 WIP_OUT = WIP_DIR / "out"
 BACKEND_MEDIA = REPO_ROOT / "backend" / "media"
 
-IMPORT_STEMS = pipeline_paths.IMPORT_STEMS
+GENERATED_BUNDLE_STEMS = pipeline_paths.GENERATED_BUNDLE_STEMS
 DEFAULT_OCR_REFERENCE_WORK = pipeline_paths.DEFAULT_OCR_REFERENCE_WORK
 DEFAULT_V1_REFERENCE_WORK = pipeline_paths.DEFAULT_V1_REFERENCE_WORK
 StatePaths = pipeline_paths.StatePaths
@@ -155,10 +155,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     add_shared_options(ocr, include_import_check=True)
 
-    compare = sub.add_parser("compare", help="run the legacy OCR compare ledger")
-    compare.add_argument("state")
-    add_shared_options(compare, include_import_check=False)
-
     import_bundle = sub.add_parser(
         "import",
         add_help=False,
@@ -185,7 +181,6 @@ def add_shared_options(parser: argparse.ArgumentParser, include_import_check: bo
     parser.add_argument("--model", default=None)
     parser.add_argument("--pages", default=None)
     parser.add_argument("--reference-work", default=DEFAULT_OCR_REFERENCE_WORK)
-    parser.add_argument("--legacy-status", choices=("active", "approved"), default="active")
     if include_import_check:
         parser.add_argument(
             "--import-check",
@@ -214,7 +209,7 @@ def add_v1_options(parser: argparse.ArgumentParser) -> None:
         "--allow-missing-v1-images",
         action="store_true",
         default=False,
-        help="write report rows for missing v1 image files instead of failing",
+        help="write warning rows for missing v1 image files instead of failing",
     )
     parser.add_argument(
         "--strict",
@@ -273,8 +268,6 @@ def main(argv: list[str] | None = None) -> int:
             return command_munge(args)
         if args.command == "ocr":
             return command_ocr_run(args)
-        if args.command == "compare":
-            return command_compare(args)
         if args.command == "import":
             return command_import(args)
         if args.command == "clean":
@@ -325,14 +318,14 @@ def command_ocr_run(args) -> int:
     copied_images = copy_marking_images(paths)
     clean_bundle_dir(paths.bundle_dir)
     run_command(munger_cmd(paths, args))
-    run_command(compare_cmd(paths, args))
     import_result = maybe_import_check(paths, args.import_check)
     write_run_manifest(paths, args, copied_images, import_result)
     print()
-    print(f"catalog rows:   {paths.catalog_rows}")
-    print(f"bundle:         {paths.bundle_dir}")
-    print(f"compare ledger: {paths.compare_ledger}")
-    print(f"manifest:       {paths.manifest}")
+    print(f"ocr rows:      {paths.ocr_rows}")
+    print(f"catalog rows:  {paths.catalog_rows}")
+    print(f"bundle:        {paths.bundle_dir}")
+    print(f"media images:  {copied_images} -> {paths.media_dir}")
+    print(f"manifest:      {paths.manifest}")
     return 0
 
 
@@ -349,14 +342,6 @@ def command_munge(args) -> int:
     print(f"v1 catalog rows: {paths.catalog_rows}")
     print(f"v1 bundle:       {paths.bundle_dir}")
     print(f"v1 manifest:     {paths.manifest}")
-    return 0
-
-
-def command_compare(args) -> int:
-    paths = state_paths(args.state)
-    require_file(paths.catalog_rows, "catalog rows")
-    require_dir(paths.bundle_dir, "bundle")
-    run_command(compare_cmd(paths, args))
     return 0
 
 
@@ -438,7 +423,6 @@ def doctor_checks(
         check_item("database", db_ok, db_message, False),
         check_item("catalog rows", paths.catalog_rows.exists(), str(paths.catalog_rows), False),
         check_item("bundle", paths.bundle_dir.exists(), str(paths.bundle_dir), False),
-        check_item("compare ledger", paths.compare_ledger.exists(), str(paths.compare_ledger), False),
     ]
 
 
@@ -634,8 +618,8 @@ def v1_overlay_cmd(
         str(image_root),
         "--media-dir",
         str(paths.media_dir),
-        "--report",
-        str(paths.report),
+        "--warnings",
+        str(paths.warnings),
     ]
     if args.allow_missing_v1_images:
         cmd.append("--allow-missing-v1-images")
@@ -658,27 +642,12 @@ def v1_image_cmd(paths: V1StatePaths, args, image_root: Path) -> list[str]:
         str(image_root),
         "--media-dir",
         str(paths.media_dir),
-        "--report",
-        str(paths.report),
+        "--warnings",
+        str(paths.warnings),
     ]
     if args.allow_missing_v1_images:
         cmd.append("--allow-missing-v1-images")
     return cmd
-
-
-def compare_cmd(paths: StatePaths, args) -> list[str]:
-    return [
-        sys.executable,
-        str(TOOLS_DIR / "ascc_compare.py"),
-        paths.state,
-        "--all",
-        "--status",
-        args.legacy_status,
-        "--catalog-rows",
-        str(paths.catalog_rows),
-        "--bundle-dir",
-        str(paths.bundle_dir),
-    ]
 
 
 def import_bundle_cmd(import_args: list[str]) -> list[str]:
@@ -721,7 +690,7 @@ def run_command(cmd: list[str]) -> None:
 
 def clean_bundle_dir(bundle_dir: Path) -> None:
     bundle_dir.mkdir(parents=True, exist_ok=True)
-    for stem in IMPORT_STEMS:
+    for stem in GENERATED_BUNDLE_STEMS:
         (bundle_dir / f"{stem}.csv").unlink(missing_ok=True)
 
 
@@ -748,11 +717,8 @@ def clean_generated_state(state: str) -> int:
     cache_prefixes = state_cache_prefixes(state)
     if WIP_CACHE.exists():
         for path in WIP_CACHE.iterdir():
-            if path.name == "compare":
-                continue
             if any(path.name.startswith(prefix) for prefix in cache_prefixes):
                 removed += remove_path(path)
-    removed += remove_path(paths.compare_dir)
     removed += remove_path(paths.bundle_dir)
     removed += remove_path(WIP_CACHE / "v1" / state)
     removed += remove_path(WIP_OUT / f"v1_{state.lower()}")
@@ -881,20 +847,17 @@ def write_run_manifest(
         "provider": args.provider or os.environ.get("PIPELINE_LLM_PROVIDER") or "openrouter",
         "model": args.model or os.environ.get("PIPELINE_LLM_MODEL") or "",
         "reference_work": args.reference_work,
-        "legacy_status": args.legacy_status,
         "paths": {
             "pdf": str(paths.pdf),
             "ocr_rows": str(paths.ocr_rows),
             "catalog_rows": str(paths.catalog_rows),
             "images_dir": str(paths.images_dir),
             "bundle": str(paths.bundle_dir),
-            "compare_ledger": str(paths.compare_ledger),
         },
         "counts": {
             "ocr_rows": count_csv_rows(paths.ocr_rows),
             "catalog_rows": count_csv_rows(paths.catalog_rows),
             "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
-            "compare_ledger": count_csv_rows(paths.compare_ledger),
             "copied_images": copied_images,
         },
         "image_status_counts": image_status_counts(paths.image_report),
@@ -970,7 +933,7 @@ def write_v1_run_manifest(
     manifest = {
         "state": paths.state,
         "source": "v1",
-        "mode": "munger-plus-v1-reconciliation",
+        "mode": "munger-plus-v1-warnings",
         "reference_work": args.reference_work,
         "v1_image_root": str(image_root),
         "paths": {
@@ -978,8 +941,7 @@ def write_v1_run_manifest(
             "catalog_rows": str(paths.catalog_rows),
             "image_refs": str(paths.image_refs),
             "bundle": str(paths.bundle_dir),
-            "image_report": str(paths.report),
-            "reconciliation_report": str(paths.report),
+            "warnings": str(paths.warnings),
         },
         "counts": {
             "slice": count_csv_rows(paths.slice_rows),
@@ -987,8 +949,7 @@ def write_v1_run_manifest(
             "image_refs": count_csv_rows(paths.image_refs),
             "bundle_markings": count_csv_rows(paths.bundle_dir / "markings.csv"),
             "bundle_images": count_csv_rows(paths.bundle_dir / "images.csv"),
-            "image_report": count_csv_rows(paths.report),
-            "reconciliation_report": count_csv_rows(paths.report),
+            "warnings": count_csv_rows(paths.warnings),
         },
         "import_check": import_result,
         "load": load_result,
