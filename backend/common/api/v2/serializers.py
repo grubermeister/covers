@@ -199,7 +199,7 @@ class ImageSerializer(serializers.ModelSerializer):
         # Create: either multipart `file` (normal SPA upload) or a full manual row
         # (imports) with storage_filename + metadata.
         if self.instance is not None:
-            return attrs
+            return self._validate_update(attrs)
         has_file = attrs.get("file") is not None
         if has_file:
             return attrs
@@ -226,6 +226,49 @@ class ImageSerializer(serializers.ModelSerializer):
         if missing:
             raise serializers.ValidationError(
                 {k: "Required when `file` is omitted (import path)." for k in missing}
+            )
+        return attrs
+
+    def _validate_update(self, attrs):
+        """
+        Update path. subject_type/subject_id are writable so editors can move
+        an image between a marking and a cover (issue #48; v1 attached every
+        upload to the marking). subject_id is a plain integer column, so the
+        target's existence must be checked here, and the image_view/subject
+        pairing is validated so a mismatch is a 400 instead of the DB check
+        constraint's 500.
+        """
+        subject_type = attrs.get("subject_type", self.instance.subject_type)
+        subject_id = attrs.get("subject_id", self.instance.subject_id)
+        image_view = attrs.get("image_view", self.instance.image_view)
+
+        subject_changed = (
+            subject_type != self.instance.subject_type
+            or subject_id != self.instance.subject_id
+        )
+        if subject_changed:
+            if subject_type == Image.SUBJECT_MARKING:
+                target_exists = Marking.all_objects.filter(pk=subject_id).exists()
+            else:
+                target_exists = Cover.all_objects.filter(pk=subject_id).exists()
+            if not target_exists:
+                raise serializers.ValidationError(
+                    {"subject_id": f"{subject_type} {subject_id} does not exist."}
+                )
+
+        allowed_views = (
+            Image.MARKING_VIEW_CHOICES
+            if subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES
+        )
+        if image_view not in allowed_views:
+            raise serializers.ValidationError(
+                {
+                    "image_view": (
+                        f"Must be one of {allowed_views} when "
+                        f"subject_type={subject_type}."
+                    )
+                }
             )
         return attrs
 

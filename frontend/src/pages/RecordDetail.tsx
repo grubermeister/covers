@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, MoveRight, Pencil, Plus, Star, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,7 @@ import {
   getMarkingById,
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
+  moveImageSubject,
   normalizeImageUrl,
   regionsDisplay,
   removeMarking,
@@ -64,6 +65,8 @@ import { useToast } from "@/hooks/use-toast";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { useAuth } from "@/hooks/useAuth";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { createCoverMarking, getCoverById } from "@/services/covers";
 import { parseCoverIdInput } from "@/lib/recordLinking";
 
@@ -310,6 +313,11 @@ const RecordDetail = () => {
   const [linkCoverInput, setLinkCoverInput] = useState("");
   const [linkCoverBusy, setLinkCoverBusy] = useState(false);
   const [linkCoverError, setLinkCoverError] = useState<string | null>(null);
+  const [moveImageDialogImg, setMoveImageDialogImg] = useState<MarkingImage | null>(null);
+  const [moveImageTargetCoverId, setMoveImageTargetCoverId] = useState("");
+  const [moveImageView, setMoveImageView] = useState("FRONT");
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
+  const [moveImageError, setMoveImageError] = useState<string | null>(null);
   const [savingReviewed, setSavingReviewed] = useState(false);
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
@@ -726,6 +734,41 @@ const RecordDetail = () => {
     });
   };
 
+  // Reassigns an image from this marking to one of its associated covers
+  // (issue #48: v1 attached every cover upload to the marking). Target list
+  // is restricted to covers already linked to this marking so images can't
+  // be scattered onto unrelated records from here.
+  const handleMoveImageToCover = async () => {
+    if (!moveImageDialogImg?.imageId) return;
+    const coverId = parseInt(moveImageTargetCoverId, 10);
+    if (!Number.isFinite(coverId) || coverId <= 0) {
+      setMoveImageError("Select a target cover.");
+      return;
+    }
+    setMoveImageBusy(true);
+    setMoveImageError(null);
+    try {
+      const res = await moveImageSubject(
+        moveImageDialogImg.imageId,
+        "COVER",
+        coverId,
+        moveImageView,
+      );
+      if (!res.ok) {
+        setMoveImageError(res.message);
+        return;
+      }
+      toast({ title: "Image moved", description: "Image reassigned to the cover." });
+      setMoveImageDialogImg(null);
+      if (markingId != null) {
+        const refreshed = await getMarkingById(markingId);
+        if (refreshed) setRecord(refreshed);
+      }
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
   // Creates a CoverMarking junction row between this marking and an
   // already-existing cover. The endpoint is editor/admin-gated
   // (IsEditorOrAdminWrite), so the button only renders for isStaff.
@@ -910,6 +953,10 @@ const RecordDetail = () => {
                           !record.isRemoved &&
                           img.imageId != null;
                         const canReorder = canManageImage && galleryImages.length > 1;
+                        const canMoveToCover =
+                          canManageImage &&
+                          record.images[idx]?.subjectType === "MARKING" &&
+                          associatedCovers.some((c) => c.coverDetails?.id != null);
                         return (
                           <div
                             key={`${img.imageId ?? img.originalFilename ?? "img"}-${idx}`}
@@ -985,6 +1032,32 @@ const RecordDetail = () => {
                                       />
                                     </Button>
                                   </>
+                                )}
+                                {canMoveToCover && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    aria-label="Move image to a cover entry"
+                                    title="Move to cover"
+                                    disabled={reorderingImages}
+                                    onClick={() => {
+                                      const rawImg = record.images[idx];
+                                      if (!rawImg) return;
+                                      setMoveImageDialogImg(rawImg);
+                                      setMoveImageTargetCoverId(
+                                        String(
+                                          associatedCovers.find((c) => c.coverDetails?.id != null)
+                                            ?.coverDetails?.id ?? "",
+                                        ),
+                                      );
+                                      setMoveImageView("FRONT");
+                                      setMoveImageError(null);
+                                    }}
+                                  >
+                                    <MoveRight className="h-3 w-3" />
+                                  </Button>
                                 )}
                                 <Button
                                   type="button"
@@ -1474,6 +1547,90 @@ const RecordDetail = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={moveImageDialogImg != null}
+        onOpenChange={(open) => {
+          if (moveImageBusy) return;
+          if (!open) setMoveImageDialogImg(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Image to Cover</DialogTitle>
+            <DialogDescription>
+              Reassign this image from the marking to one of its associated covers.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="move-img-cover-id">Target cover</Label>
+              <Select
+                value={moveImageTargetCoverId}
+                onValueChange={(v) => {
+                  setMoveImageTargetCoverId(v);
+                  setMoveImageError(null);
+                }}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-cover-id">
+                  <SelectValue placeholder="Select a cover…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {associatedCovers
+                    .filter((c) => c.coverDetails?.id != null)
+                    .map((c) => (
+                      <SelectItem key={c.coverDetails!.id} value={String(c.coverDetails!.id)}>
+                        {c.coverDetails!.code ?? `Cover #${c.coverDetails!.id}`}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="move-img-view">Image view</Label>
+              <Select
+                value={moveImageView}
+                onValueChange={(v) => setMoveImageView(v)}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-view">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FRONT">Front</SelectItem>
+                  <SelectItem value="BACK">Back</SelectItem>
+                  <SelectItem value="INTERIOR">Interior</SelectItem>
+                  <SelectItem value="DETAIL">Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {moveImageError && <p className="text-sm text-destructive">{moveImageError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoveImageDialogImg(null)}
+              disabled={moveImageBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleMoveImageToCover()}
+              disabled={moveImageBusy || !moveImageTargetCoverId}
+            >
+              {moveImageBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Moving…
+                </>
+              ) : (
+                "Move Image"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={linkCoverOpen}

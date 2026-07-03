@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, MoveRight, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
@@ -16,6 +16,8 @@ export function EntryAssociatedThumbnailsCard({
   onMoveBy,
   onSetDefault,
   onDeleteImage,
+  onMoveImage,
+  moveImageLabel,
 }: {
   images: EntryGalleryImage[];
   carouselApi: CarouselApi | undefined;
@@ -27,6 +29,9 @@ export function EntryAssociatedThumbnailsCard({
   onMoveBy?: (index: number, offset: -1 | 1) => void;
   onSetDefault?: (index: number) => void;
   onDeleteImage?: (index: number) => void;
+  /** Reassign the image to another subject (issue #48), e.g. cover → marking. */
+  onMoveImage?: (index: number) => void;
+  moveImageLabel?: string;
 }) {
   return (
     <Card className="shadow-archival-md">
@@ -55,7 +60,7 @@ export function EntryAssociatedThumbnailsCard({
                     className="h-full w-full object-cover"
                   />
                 </button>
-                {(canReorder || onDeleteImage) && (
+                {(canReorder || onDeleteImage || onMoveImage) && (
                   <div className="flex items-center gap-0.5">
                     {canReorder && onMoveBy && onSetDefault && (
                       <>
@@ -97,6 +102,20 @@ export function EntryAssociatedThumbnailsCard({
                           <Star className={`h-3 w-3 ${img.isDefault ? "fill-amber-500 text-amber-500" : ""}`} />
                         </Button>
                       </>
+                    )}
+                    {onMoveImage && img.imageId != null && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="h-6 w-6"
+                        aria-label={moveImageLabel ?? "Move image to another record"}
+                        title={moveImageLabel ?? "Move image"}
+                        disabled={reorderingImages}
+                        onClick={() => onMoveImage(idx)}
+                      >
+                        <MoveRight className="h-3 w-3" />
+                      </Button>
                     )}
                     {onDeleteImage && img.imageId != null && (
                       <Button

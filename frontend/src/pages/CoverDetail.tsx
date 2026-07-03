@@ -25,6 +25,7 @@ import {
   getCoverMarkingsByCover,
   deleteImage,
   loadAssociatedMarkingsForCover,
+  moveImageSubject,
   normalizeImageUrl,
   postCoverMarkingReview,
   reorderImages,
@@ -64,6 +65,7 @@ import {
   type CoverDateSeenItem,
 } from "@/services/covers";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { parseMarkingIdInput } from "@/lib/recordLinking";
 import { listCitationsForSubject } from "@/services/citations";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
@@ -165,6 +167,11 @@ const CoverDetailPage = () => {
   const [linkMarkingInput, setLinkMarkingInput] = useState("");
   const [linkMarkingBusy, setLinkMarkingBusy] = useState(false);
   const [linkMarkingError, setLinkMarkingError] = useState<string | null>(null);
+  const [moveImageIndex, setMoveImageIndex] = useState<number | null>(null);
+  const [moveImageTargetMarkingId, setMoveImageTargetMarkingId] = useState("");
+  const [moveImageView, setMoveImageView] = useState("FULL");
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
+  const [moveImageError, setMoveImageError] = useState<string | null>(null);
 
   const isStaff =
     !!user &&
@@ -506,6 +513,39 @@ const CoverDetailPage = () => {
     return false;
   };
 
+  // Reassigns an image from this cover to one of its associated markings
+  // (issue #48, reverse direction). Target list is restricted to markings
+  // already linked to this cover.
+  const handleMoveImageToMarking = async () => {
+    if (coverPk == null || moveImageIndex == null) return;
+    const image = images[moveImageIndex];
+    if (!image || image.imageId <= 0) return;
+    const targetId = parseInt(moveImageTargetMarkingId, 10);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+      setMoveImageError("Select a target marking.");
+      return;
+    }
+    setMoveImageBusy(true);
+    setMoveImageError(null);
+    try {
+      const res = await moveImageSubject(image.imageId, "MARKING", targetId, moveImageView);
+      if (!res.ok) {
+        setMoveImageError(res.message);
+        return;
+      }
+      toast({ title: "Image moved", description: "Image reassigned to the marking." });
+      setMoveImageIndex(null);
+      const refreshed = await getImagesForSubject({
+        subjectType: "COVER",
+        subjectId: coverPk,
+      });
+      setImages(refreshed);
+      setCurrent((prev) => Math.max(0, Math.min(prev, refreshed.length - 1)));
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
   // Creates a CoverMarking junction row between this cover and an
   // already-existing marking. The endpoint is editor/admin-gated
   // (IsEditorOrAdminWrite), so the button only renders for isStaff.
@@ -645,6 +685,19 @@ const CoverDetailPage = () => {
               onMoveBy={moveImageBy}
               onSetDefault={setImageAsDefault}
               onDeleteImage={canManageImages ? handleDeleteImage : undefined}
+              onMoveImage={
+                canManageImages && !cover.isRemoved && associatedMarkings.length > 0
+                  ? (index) => {
+                      setMoveImageIndex(index);
+                      setMoveImageTargetMarkingId(
+                        String(associatedMarkings[0]?.marking.id ?? ""),
+                      );
+                      setMoveImageView("FULL");
+                      setMoveImageError(null);
+                    }
+                  : undefined
+              }
+              moveImageLabel="Move to marking"
             />
             {canViewHistory && (
               <EntryRecordHistoryCard
@@ -845,6 +898,86 @@ const CoverDetailPage = () => {
           </>
         }
       />
+
+      <Dialog
+        open={moveImageIndex != null}
+        onOpenChange={(open) => {
+          if (moveImageBusy) return;
+          if (!open) setMoveImageIndex(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Image to Marking</DialogTitle>
+            <DialogDescription>
+              Reassign this image from the cover to one of its associated markings.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-id">Target marking</Label>
+              <Select
+                value={moveImageTargetMarkingId}
+                onValueChange={(v) => {
+                  setMoveImageTargetMarkingId(v);
+                  setMoveImageError(null);
+                }}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-marking-id">
+                  <SelectValue placeholder="Select a marking…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {associatedMarkings.map(({ marking }) => (
+                    <SelectItem key={marking.id} value={String(marking.id)}>
+                      {marking.code ?? `Marking #${marking.id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-view">Image view</Label>
+              <Select
+                value={moveImageView}
+                onValueChange={(v) => setMoveImageView(v)}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-marking-view">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FULL">Full</SelectItem>
+                  <SelectItem value="DETAIL">Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {moveImageError && <p className="text-sm text-destructive">{moveImageError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoveImageIndex(null)}
+              disabled={moveImageBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleMoveImageToMarking()}
+              disabled={moveImageBusy || !moveImageTargetMarkingId}
+            >
+              {moveImageBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Moving…
+                </>
+              ) : (
+                "Move Image"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={linkMarkingOpen}
