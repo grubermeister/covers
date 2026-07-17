@@ -143,6 +143,38 @@ class ResolveRelationshipsTests(unittest.TestCase):
         self.assertEqual(resolved.loc[2, "resolved_inscription"], "ABINGDON/VA.")
         self.assertEqual(resolved.loc[2, "prev_sibling_idx"], 1)
 
+    def test_same_location_suffix_replaces_parent_tail(self):
+        listings = pd.DataFrame(
+            [
+                {
+                    "head_rel_type": None,
+                    "head_name_body": "KANAWHA CH. VA",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": "C.H. VA.",
+                    "Default Shape": "C",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": "C.H./Va.",
+                    "Default Shape": "ARC",
+                },
+                {
+                    "head_rel_type": "Same",
+                    "head_name_body": None,
+                    "Default Shape": "C",
+                },
+            ]
+        )
+
+        resolved = resolve_relationships(listings)
+
+        self.assertEqual(resolved.loc[1, "resolved_inscription"], "KANAWHA CH. VA.")
+        self.assertEqual(resolved.loc[2, "resolved_inscription"], "KANAWHA CH./Va.")
+        self.assertEqual(resolved.loc[3, "resolved_inscription"], "KANAWHA CH./Va.")
+
     def test_same_suffix_uses_immediate_same_suffix_sibling_stem(self):
         listings = pd.DataFrame(
             [

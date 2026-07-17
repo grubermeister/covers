@@ -16,7 +16,8 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from munger.fields import classify_all_fields
+from munger.fields import classify_all_fields, classify_paren_field
+from munger.fields.sizes import parse_size_field
 
 
 class DashDoesNotConsumeSizeSlot(unittest.TestCase):
@@ -38,6 +39,44 @@ class DashDoesNotConsumeSizeSlot(unittest.TestCase):
     def test_dash_then_rate_magnitude_is_rate(self):
         # PONTIAC "Same(--;2;Red) Drop rate": 2 is a drop rate, not a 2mm circle.
         self.assertEqual(classify_all_fields(['--', '2']), ['size', 'rate'])
+
+
+class SizeWithAnnotationBracket(unittest.TestCase):
+    def test_bare_c_shape_code_is_size_not_rate(self):
+        self.assertEqual(classify_paren_field('C'), 'size')
+        self.assertEqual(
+            classify_all_fields(['C', 'PAID', 'RED']),
+            ['size', 'rate', 'color'],
+        )
+
+    def test_size_with_trailing_note_bracket_is_size(self):
+        # ANNAPOLIS "(Aug. 18, 1775;SL-42x5,MDD[separate hdstp];Red)": the
+        # [separate hdstp] bracket tripped RATE_FIELD_RE and produced a bogus
+        # 42c ratemark inscribed "SL-42x5" (woco record ASCC6-MD-M1005).
+        self.assertEqual(
+            classify_paren_field('SL-42x5,MDD[separate hdstp]'), 'size')
+
+    def test_shape_dimension_without_bracket_still_size(self):
+        self.assertEqual(classify_paren_field('SL-42x5,MDD'), 'size')
+
+    def test_amount_with_shape_bracket_still_rate(self):
+        # Brackets on a rate amount keep disambiguating toward rate.
+        self.assertEqual(classify_paren_field('10[DC]'), 'rate')
+        self.assertEqual(classify_paren_field('5[C['), 'rate')
+        self.assertEqual(classify_paren_field('V[box]'), 'rate')
+
+    def test_rate_keyword_outranks_size_signature(self):
+        self.assertEqual(classify_paren_field('SL-30 PAID'), 'rate')
+
+    def test_stencil_shape_dimension_is_townmark_size(self):
+        self.assertEqual(classify_paren_field('stencil C-31'), 'size')
+        parsed = parse_size_field('stencil C-31')
+        self.assertEqual(parsed['size_shape_code'], 'C')
+        self.assertEqual(parsed['size_dim1'], 31.0)
+        self.assertEqual(parsed['size_impression'], 'Stencil')
+
+    def test_stencil_amount_stays_rate(self):
+        self.assertEqual(classify_paren_field('stencil 5'), 'rate')
 
 
 class ExistingBehaviorPreserved(unittest.TestCase):

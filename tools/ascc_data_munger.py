@@ -84,7 +84,89 @@ def format_dates_seen_desc(raw_text):
     return "Dates Seen " + ", ".join(tokens)
 
 
+def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
+                       other_fields, parsed_sizes=None, frank_notes=None):
+    """Assemble desc note lines for one listing row.
+
+    Order: paren annotations (Backstamp, letter-position notes), See-clause,
+    frank privilege notes, decade-only dates ("Dates seen: 1850s", Issue #26),
+    any unresolved 'other' paren fields recorded verbatim as errata notes
+    (e.g. APALACHICOLA "fancy lined X"), then bracketed size-field annotations
+    with the bracket delimiters stripped ("SL-42x5,MDD[separate hdstp]" ->
+    "separate hdstp").
+    Unbracketed size qualifiers like the positional "below" in
+    "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
+    are dropped, first occurrence wins. Returns a list of str lines
+    (possibly empty).
+    """
+    lines = list(paren_annotations_desc or [])
+    if see_clause and isinstance(see_clause, str) and see_clause.strip():
+        lines.append(see_clause.strip())
+    for note in (frank_notes or []):
+        line = str(note).strip()
+        if line and line not in lines:
+            lines.append(line)
+    decades = []
+    for d in (parsed_dates or []):
+        if d.get('date_granularity') == 'DECADE' and d.get('date_year_start'):
+            decades.append(f"{int(d['date_year_start'])}s")
+    if decades:
+        lines.append("Dates seen: " + ", ".join(dict.fromkeys(decades)))
+    for f in (other_fields or []):
+        line = str(f).strip()
+        if line and line not in lines:
+            lines.append(line)
+    for s in (parsed_sizes or []):
+        q = str(s.get('size_qualifier') or '').strip()
+        if not q or q[0] not in '[{|':
+            continue
+        line = q.strip('[]{}|').strip()
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+FRANK_WORD_RE = re.compile(r'\bfranks?\b', re.IGNORECASE)
+FRANK_MS_PAREN_RE = re.compile(r'\(\s*ms\.?\s*\)', re.IGNORECASE)
+
+
+def frank_rate_desc_note(token):
+    """Return a townmark desc note for no-amount frank rate tokens.
+
+    PM frank and similar tokens are catalog shorthand for a franking
+    privilege. They do not specify a struck auxmark inscription, so the raw
+    shorthand belongs on the parent townmark desc instead of creating an
+    auxmark with a fabricated inscription like FRANK.
+    """
+    if not isinstance(token, dict):
+        return None
+    if token.get('rate_amount_raw'):
+        return None
+    raw = str(token.get('rate_raw') or '').strip()
+    if not raw:
+        return None
+    note = RATE_BRACKET_RE.sub('', raw).strip()
+    note = FRANK_MS_PAREN_RE.sub('', note).strip()
+    if not FRANK_WORD_RE.search(note):
+        return None
+    note = re.sub(r'\s+', ' ', note)
+    return note or None
+
+
+def frank_rate_desc_notes(parsed_rates):
+    """Return deduped townmark desc notes from parsed rate groups."""
+    notes = []
+    for group in (parsed_rates or []):
+        tokens = group if isinstance(group, list) else [group]
+        for token in tokens:
+            note = frank_rate_desc_note(token)
+            if note and note not in notes:
+                notes.append(note)
+    return notes
+
+
 _POST_OFFICE_APOSTROPHE_RE = re.compile(r"[\u2019']")
+_POST_OFFICE_QUOTE_RE = re.compile(r"[\u201c\u201d\u201e\u201f\"]")
 _POST_OFFICE_AMP_RE = re.compile(r"\s*&\s*")
 _POST_OFFICE_STRIP_PUNCT_RE = re.compile(r"[,/=()\[\]:;_`*?]")
 _POST_OFFICE_DOUBLE_DASH_RE = re.compile(r"-{2,}")
@@ -109,6 +191,7 @@ def normalize_post_office_town(raw_town):
         return pd.NA
     town = str(raw_town).upper()
     town = _POST_OFFICE_APOSTROPHE_RE.sub("", town)
+    town = _POST_OFFICE_QUOTE_RE.sub("", town)
     town = _POST_OFFICE_AMP_RE.sub(" AND ", town)
     town = _POST_OFFICE_STRIP_PUNCT_RE.sub(" ", town)
     town = _POST_OFFICE_DOUBLE_DASH_RE.sub("-", town)
@@ -808,6 +891,8 @@ def main(argv=None):
     assert classify_paren_field('25[ms]') == 'rate'
     assert classify_paren_field('P.M.Free') == 'rate'
     assert classify_paren_field('Geo.Fisher P.M.frank') == 'rate'
+    assert classify_paren_field('stencil C-31') == 'size'
+    assert classify_paren_field('stencil 5') == 'rate'
     assert classify_paren_field('Black') == 'color'
     assert classify_paren_field('Red,Blue') == 'color'
     assert classify_paren_field('Olive-Yellow') == 'color'
@@ -992,6 +1077,10 @@ def main(argv=None):
     assert r['size_shape_code'] == 'ARC'
     r = parse_size_field('arc-46x26')
     assert r['size_shape_code'] == 'ARC'
+    r = parse_size_field('stencil C-31')
+    assert r['size_shape_code'] == 'C'
+    assert r['size_dim1'] == 31.0
+    assert r['size_impression'] == 'Stencil'
     print('Size sub-parser self-tests passed')
 
     # ======================================================================
@@ -1020,6 +1109,10 @@ def main(argv=None):
     assert r['rate_impression'] == 'Negative'
     assert r['rate_amount_raw'] == '5'
     assert r['rate_bracket'] == 'C'
+    r = parse_rate_token('stencil 5')
+    assert r['rate_impression'] == 'Stencil'
+    assert r['rate_amount_raw'] == '5'
+    assert r['rate_inscription_raw'] == '5'
     r = parse_rate_token('STEAM')
     assert r['rate_keyword'] == 'STEAM'
     print('Rate sub-parser self-tests passed')
@@ -1146,6 +1239,8 @@ def main(argv=None):
         print(f'Manuscript rate tokens: {ms_rate}')
         neg_rate = sum(1 for t in all_rate_tokens if t['rate_impression'] == 'Negative')
         print(f'Negative-impression rate tokens: {neg_rate}')
+        stencil_rate = sum(1 for t in all_rate_tokens if t['rate_impression'] == 'Stencil')
+        print(f'Stencil-impression rate tokens: {stencil_rate}')
         print()
     all_colors = [c for clist in listings['parsed_colors'] for c in clist]
     if all_colors:
@@ -1696,6 +1791,7 @@ def main(argv=None):
         width, height = None, None
         is_irreg = None if is_ms else False
         date_format = None
+        size_impression = None
         if src['parsed_sizes']:
             s = next((z for z in src['parsed_sizes']
                       if z.get('size_dim1') is not None
@@ -1710,12 +1806,15 @@ def main(argv=None):
                 is_irreg = True
             if s.get('size_dateformat'):
                 date_format = s['size_dateformat']
+            size_impression = s.get('size_impression')
 
         # Shape: null for manuscript, required for handstamped
         shape_id = None if is_ms else src['shape_id']
 
-        # Impression: null for manuscript, default Normal for handstamped
-        impression = None if is_ms else 'Normal'
+        # Impression: null for manuscript, default Normal for handstamped.
+        # Size tokens can override it when they carry a townmark impression
+        # prefix, as in "stencil C-31".
+        impression = None if is_ms else (size_impression or 'Normal')
 
         # Lettering: null for manuscript (per invariant), resolved from annotations otherwise
         lettering_id = None if is_ms else src.get('lettering_id')
@@ -1907,7 +2006,7 @@ def main(argv=None):
                 })
                 next_date_id += 1
 
-            elif gran in ('RANGE', 'DECADE'):
+            elif gran == 'RANGE':
                 # Two bookend YEAR rows
                 for yr in (d['date_year_start'], d['date_year_end']):
                     try:
@@ -1923,6 +2022,9 @@ def main(argv=None):
                         'date_error': d.get('date_error'),
                     })
                     next_date_id += 1
+            # DECADE intentionally emits no DateObserved row. A decade-level
+            # date like "1850s" is too broad for dates_seen and is recorded
+            # in the marking description instead.
     date_observed_df = pd.DataFrame(date_rows) if date_rows else pd.DataFrame(
         columns=['date_observed_id', 'townmark_id', 'date', 'granularity',
                  'date_raw', 'date_error']
@@ -2301,6 +2403,11 @@ def main(argv=None):
     # ======================================================================
     # 9.2 Bracket Shape Resolution
     # ======================================================================
+    bracket_ignored_qualifier_tokens = {
+        'black', 'blue', 'brown', 'green', 'grey', 'gray',
+        'magenta', 'orange', 'purple', 'red',
+    }
+
     def resolve_bracket(bracket_text):
         """Resolve a bracket descriptor into shape/lettering/dimension components.
         Returns dict with keys: shape_name, lettering_name, width, height, qualifier.
@@ -2310,33 +2417,54 @@ def main(argv=None):
                     'width': None, 'height': None, 'qualifier': None}
 
         text = bracket_text.strip()
-        text_lower = text.lower()
         shape_name = None
         lettering_name = None
         width = None
         height = None
         qualifier = None
 
+        def _shape_from_descriptor(value):
+            lowered = value.lower().strip()
+            if lowered in BRACKET_SHAPE_MAP:
+                return BRACKET_SHAPE_MAP[lowered]
+            for word in re.split(r'[^a-z]+', lowered):
+                if word in BRACKET_SHAPE_MAP:
+                    return BRACKET_SHAPE_MAP[word]
+            return None
+
+        def _lettering_from_descriptor(value):
+            lowered = value.lower().strip()
+            if lowered in lettering_lookup:
+                return lowered
+            for word in re.split(r'[\s,]+', lowered):
+                if word in lettering_lookup:
+                    return word
+            return None
+
+        def _simple_descriptor_token(value):
+            return re.sub(r'[^a-z]+', '', value.lower())
+
+        def _has_structural_descriptor(value):
+            return (
+                _shape_from_descriptor(value) is not None
+                or _lettering_from_descriptor(value) is not None
+                or BRACKET_DIM_RE.search(value) is not None
+            )
+
+        descriptor_parts = [
+            part.strip()
+            for part in re.split(r'[,;]+', text)
+            if part.strip()
+        ]
+        qualifier_parts = []
+        saw_fancy_qualifier = False
+
         # Direct shape match
         if shape_name is None:
-            # Try the full text as a shape
-            if text_lower in BRACKET_SHAPE_MAP:
-                shape_name = BRACKET_SHAPE_MAP[text_lower]
-            else:
-                # Try each word against the shape map
-                for word in text_lower.split():
-                    if word in BRACKET_SHAPE_MAP:
-                        shape_name = BRACKET_SHAPE_MAP[word]
-                        break
+            shape_name = _shape_from_descriptor(text)
 
         # Lettering: check full text and individual words against lettering lookup
-        if text_lower in lettering_lookup:
-            lettering_name = text_lower
-        else:
-            for word in re.split(r'[\s,]+', text_lower):
-                if word in lettering_lookup:
-                    lettering_name = word
-                    break
+        lettering_name = _lettering_from_descriptor(text)
 
         # Extract dimensions from bracket content
         dim_m = BRACKET_DIM_RE.search(text)
@@ -2345,8 +2473,24 @@ def main(argv=None):
             if dim_m.group(2):
                 height = float(dim_m.group(2))
 
+        for part in descriptor_parts:
+            simple = _simple_descriptor_token(part)
+            if simple in ('f', 'fancy'):
+                if 'Fancy' not in qualifier_parts:
+                    qualifier_parts.append('Fancy')
+                saw_fancy_qualifier = True
+                continue
+            if (
+                saw_fancy_qualifier
+                and not _has_structural_descriptor(part)
+                and simple not in bracket_ignored_qualifier_tokens
+            ):
+                qualifier_parts.append(part)
+
         # Anything not recognized as shape/lettering/dimension is a qualifier
-        if shape_name is None and lettering_name is None and width is None:
+        if qualifier_parts:
+            qualifier = ', '.join(qualifier_parts)
+        elif shape_name is None and lettering_name is None and width is None:
             qualifier = text
 
         return {
@@ -2360,6 +2504,12 @@ def main(argv=None):
     assert resolve_bracket('box')['shape_name'] == 'BOX'
     assert resolve_bracket('arc')['shape_name'] == 'ARC'
     assert resolve_bracket('octagon')['shape_name'] == 'Octagon'
+    r = resolve_bracket('F,DC')
+    assert r['shape_name'] == 'DC'
+    assert r['qualifier'] == 'Fancy'
+    r = resolve_bracket('C,F')
+    assert r['shape_name'] == 'C'
+    assert r['qualifier'] == 'Fancy'
     r = resolve_bracket('cogged circle')
     assert r['shape_name'] == 'C'
     r = resolve_bracket('octagon 23')
@@ -2400,6 +2550,7 @@ def main(argv=None):
     assert resolve_bracket_shape_id(resolve_bracket('oval')['shape_name']) == shape_lookup['O - OVAL']
     assert resolve_bracket_shape_id(resolve_bracket('arc')['shape_name']) == shape_lookup['ARC - ARC OR SEMI-CIRCLE']
     assert resolve_bracket_shape_id(resolve_bracket('box')['shape_name']) == shape_lookup['BOX']
+    assert resolve_bracket_shape_id(resolve_bracket('F,DC')['shape_name']) == shape_lookup['DC - DOUBLE CIRCLE']
 
     # ======================================================================
     # 9.3 Token Classification & Entity Emission
@@ -2439,6 +2590,7 @@ def main(argv=None):
             # Parse amount
             rate_value, is_roman = parse_rate_amount(amt_raw)
             has_amount = rate_value is not None
+            desc_only_frank_note = frank_rate_desc_note(tok)
 
             # Resolve bracket -> shape/lettering
             br = resolve_bracket(bracket)
@@ -2472,7 +2624,8 @@ def main(argv=None):
                     if is_roman:
                         rm_inscription = amt_raw
                     else:
-                        rm_inscription = RATE_BRACKET_RE.sub('', tok['rate_raw']).strip()
+                        inscription_raw = tok.get('rate_inscription_raw') or tok['rate_raw']
+                        rm_inscription = RATE_BRACKET_RE.sub('', inscription_raw).strip()
                         if not rm_inscription:
                             rm_inscription = amt_raw or ''
 
@@ -2496,6 +2649,22 @@ def main(argv=None):
                         'source_listing_idx': listing_idx,
                         'rate_raw': tok['rate_raw'],
                         'bracket_qualifier': br.get('qualifier'),
+                        # Stylistic bracket notes ("5[large]", "[italics]",
+                        # "[hdstp rate]", "5[F,DC]") are catalog errata and
+                        # belong in the marking desc. Structural hints (shape
+                        # codes like [C], dimensions like [30x23]) stay out:
+                        # they are represented by shape/width/height columns.
+                        'bracket_desc_note': (
+                            br['qualifier']
+                            if br.get('qualifier')
+                            else (
+                                bracket.strip()
+                                if bracket and br['shape_name'] is None
+                                and br['width'] is None
+                                and br['lettering_name']
+                                else None
+                            )
+                        ),
                         'code': rm_code,
                     })
                     next_rm_id += 1
@@ -2511,6 +2680,9 @@ def main(argv=None):
 
             # Standalone keyword (no amount): emit Auxmark per townmark
             elif kw:
+                if desc_only_frank_note:
+                    continue
+
                 aux_inscription = kw
                 if kw in ('PM_FREE', 'PM_FRANK'):
                     aux_inscription = 'FREE' if kw == 'PM_FREE' else 'FRANK'
@@ -2554,7 +2726,7 @@ def main(argv=None):
         columns=['ratemark_id', 'inscription_text', 'rate_value', 'is_manuscript',
                  'shape_id', 'lettering_id', 'color_id', 'width', 'height',
                  'is_irregular', 'impression', 'source_listing_idx', 'rate_raw',
-                 'bracket_qualifier']
+                 'bracket_qualifier', 'bracket_desc_note']
     )
     auxmarks_df = pd.DataFrame(auxmark_rows) if auxmark_rows else pd.DataFrame(
         columns=['auxmark_id', 'inscription_text', 'parent_mark_type',
@@ -2984,23 +3156,20 @@ def main(argv=None):
             if sli is not None and sli not in catalog_text_by_listing:
                 catalog_text_by_listing[sli] = _tm.get("catalog_text")
     # Per-listing desc text, looked up at townmark emission time. Combines
-    # the parenthetical annotation lines (Backstamp, No town cds, ...) and
-    # the See-clause for cross-reference rows.
+    # the parenthetical annotation lines (Backstamp, No town cds, ...), the
+    # See-clause for cross-reference rows, desc-only frank shorthands,
+    # decade-only dates (Issue #26), and unresolved 'other' paren fields kept
+    # verbatim as errata notes.
     desc_by_listing = {}
     for _lidx, _lrow in listings.iterrows():
-        _lines = list(_lrow.get('paren_annotations_desc') or [])
-        _see = _lrow.get('see_clause')
-        if _see and isinstance(_see, str) and _see.strip():
-            _lines.append(_see.strip())
-        # Decade-level dates are dropped from the date field (too imprecise to
-        # be a "date seen") and recorded here instead (Issue #26): "1850's" ->
-        # note line "Dates seen: 1850s".
-        _decades = []
-        for _d in (_lrow.get('parsed_dates') or []):
-            if _d.get('date_granularity') == 'DECADE' and _d.get('date_year_start'):
-                _decades.append(f"{int(_d['date_year_start'])}s")
-        if _decades:
-            _lines.append("Dates seen: " + ", ".join(dict.fromkeys(_decades)))
+        _lines = listing_desc_lines(
+            _lrow.get('paren_annotations_desc'),
+            _lrow.get('see_clause'),
+            _lrow.get('parsed_dates'),
+            _lrow.get('other_fields'),
+            _lrow.get('parsed_sizes'),
+            frank_rate_desc_notes(_lrow.get('parsed_rates')),
+        )
         if _lines:
             desc_by_listing[_lidx] = "\n".join(_lines)
     # source_marking_map.csv is private pipeline metadata. It is not imported by
@@ -3020,6 +3189,55 @@ def main(argv=None):
     marking_rows = []
     source_marking_map_rows = []
     marking_code_by_id = {}
+    townmark_inscription_by_id = {}
+    if townmarks_df is not None and len(townmarks_df):
+        townmark_inscription_by_id = dict(zip(
+            townmarks_df["townmark_id"],
+            townmarks_df["inscription_text"],
+        ))
+    ratemark_parent_townmark_by_id = {}
+    if townmark_ratemark_df is not None and len(townmark_ratemark_df):
+        for _, _link in townmark_ratemark_df.iterrows():
+            ratemark_parent_townmark_by_id.setdefault(
+                _link.get("ratemark_id"),
+                _link.get("townmark_id"),
+            )
+
+    def _scalar_text(value):
+        if value is None:
+            return ""
+        try:
+            if pd.isna(value):
+                return ""
+        except (TypeError, ValueError):
+            pass
+        return str(value).strip()
+
+    def _child_inscription_with_parent(parent_text, child_text):
+        parent = _scalar_text(parent_text)
+        child = _scalar_text(child_text)
+        if not parent:
+            return child
+        if not child:
+            return parent
+        child_upper = child.upper()
+        parent_upper = parent.upper()
+        if child_upper == parent_upper or child_upper.startswith(parent_upper + " "):
+            return child
+        return f"{parent} {child}"
+
+    def _parent_townmark_id_for_child(kind, row):
+        if kind == "RM":
+            return ratemark_parent_townmark_by_id.get(row.get("ratemark_id"))
+        if kind == "AX":
+            parent_type = row.get("parent_mark_type")
+            parent_id = row.get("parent_mark_id")
+            if parent_type == "TOWNMARK":
+                return parent_id
+            if parent_type == "RATEMARK":
+                return ratemark_parent_townmark_by_id.get(parent_id)
+        return None
+
     for kind, src_id, mk_id in emit_order:
         if kind == "TM":
             r = _src_row_by(townmarks_df, "townmark_id", src_id)
@@ -3057,9 +3275,24 @@ def main(argv=None):
         is_irreg_val = r.get("is_irregular")
         if not is_ms and (is_irreg_val is None or (isinstance(is_irreg_val, float) and pd.isna(is_irreg_val))):
             is_irreg_val = False
-        # desc: only townmarks carry annotations (Backstamp, See-clause);
-        # ratemarks and auxmarks inherit them implicitly via their parent.
-        desc_val = desc_by_listing.get(src_idx) if kind == "TM" else None
+        # desc: townmarks carry listing-level annotations (Backstamp,
+        # See-clause, unresolved errata); ratemarks carry their own stylistic
+        # bracket note ("5[large]" -> desc "large"), set at emission time.
+        # Auxmarks inherit notes implicitly via their parent.
+        if kind == "TM":
+            desc_val = desc_by_listing.get(src_idx)
+        elif kind == "RM":
+            # r is a pandas Series: a missing note is NaN, not None,
+            # so guard with isinstance before strip.
+            _note = r.get("bracket_desc_note")
+            desc_val = _note.strip() if isinstance(_note, str) and _note.strip() else None
+        else:
+            desc_val = None
+        inscription_txt = r.get("inscription_text")
+        if kind in ("RM", "AX"):
+            parent_tm_id = _parent_townmark_id_for_child(kind, r)
+            parent_inscription = townmark_inscription_by_id.get(parent_tm_id)
+            inscription_txt = _child_inscription_with_parent(parent_inscription, inscription_txt)
         marking_code = f"{RW_CODE}-{REGION_ABBREV}-M{mk_id + 1000}"
         marking_code_by_id[mk_id] = marking_code
         marking_rows.append({
@@ -3069,7 +3302,7 @@ def main(argv=None):
             "code": marking_code,
             "type": type_label,
             "catalog_txt": catalog_txt,
-            "inscription_txt": r.get("inscription_text"),
+            "inscription_txt": inscription_txt,
             "desc": desc_val,
             "is_manuscript": is_ms,
             "shape": shape_name,
@@ -3089,17 +3322,6 @@ def main(argv=None):
             "v2_key": v2_key_by_listing.get(src_idx, ""),
             "source_listing_idx": src_idx,
             "marking_code": marking_code,
-            "marking_type": type_label,
-            "page": source_key_component(_page),
-            "chunk": source_key_component(_chunk),
-            "catalog_txt": catalog_txt,
-        })
-        _page = listings.loc[int(src_idx), "Page"] if src_idx is not None else ""
-        _chunk = listings.loc[int(src_idx), "Chunk"] if src_idx is not None else ""
-        source_marking_map_rows.append({
-            "v2_key": v2_key_by_listing.get(src_idx, ""),
-            "source_listing_idx": src_idx,
-            "marking_id": mk_id,
             "marking_type": type_label,
             "page": source_key_component(_page),
             "chunk": source_key_component(_chunk),

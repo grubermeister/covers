@@ -79,8 +79,9 @@ Optional image roots:
 - `backups/images/<state-name>/`: used by default when present.
 - `tools/wip/in/v1_images`: final fallback.
 
-If legacy image files are not available, pass `--allow-missing-v1-images`.
-Missing images are written to the image report instead of aborting.
+Missing v1 image files are skipped by default and written to the image report.
+Pass `--strict-v1-images` when a run should fail on a missing image root or
+referenced image file.
 
 ### 1. Check Inputs
 

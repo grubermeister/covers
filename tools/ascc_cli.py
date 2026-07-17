@@ -207,9 +207,19 @@ def add_v1_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--allow-missing-v1-images",
+        dest="allow_missing_v1_images",
         action="store_true",
-        default=False,
-        help="write warning rows for missing v1 image files instead of failing",
+        default=True,
+        help=(
+            "write warning rows for missing v1 image files instead of "
+            "failing (default)"
+        ),
+    )
+    parser.add_argument(
+        "--strict-v1-images",
+        dest="allow_missing_v1_images",
+        action="store_false",
+        help="fail if the v1 image root or any referenced v1 image file is missing",
     )
     parser.add_argument(
         "--strict",

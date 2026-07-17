@@ -37,8 +37,10 @@ from PIL import Image as PILImage
 from munger.fields.dates import FULL_DATE_RE, parse_date_field
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
+from munger.rate_assembly import parse_rate_amount
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
 from v1_synthetic_listing import (
+    DATE_SENTINEL_YEARS,
     color_tokens as v1_color_tokens,
     has_synthetic_listing_evidence,
     synthetic_desc_lines,
@@ -143,16 +145,52 @@ def strip_inscription_markers(inscription: object) -> str:
     return ""
 
 
+def strip_trailing_state_suffix(text: object) -> str:
+    value = clean(text)
+    for pattern in (
+        r"\s+[A-Za-z]{1,4}\.?$",
+        r"/\s*[A-Za-z]{1,4}\.?$",
+        r"\.\s*[A-Za-z]{1,4}\.?$",
+    ):
+        stem = re.sub(pattern, "", value).strip()
+        if stem != value:
+            return stem
+    return value
+
+
+def split_location_state_suffix(text: object) -> tuple[str, str]:
+    value = clean(text)
+    for pattern in (
+        r"^(?P<location>.+?)(?P<state>/\s*[A-Za-z]{1,4}\.?)$",
+        r"^(?P<location>.+?)(?P<state>\s+[A-Za-z]{1,4}\.?)$",
+    ):
+        match = re.match(pattern, value)
+        if match:
+            return match.group("location").strip(), match.group("state")
+    return "", ""
+
+
+def compact_location_token(text: object) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", clean(text)).upper()
+
+
+def trailing_location_token(text: object) -> str:
+    match = re.search(r"([A-Za-z.]+)\s*$", clean(text))
+    return match.group(1) if match else ""
+
+
+def same_suffix_repeats_parent_tail(parent_stem: str, suffix_location: str) -> bool:
+    parent_tail = compact_location_token(trailing_location_token(parent_stem))
+    suffix_tail = compact_location_token(suffix_location)
+    return 2 <= len(parent_tail) <= 4 and parent_tail == suffix_tail
+
+
 def townmark_text_stem(text: object) -> str:
     """Return the townmark text prefix before a state or device suffix."""
     value = strip_inscription_markers(text)
     if "/" in value:
         return value.split("/", 1)[0].strip()
-    return re.sub(
-        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
-        "",
-        value,
-    ).strip() or value
+    return strip_trailing_state_suffix(value) or value
 
 
 def resolve_same_inscription(inscription: object, parent_text: object) -> str:
@@ -175,8 +213,13 @@ def resolve_same_inscription(inscription: object, parent_text: object) -> str:
     suffix = strip_inscription_markers(value[match.end():])
     if not suffix.strip():
         return parent
+    parent_stem = townmark_text_stem(parent)
+    if "/" not in parent:
+        suffix_location, suffix_state = split_location_state_suffix(suffix)
+        if suffix_state and same_suffix_repeats_parent_tail(parent_stem, suffix_location):
+            return strip_inscription_markers(parent_stem + suffix_state)
     sep = "" if suffix.startswith("/") else " "
-    return strip_inscription_markers(townmark_text_stem(parent) + sep + suffix)
+    return strip_inscription_markers(parent_stem + sep + suffix)
 
 
 def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
@@ -453,6 +496,17 @@ def split_date_tokens(value: object) -> list[str]:
     return tokens
 
 
+def is_v1_sentinel_year(value: object) -> bool:
+    """Return True for legacy v1 date-placeholder years.
+
+    The v1 split-column export uses 1700 and 1900 as unknown-date sentinel
+    values. This helper is intentionally used only for v1 split-column date
+    sources such as txtDatesSeen; ordinary catalog text may still parse any
+    syntactically valid year through munger.fields.dates.parse_date_field.
+    """
+    return str(value or "").strip() in DATE_SENTINEL_YEARS
+
+
 def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str]) -> list[dict[str, str]]:
     rows = []
     seen = set()
@@ -464,6 +518,8 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
         gran = parsed.get("date_granularity")
         try:
             if gran == "DAY":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(
                     int(parsed["date_year_start"]),
                     int(parsed["date_month"]),
@@ -471,6 +527,8 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                 )
                 observations.append((str(observed), "DAY"))
             elif gran == "MONTH":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(
                     int(parsed["date_year_start"]),
                     int(parsed["date_month"]),
@@ -478,12 +536,19 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                 )
                 observations.append((str(observed), "MONTH"))
             elif gran == "YEAR":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(int(parsed["date_year_start"]), 1, 1)
                 observations.append((str(observed), "YEAR"))
-            elif gran in {"RANGE", "DECADE"}:
+            elif gran == "RANGE":
                 for year in (parsed.get("date_year_start"), parsed.get("date_year_end")):
+                    if is_v1_sentinel_year(year):
+                        continue
                     observed = date(int(year), 1, 1)
                     observations.append((str(observed), "YEAR"))
+            # DECADE intentionally emits no dates_seen row. The munger keeps
+            # decade-level dates such as "1850s" as description notes instead
+            # of treating 1850 and 1859 as observed endpoints.
         except (TypeError, ValueError):
             continue
         for subject_id in subject_ids:
@@ -524,15 +589,25 @@ def dedupe_date_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 def parsed_rate_values(value: object) -> list[str]:
     out = []
     for token in split_rate_tokens(clean(value)):
-        parsed = parse_rate_token(token)
-        amount = parsed.get("rate_amount_raw")
-        if amount:
-            norm = decimal_text(amount)
-            if norm:
-                out.append(norm)
+        # parse_rate_amount understands romans (X -> 10, V -> 5) and
+        # fractions (12-1/2 -> 12.5). decimal_text alone dropped those, so
+        # "X,PAID,PAID 3" collapsed to ["3"] and the single-value branch in
+        # apply_row_fields stamped 3 onto every ratemark in the listing.
+        # Try the whole token first (fractions survive only this way), then
+        # the amount parse_rate_token extracts (for "PAID 3" style tokens).
+        numeric, _ = parse_rate_amount(token)
+        if numeric is None:
+            amount = parse_rate_token(token).get("rate_amount_raw")
+            if amount:
+                numeric, _ = parse_rate_amount(amount)
+        if numeric is not None:
+            out.append(decimal_text(numeric))
     if out:
         return out
     return [decimal_text(m.group(0)) for m in re.finditer(r"\d+(?:\.\d+)?", clean(value)) if decimal_text(m.group(0))]
+
+
+RATE_NOTE_PREFIX = "Rate note: "
 
 
 def append_desc(existing: object, extras: list[str]) -> str:
@@ -540,8 +615,16 @@ def append_desc(existing: object, extras: list[str]) -> str:
     for value in [existing, *extras]:
         for line in str(value or "").splitlines():
             line = clean(line)
-            if line and line not in lines:
-                lines.append(line)
+            if not line or line in lines:
+                continue
+            # The munger records an unparseable paren field verbatim ("day in
+            # ms") and the v1 overlay re-adds the same text as "Rate note:
+            # day in ms"; treat the two forms as one note, first one wins.
+            if line.startswith(RATE_NOTE_PREFIX) and line[len(RATE_NOTE_PREFIX):] in lines:
+                continue
+            if RATE_NOTE_PREFIX + line in lines:
+                continue
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -795,7 +878,16 @@ def apply_row_fields(
     if nonblank(raw_row.get("txtRatesText")):
         rate_values = parsed_rate_values(raw_row.get("txtRatesText"))
         ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
-        if len(rate_values) == 1 and ratemark_rows:
+        # A single v1 value may only correct a uniform set of ratemarks.
+        # When the bundle already carries distinct values (e.g. X=10 and
+        # PAID 3=3 from the same listing), stamping the one v1 value over
+        # all of them destroys correct data -- warn instead.
+        existing_values = {
+            decimal_text(row.get("rate_val"))
+            for row in ratemark_rows
+            if nonblank(row.get("rate_val"))
+        }
+        if len(rate_values) == 1 and ratemark_rows and len(existing_values) <= 1:
             for row in ratemark_rows:
                 row["rate_val"] = rate_values[0]
         elif len(rate_values) == len(ratemark_rows):

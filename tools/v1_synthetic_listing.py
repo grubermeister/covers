@@ -11,10 +11,18 @@ from __future__ import annotations
 
 import re
 
+from munger.fields import KNOWN_COLORS, is_color_field
 from munger.fields.colors import parse_color_field
 from munger.fields.rates import parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
 from v1_to_v2_catalog_format import normalize_listing
+
+# v1 columns that may hold rate text. The v1 data entry split catalog lines
+# positionally, so a listing with no rate field can strand its second color
+# here (IA ATHENS: "(1831-32;31;Blue;Red)" -> txtRatesText='Blue' while
+# txtColors='Red'). Every consumer of these columns must treat a value that
+# parses entirely as colors as a color source, never as a rate or rate note.
+RATE_TEXT_COLUMNS = ("txtRates", "txtRatesText", "txtTownmarkRateText", "txtTownmarkRateValue")
 
 
 TEXT_SENTINELS = {"", "-", "--", "N/A", "NA", "NONE", "NULL"}
@@ -51,19 +59,43 @@ SHAPE_CODE_BY_LABEL = {
     "STRAIGHT LINE": "SL",
 }
 RATE_KEYWORD_RE = re.compile(
-    r"\b(?:PAID|FREE|STEAM|DUE|FRANK)\b|\bP\.?M\.?",
+    r"\b(?:PAID|FREE|STEAM|DUE|FRANK|NEGATIVE|STENCIL)\b|\bP\.?M\.?",
     re.IGNORECASE,
 )
 RATE_BRACKET_SIGNAL_RE = re.compile(
-    r"[\[\{\|]\s*(?:MS\.?|C|O|BOX|ARC|OCTAGON|SL|RECTANGLE|OVAL|CIRCLE)\s*[\]\}\|]",
+    r"[\[\{\|]\s*"
+    r"(?:MS\.?|NEG(?:ATIVE)?|STENCIL|C|O|BOX|ARC|OCTAGON|SL|RECTANGLE|OVAL|CIRCLE)"
+    r"\s*[\]\}\|]",
     re.IGNORECASE,
 )
 BARE_RATE_RE = re.compile(
-    r"^(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLCDM]+)(?:\s*,\s*(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLCDM]+))*$",
+    r"^(?:(?:NEGATIVE|STENCIL)\s+)?"
+    r"(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLDM]+)"
+    r"(?:\s*,\s*(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLDM]+))*$",
     re.IGNORECASE,
 )
 FRACTION_CENTS_RE = re.compile(r"\b(\d+)\s+(\d+)/(\d+)\s*cents?\b", re.IGNORECASE)
 MS_BRACKET_RE = re.compile(r"[\[\{\|]\s*ms\.?\s*[\]\}\|]", re.IGNORECASE)
+COLOR_CONNECTOR_WORDS = {"and", "to"}
+COLOR_MODIFIER_WORDS = {"bright", "dark", "deep", "light", "pale"}
+V1_EXTRA_COLOR_WORDS = {"brownish", "purplish"}
+DATE_FORMAT_COMPACTS = {
+    "MD",
+    "MDD",
+    "YD",
+    "YMD",
+    "YMDD",
+    "MONTHDAY",
+    "MONTHDAYDAY",
+    "YEARDAY",
+    "YEARMONTHDAY",
+    "YEARMONTHDAYDAY",
+}
+DATE_FORMAT_COMPACTS.update(
+    "{0}{1}".format(code, suffix)
+    for code in ("MD", "MDD", "YD", "YMD", "YMDD")
+    for suffix in ("ABOVE", "BELOW")
+)
 
 
 def clean(value: object) -> str:
@@ -84,6 +116,46 @@ def truthy(value: object) -> bool:
     return clean(value).lower() in {"1", "true", "yes", "y", "t"}
 
 
+def _is_v1_color_word(word: str) -> bool:
+    return (
+        word in KNOWN_COLORS
+        or word in V1_EXTRA_COLOR_WORDS
+        or word in COLOR_MODIFIER_WORDS
+        or word in COLOR_CONNECTOR_WORDS
+    )
+
+
+def _is_v1_color_token(token: str) -> bool:
+    words = [w.lower() for w in re.split(r"[\s/\-]+", token) if w]
+    if not words:
+        return False
+    has_color_word = False
+    for word in words:
+        if word in COLOR_CONNECTOR_WORDS or word in COLOR_MODIFIER_WORDS:
+            continue
+        if word in KNOWN_COLORS or word in V1_EXTRA_COLOR_WORDS:
+            has_color_word = True
+            continue
+        return False
+    return has_color_word and all(_is_v1_color_word(word) for word in words)
+
+
+def _is_v1_color_field(text: str) -> bool:
+    if not text:
+        return False
+    if is_color_field(text):
+        return True
+    if re.search(r"\d", text) or RATE_KEYWORD_RE.search(text):
+        return False
+    tokens = [token.strip() for token in text.split(",") if token.strip()]
+    return bool(tokens) and all(_is_v1_color_token(token) for token in tokens)
+
+
+def _is_date_format_text(value: object) -> bool:
+    compact = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
+    return compact in DATE_FORMAT_COMPACTS
+
+
 def synthetic_head(row: dict[str, str]) -> str:
     """Return the listing head for a blank-text v1 row."""
     for column in ("txtTownPostmark", "txtPostmark", "txtTown"):
@@ -94,10 +166,16 @@ def synthetic_head(row: dict[str, str]) -> str:
 
 
 def color_tokens(row: dict[str, str]) -> list[str]:
-    """Return color names from the v1 color source columns."""
+    """Return color names from the v1 color source columns.
+
+    Colors stranded in rate columns by the v1 positional split (see
+    RATE_TEXT_COLUMNS) are appended after the color-column names, deduped
+    case-insensitively.
+    """
+    names: list[str] = []
     for column in ("txtColors", "txtTownmarkColor"):
         text = useful_text(row.get(column))
-        if not text:
+        if not text or not _is_v1_color_field(text):
             continue
         names = [
             name
@@ -105,8 +183,17 @@ def color_tokens(row: dict[str, str]) -> list[str]:
             if useful_text(name) and useful_text(name).upper() != "N/A"
         ]
         if names:
-            return names
-    return []
+            break
+    seen = {name.upper() for name in names}
+    for column in RATE_TEXT_COLUMNS:
+        value = _normalize_rate_text(row.get(column))
+        if not value or not _is_v1_color_field(value):
+            continue
+        for name in parse_color_field(value):
+            if useful_text(name) and name.upper() not in seen:
+                names.append(name)
+                seen.add(name.upper())
+    return names
 
 
 def normalized_shape_code(value: object) -> str:
@@ -242,8 +329,7 @@ def rate_tokens(row: dict[str, str]) -> list[str]:
     if rate_text and rate_value:
         raw_values.append("{0} {1}".format(rate_text, rate_value))
     raw_values.extend(
-        _normalize_rate_text(row.get(column))
-        for column in ("txtRates", "txtRatesText", "txtTownmarkRateText", "txtTownmarkRateValue")
+        _normalize_rate_text(row.get(column)) for column in RATE_TEXT_COLUMNS
     )
 
     tokens = []
@@ -262,12 +348,16 @@ def rate_tokens(row: dict[str, str]) -> list[str]:
 
 
 def rate_note_tokens(row: dict[str, str]) -> list[str]:
-    """Return rate-column values that should be preserved as notes."""
+    """Return rate-column values that should be preserved as notes.
+
+    A value that parses entirely as colors is a stranded color, not a rate
+    note; color_tokens picks it up instead (no "Rate note: Blue" desc).
+    """
     notes = []
     seen = set()
-    for column in ("txtRates", "txtRatesText", "txtTownmarkRateText", "txtTownmarkRateValue"):
+    for column in RATE_TEXT_COLUMNS:
         value = _normalize_rate_text(row.get(column))
-        if not value:
+        if not value or _is_v1_color_field(value) or _is_date_format_text(value):
             continue
         parseable = any(_is_rate_token(_normalize_rate_text(token)) for token in split_rate_tokens(value))
         key = value.upper()

@@ -3,7 +3,7 @@ from datetime import date as _date_cls
 import pandas as pd
 
 
-ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'C': 100, 'D': 500, 'M': 1000}
+ROMAN_VALUES = {'I': 1, 'V': 5, 'X': 10, 'L': 50, 'D': 500, 'M': 1000}
 
 def roman_to_int(s):
     """Convert a roman numeral string to integer. Returns None on failure."""
@@ -38,7 +38,7 @@ def parse_rate_amount(raw):
         return None, False
 
     # Roman numeral check
-    if re.match(r'^[IVXLCDM]+$', s):
+    if re.match(r'^[IVXLDM]+$', s):
         val = roman_to_int(s)
         if val is not None:
             return float(val), True
@@ -61,6 +61,12 @@ def parse_rate_amount(raw):
 BRACKET_SHAPE_MAP = {
     'c': 'C',
     'o': 'O',
+    'dc': 'DC',
+    'do': 'DO',
+    'dlc': 'DLC',
+    'dlo': 'DLO',
+    'dldc': 'DLDC',
+    'dldo': 'DLDO',
     'box': 'BOX',
     'arc': 'ARC',
     'octagon': 'Octagon',

@@ -148,6 +148,8 @@ tools/wip/cache/v1/VA/run.json
 `./woco ascc munge VA` builds the bundle without importing it.
 `./woco ascc run VA` runs the same munge step and then imports the generated
 bundle. Pass `--dry-run` to validate through the importer and roll back.
+Missing v1 image files are skipped by default and reported in
+`v1_pipeline_warnings.csv`; pass `--strict-v1-images` to fail instead.
 `./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf` runs the legacy scanned
 PDF OCR pipeline.
 

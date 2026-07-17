@@ -47,6 +47,24 @@ IMAGE_COUNT_VALUE = "0"
 ROW_TYPE_VALUE = "LISTING"
 TOWN_COL = "txtTown"
 TOWN_POSTMARK_COL = "txtTownPostmark"
+V1_LISTING_VALUE_PATTERN = (
+    r"(?:\d[\d,]*(?:\.\d+)?(?:[-/]\d[\d,]*(?:\.\d+)?)*|---?)"
+)
+V1_COMPLETE_VALUED_LISTING_RE = re.compile(
+    r"\([^)]*\)\s*" + V1_LISTING_VALUE_PATTERN + r"\s*$"
+)
+V1_GLUED_SAME_LISTING_START_RE = re.compile(
+    r"(?<![A-Za-z])(?:\(\d+\))?\s*\+?(?:The\s+)?Same\b",
+    re.IGNORECASE,
+)
+V1_SAME_VALUED_LISTING_RE = re.compile(
+    r"^(?:\(\d+\))?\s*\+?(?:The\s+)?Same\b"
+    r"(?=[^\r\n)]*\))"
+    r"(?:[^()]|\([^()]*\)){0,160}?"
+    + V1_LISTING_VALUE_PATTERN
+    + r"(?=\s|$)",
+    re.IGNORECASE,
+)
 V1_COLOR_SPLIT_IGNORED_COLUMNS = frozenset({
     "nRawStateDataID",
     "nRawStateDataID_parent",
@@ -113,6 +131,41 @@ def strip_glued_context_prefix(listing: str, row: dict[str, str]) -> str:
             if prefix.endswith("."):
                 return listing[match.start():].strip()
     return listing
+
+
+def split_glued_same_listings(listing: str) -> list[str]:
+    """Split v1 rows that accidentally joined adjacent Same listings.
+
+    v1 raw text is normalized before the munger sees it, so a missing line
+    split can become one string such as:
+      Same VA.(1855-61;--;FREE;Black) 60 (1)Same(PAID,3;Green) 50
+
+    The munger is row-oriented. Split only at an explicit Same-family listing
+    with its own parenthetical value, and only when the preceding segment
+    already ends like a complete valued catalog listing.
+    """
+    if not listing:
+        return []
+    starts = [0]
+    for match in V1_GLUED_SAME_LISTING_START_RE.finditer(listing):
+        start = match.start()
+        if start == 0:
+            continue
+        if not V1_SAME_VALUED_LISTING_RE.match(listing[start:]):
+            continue
+        previous = listing[starts[-1]:start].strip()
+        if V1_COMPLETE_VALUED_LISTING_RE.search(previous):
+            starts.append(start)
+    if len(starts) == 1:
+        return [listing]
+
+    parts = []
+    for idx, start in enumerate(starts):
+        end = starts[idx + 1] if idx + 1 < len(starts) else len(listing)
+        part = listing[start:end].strip()
+        if part:
+            parts.append(part)
+    return parts
 
 
 def v1_color_split_key(row: dict[str, str], fields: list[str]) -> tuple[str, ...]:
@@ -206,6 +259,7 @@ def write_v1_catalog_rows(
             )
         else:
             print("dropped v1 color-split duplicate rows: 0")
+        split_rows = 0
         for row in source_rows:
             listing = normalize_listing(row.get(RAW_TEXT_COL))
             listing = strip_glued_context_prefix(listing, row)
@@ -214,19 +268,24 @@ def write_v1_catalog_rows(
             if not listing:
                 continue
             raw_id = (row.get(RAW_ID_COL) or "").strip()
-            included_raw_ids.append(raw_id)
-            catalog_rows.append(
-                {
-                    "listing_text": listing,
-                    "catalog_page": CATALOG_PAGE_VALUE,
-                    "chunk_number": raw_id,
-                    "image_count": IMAGE_COUNT_VALUE,
-                    "row_type": ROW_TYPE_VALUE,
-                    "is_manuscript": "",
-                    "default_shape": "",
-                    "institutional_owner": "",
-                }
-            )
+            listing_parts = split_glued_same_listings(listing)
+            if len(listing_parts) > 1:
+                split_rows += 1
+            for listing_part in listing_parts:
+                included_raw_ids.append(raw_id)
+                catalog_rows.append(
+                    {
+                        "listing_text": listing_part,
+                        "catalog_page": CATALOG_PAGE_VALUE,
+                        "chunk_number": raw_id,
+                        "image_count": IMAGE_COUNT_VALUE,
+                        "row_type": ROW_TYPE_VALUE,
+                        "is_manuscript": "",
+                        "default_shape": "",
+                        "institutional_owner": "",
+                    }
+                )
+        print("split v1 glued Same listing rows: {0}".format(split_rows))
     write_catalog_rows(Path(out_path), catalog_rows)
     return len(catalog_rows), included_raw_ids
 
