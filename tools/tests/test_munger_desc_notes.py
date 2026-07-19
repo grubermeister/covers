@@ -30,13 +30,18 @@ class ListingDescLinesTests(unittest.TestCase):
         lines = listing_desc_lines(
             ['Backstamp'],
             'See Colonial listing',
-            [{'date_granularity': 'DECADE', 'date_year_start': 1850}],
+            [{
+                'date_granularity': 'DECADE',
+                'date_year_start': 1850,
+                'date_is_circa': False,
+                'date_raw': "1850's",
+            }],
             ['fancy lined X'],
         )
         self.assertEqual(lines, [
             'Backstamp',
             'See Colonial listing',
-            'Dates seen: 1850s',
+            "Date(s) seen: 1850's",
             'fancy lined X',
         ])
 
@@ -70,6 +75,44 @@ class ListingDescLinesTests(unittest.TestCase):
         # describe layout, not errata; they stay out of desc.
         sizes = [{'size_qualifier': 'below'}, {'size_qualifier': None}]
         self.assertEqual(listing_desc_lines([], None, [], [], sizes), [])
+
+    def test_nor_size_qualifier_is_a_desc_note(self):
+        sizes = [{'size_qualifier': 'NOR'}]
+        self.assertEqual(
+            listing_desc_lines([], None, [], [], sizes),
+            ['NOR'],
+        )
+
+    def test_arc_decade_listing_preserves_date_text_and_nor(self):
+        sizes = [{'size_qualifier': 'NOR'}]
+        dates = [{
+            'date_granularity': 'DECADE',
+            'date_year_start': 1850,
+            'date_is_circa': False,
+            'date_raw': '1850s',
+        }]
+        self.assertEqual(
+            listing_desc_lines([], None, dates, [], sizes),
+            ['Date(s) seen: 1850s', 'NOR'],
+        )
+
+    def test_circa_year_uses_exact_source_text(self):
+        dates = [
+            {
+                'date_granularity': 'YEAR',
+                'date_is_circa': True,
+                'date_raw': 'c1850',
+            },
+            {
+                'date_granularity': 'YEAR',
+                'date_is_circa': True,
+                'date_raw': '1850c',
+            },
+        ]
+        self.assertEqual(
+            listing_desc_lines([], None, dates, []),
+            ['Date(s) seen: c1850, 1850c'],
+        )
 
     def test_non_decade_dates_do_not_emit_dates_seen_line(self):
         lines = listing_desc_lines(

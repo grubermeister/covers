@@ -78,6 +78,13 @@ class SizeWithAnnotationBracket(unittest.TestCase):
     def test_stencil_amount_stays_rate(self):
         self.assertEqual(classify_paren_field('stencil 5'), 'rate')
 
+    def test_arc_unknown_dimension_with_nor_is_size(self):
+        self.assertEqual(classify_paren_field('arc--,NOR'), 'size')
+        parsed = parse_size_field('arc--,NOR')
+        self.assertEqual(parsed['size_shape_code'], 'ARC')
+        self.assertIsNone(parsed['size_dim1'])
+        self.assertEqual(parsed['size_qualifier'], 'NOR')
+
 
 class ExistingBehaviorPreserved(unittest.TestCase):
     def test_second_bare_number_is_rate(self):

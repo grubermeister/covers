@@ -34,7 +34,7 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
-from munger.fields.dates import FULL_DATE_RE, parse_date_field
+from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_field
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
 from munger.rate_assembly import parse_rate_amount
@@ -514,6 +514,8 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
         parsed = parse_date_field(token)
         if parsed.get("date_error") or parsed.get("date_granularity") == "UNKNOWN":
             continue
+        if is_approximate_date(parsed):
+            continue
         observations = []
         gran = parsed.get("date_granularity")
         try:
@@ -546,9 +548,8 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                         continue
                     observed = date(int(year), 1, 1)
                     observations.append((str(observed), "YEAR"))
-            # DECADE intentionally emits no dates_seen row. The munger keeps
-            # decade-level dates such as "1850s" as description notes instead
-            # of treating 1850 and 1859 as observed endpoints.
+            # Approximate dates stay out of dates_seen. The munger preserves
+            # their exact source text in the marking description.
         except (TypeError, ValueError):
             continue
         for subject_id in subject_ids:

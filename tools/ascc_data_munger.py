@@ -33,7 +33,7 @@ from munger.classify import RELATIONSHIP_PATTERN, TRAILING_VALUE_PATTERN, _csv_m
 from munger.export import AUDIT_TAIL, AUDIT_USER_ID, INT_COLS, _by_listing, _cast_int_columns, _resolve_int_fk, _src_row_by
 from munger.fields import _split_ms_date_token, classify_all_fields, classify_paren_field, subparse_fields, triage_other_field
 from munger.fields.colors import parse_color_field
-from munger.fields.dates import parse_date_field
+from munger.fields.dates import is_approximate_date, parse_date_field
 from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
 from munger.head import parse_head, parse_manuscript_row
@@ -89,11 +89,12 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
     """Assemble desc note lines for one listing row.
 
     Order: paren annotations (Backstamp, letter-position notes), See-clause,
-    frank privilege notes, decade-only dates ("Dates seen: 1850s", Issue #26),
+    frank privilege notes, approximate dates
+    ("Date(s) seen: 1850s", "Date(s) seen: c1850"),
     any unresolved 'other' paren fields recorded verbatim as errata notes
-    (e.g. APALACHICOLA "fancy lined X"), then bracketed size-field annotations
-    with the bracket delimiters stripped ("SL-42x5,MDD[separate hdstp]" ->
-    "separate hdstp").
+    (e.g. APALACHICOLA "fancy lined X"), then NOR or bracketed size-field
+    annotations, with bracket delimiters stripped
+    ("SL-42x5,MDD[separate hdstp]" -> "separate hdstp").
     Unbracketed size qualifiers like the positional "below" in
     "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
     are dropped, first occurrence wins. Returns a list of str lines
@@ -106,21 +107,29 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
         line = str(note).strip()
         if line and line not in lines:
             lines.append(line)
-    decades = []
+    approximate_dates = []
     for d in (parsed_dates or []):
-        if d.get('date_granularity') == 'DECADE' and d.get('date_year_start'):
-            decades.append(f"{int(d['date_year_start'])}s")
-    if decades:
-        lines.append("Dates seen: " + ", ".join(dict.fromkeys(decades)))
+        if not is_approximate_date(d):
+            continue
+        raw = str(d.get('date_raw') or '').strip()
+        if raw and raw not in approximate_dates:
+            approximate_dates.append(raw)
+    if approximate_dates:
+        lines.append("Date(s) seen: " + ", ".join(approximate_dates))
     for f in (other_fields or []):
         line = str(f).strip()
         if line and line not in lines:
             lines.append(line)
     for s in (parsed_sizes or []):
         q = str(s.get('size_qualifier') or '').strip()
-        if not q or q[0] not in '[{|':
+        if not q:
             continue
-        line = q.strip('[]{}|').strip()
+        if q.upper() == 'NOR':
+            line = 'NOR'
+        elif q[0] in '[{|':
+            line = q.strip('[]{}|').strip()
+        else:
+            continue
         if line and line not in lines:
             lines.append(line)
     return lines
@@ -1959,6 +1968,8 @@ def main(argv=None):
     for _, pm in townmarks_df.iterrows():
         src = listings.loc[pm['source_listing_idx']]
         for d in src['parsed_dates']:
+            if is_approximate_date(d):
+                continue
             gran = d['date_granularity']
 
             if gran == 'DAY':
@@ -2022,9 +2033,8 @@ def main(argv=None):
                         'date_error': d.get('date_error'),
                     })
                     next_date_id += 1
-            # DECADE intentionally emits no DateObserved row. A decade-level
-            # date like "1850s" is too broad for dates_seen and is recorded
-            # in the marking description instead.
+            # Approximate dates are preserved verbatim in the marking
+            # description and intentionally emit no DateObserved rows.
     date_observed_df = pd.DataFrame(date_rows) if date_rows else pd.DataFrame(
         columns=['date_observed_id', 'townmark_id', 'date', 'granularity',
                  'date_raw', 'date_error']
@@ -2902,6 +2912,8 @@ def main(argv=None):
         if not all_codes:
             continue
         for d in (src.get('parsed_dates') or []):
+            if is_approximate_date(d):
+                continue
             gran = d.get('date_granularity')
             obs_rows = []
             try:
@@ -2918,10 +2930,8 @@ def main(argv=None):
                     for yr in (d['date_year_start'], d['date_year_end']):
                         obs = _date_cls(int(yr), 1, 1)
                         obs_rows.append((str(obs), 'YEAR'))
-                # DECADE intentionally emits NO dates_seen row: a decade-level
-                # date ("1850's") is too imprecise to be a "date seen", so the
-                # marking's date field stays blank and the decade is recorded in
-                # the note instead (Issue #26; see desc assembly below).
+                # Approximate dates emit no dates_seen rows. Their exact source
+                # text is kept in the marking description instead.
             except (ValueError, TypeError, KeyError):
                 # Bad date components in source; Step 6 already reports parse errors.
                 continue
@@ -3158,8 +3168,8 @@ def main(argv=None):
     # Per-listing desc text, looked up at townmark emission time. Combines
     # the parenthetical annotation lines (Backstamp, No town cds, ...), the
     # See-clause for cross-reference rows, desc-only frank shorthands,
-    # decade-only dates (Issue #26), and unresolved 'other' paren fields kept
-    # verbatim as errata notes.
+    # approximate dates, and unresolved 'other' paren fields kept verbatim as
+    # errata notes.
     desc_by_listing = {}
     for _lidx, _lrow in listings.iterrows():
         _lines = listing_desc_lines(

@@ -53,9 +53,24 @@ YEAR_RANGE_RE = re.compile(
 
 DECADE_RE = re.compile(r"^\s*(?:c\.?\s*)?(\d{4})'?s\s*$", re.IGNORECASE)
 
-BARE_YEAR_RE = re.compile(r'^\s*(?:c\.?\s*)?(\d{4})\s*$', re.IGNORECASE)
+BARE_YEAR_RE = re.compile(
+    r'^\s*(?:c\.?\s*)?(\d{4})(?:\s*c\.?)?\s*$',
+    re.IGNORECASE
+)
 
-CIRCA_RE = re.compile(r'^c\.?\s*\d|\bc\.?\s*\d', re.IGNORECASE)
+CIRCA_RE = re.compile(
+    r'^\s*(?:c\.?\s*\d|\d{4}\s*c\.?\s*$)',
+    re.IGNORECASE
+)
+
+
+def is_approximate_date(parsed):
+    """Return True when a parsed date must stay out of dates_seen."""
+    return (
+        parsed.get('date_granularity') == 'DECADE'
+        or bool(parsed.get('date_is_circa'))
+    )
+
 
 def _unknown_date_result(raw):
     """Return the parse shape for a catalog date slot marked unknown.

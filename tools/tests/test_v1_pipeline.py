@@ -738,9 +738,9 @@ class V1PipelineTests(unittest.TestCase):
             "Backstamp\nRate note: Double rate",
         )
 
-    def test_overlay_skips_decade_dates_seen_tokens(self):
+    def test_overlay_skips_approximate_dates_seen_tokens(self):
         rows = v1_bundle_overlay.parsed_date_rows(
-            "1857, 1859, 1850s",
+            "1857, 1859, 1850s, c1850, 1850c",
             ["ASCC6-WV-M2283"],
             AUDIT,
         )
@@ -1057,13 +1057,14 @@ class V1PipelineTests(unittest.TestCase):
         ]
         self.assertEqual(
             [(row["date"], row["granularity"]) for row in fork_dates],
-            [("1860-01-01", "YEAR")],
+            [],
         )
+        self.assertEqual(forks[0]["desc"], "Date(s) seen: c1860")
         self.assertNotIn("1700-01-01", {row["date"] for row in dates})
         self.assertNotIn("1900-01-01", {row["date"] for row in dates})
         self.assertIn("1861-04-16", {row["date"] for row in dates})
 
-    def test_munger_keeps_decade_dates_seen_as_desc_only(self):
+    def test_munger_keeps_decade_text_in_desc_only(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             input_dir = write_munger_seeds(root)
@@ -1104,7 +1105,59 @@ class V1PipelineTests(unittest.TestCase):
             dates = read_csv(out_dir / "dates_seen.csv")
 
         townmark = next(row for row in markings if row["type"] == "TOWNMARK")
-        self.assertEqual(townmark["desc"], "Dates seen: 1850s")
+        self.assertEqual(townmark["desc"], "Date(s) seen: 1850s")
+        self.assertEqual(
+            [row for row in dates if row["subject_id"] == townmark["code"]],
+            [],
+        )
+
+    def test_munger_parses_arc_unknown_size_with_nor_qualifier(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            catalog_text = (
+                "ADAMSVILLE/MICH."
+                "(1850s;arc--,NOR;PAID/3[arc];Black) 500"
+            )
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": catalog_text,
+                    "catalog_page": "0",
+                    "chunk_number": "21114",
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            dates = read_csv(out_dir / "dates_seen.csv")
+
+        townmark = next(row for row in markings if row["type"] == "TOWNMARK")
+        self.assertEqual(townmark["shape"], "ARC - Arc or Semi-circle")
+        self.assertEqual(townmark["desc"], "Date(s) seen: 1850s\nNOR")
         self.assertEqual(
             [row for row in dates if row["subject_id"] == townmark["code"]],
             [],

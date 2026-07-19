@@ -15,6 +15,7 @@ SIZE_IMPRESSION_BY_TOKEN = {
 SIZE_FIELD_RE = re.compile(
     r'(?:'
     + r'(?:(?:negative|stencil)\s+)?' + SHAPE_CODE_PAT + r'[\-\s]?\d'
+    + r'|^' + SHAPE_CODE_PAT + r'\s*-{1,2}(?:\s*,\s*NOR)?$'
     + r'|\d+\.?\d*\s*x\s*\d'
     + r'|^-{1,2}(?:\s*,'
     + SIZE_SUFFIX_PAT + r')?$'
