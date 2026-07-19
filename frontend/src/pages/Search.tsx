@@ -1205,7 +1205,7 @@ const Search = () => {
                                   {row.title}
                                 </h3>
                               </div>
-                              <CatalogRecordFields row={row} record={record} variant="search" />
+                              <CatalogRecordFields row={row} record={record} variant="list" />
                             </div>
                           </div>
                         </CardContent>
@@ -1259,7 +1259,7 @@ const Search = () => {
                               {row.title}
                             </h3>
                           </div>
-                          <CatalogRecordFields row={row} record={record} variant="search" />
+                          <CatalogRecordFields row={row} record={record} variant="gallery" />
                         </CardContent>
                       </Card>
                     );

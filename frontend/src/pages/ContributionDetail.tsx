@@ -66,6 +66,10 @@ function buildContributionCatalogFields(input: MarkingFieldInput): CatalogFieldV
     markingTextSingle: displayCatalogField(input.inscriptionTxt),
     shape: displayCatalogField(input.shapeName),
     lettering: displayCatalogField(input.letteringName),
+    impression: displayCatalogField(input.impression),
+    irregular: displayCatalogField(
+      input.isIrreg == null ? null : input.isIrreg ? "Yes" : "No",
+    ),
     dimensions: displayCatalogField(input.dimensions),
     color: displayCatalogField(input.colorName),
     rateValue: displayCatalogField(input.rateValFormatted),
@@ -724,7 +728,7 @@ const ContributionDetail = () => {
                       Failed to render submitted data: {fieldRowsError}
                     </p>
                   ) : contributionCatalogFields ? (
-                    <CatalogRecordFields row={contributionCatalogFields} variant="search" />
+                    <CatalogRecordFields row={contributionCatalogFields} variant="contribution" />
                   ) : (
                     <p className="text-sm text-muted-foreground py-2">
                       No submitted data returned for this contribution.

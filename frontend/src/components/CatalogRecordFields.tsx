@@ -2,11 +2,21 @@ import type { CatalogFieldValues } from "@/lib/catalogRecordDisplay";
 import type { MarkingRecord } from "@/services/markings";
 
 /**
- * Fixed catalog fields for Catalog Search (list) and Record Detail.
+ * Fixed catalog fields for Catalog Search and Record Detail.
  * Always shows all labels; values use the empty marker when missing
- * (see `buildCatalogFieldValues`). Dates render in a dedicated bottom row
- * so Earliest/Latest stay side-by-side regardless of optional field count.
+ * (see `buildCatalogFieldValues`). Search list and gallery cards use
+ * different, type-specific field sets. Dates render in a dedicated bottom
+ * row so Earliest/Latest stay side-by-side.
  */
+type CatalogRecordField = {
+  label: string;
+  value: string;
+};
+
+function hasValue(value: string): boolean {
+  return value.trim() !== "" && value !== "-";
+}
+
 function truncateWithEllipsis(value: string, maxChars: number): string {
   const s = String(value ?? "").trim();
   if (!s) return s;
@@ -14,83 +24,119 @@ function truncateWithEllipsis(value: string, maxChars: number): string {
   return `${s.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+function townmarkDescriptor(row: CatalogFieldValues): CatalogRecordField {
+  if (hasValue(row.lettering)) {
+    return { label: "Lettering Style", value: row.lettering };
+  }
+  if (hasValue(row.impression)) {
+    return { label: "Impression", value: row.impression };
+  }
+  if (hasValue(row.irregular)) {
+    return { label: "Irregular", value: row.irregular };
+  }
+  return { label: "Lettering Style", value: row.lettering };
+}
+
+function searchFields(
+  row: CatalogFieldValues,
+  variant: "list" | "gallery",
+): CatalogRecordField[] {
+  const type = { label: "Type", value: row.type };
+  const manuscript = { label: "Manuscript", value: row.manuscript };
+  const dimensions = { label: "Dimensions", value: row.dimensions };
+  const color = { label: "Color", value: row.color };
+  const isRatemark = row.type.trim().toLowerCase() === "ratemark";
+
+  if (variant === "gallery") {
+    return isRatemark
+      ? [
+          type,
+          manuscript,
+          dimensions,
+          { label: "Rate Value", value: row.rateValue },
+        ]
+      : [type, manuscript, dimensions, color];
+  }
+
+  return isRatemark
+    ? [
+        type,
+        manuscript,
+        { label: "Shape", value: row.shape },
+        { label: "Rate Value", value: row.rateValue },
+        dimensions,
+        color,
+      ]
+    : [
+        type,
+        manuscript,
+        { label: "Shape", value: row.shape },
+        townmarkDescriptor(row),
+        dimensions,
+        color,
+      ];
+}
+
+function contributionFields(row: CatalogFieldValues): CatalogRecordField[] {
+  const fields: CatalogRecordField[] = [
+    { label: "Type", value: row.type },
+    { label: "Manuscript", value: row.manuscript },
+  ];
+  const isManuscript = row.manuscript.trim().toLowerCase() === "yes";
+  const type = row.type.trim().toLowerCase();
+  const isRatemark = type === "ratemark";
+  const isAuxmark = type === "auxmark";
+
+  if (isManuscript || type !== "townmark") {
+    const description = truncateWithEllipsis(row.desc === "-" ? "" : row.desc, 140);
+    if (description) fields.push({ label: "Description", value: description });
+  } else {
+    fields.push(
+      { label: "Shape", value: row.shape },
+      { label: "Lettering style", value: row.lettering },
+      { label: "Dimensions", value: row.dimensions },
+    );
+  }
+
+  fields.push({ label: "Color", value: row.color });
+  if (isRatemark) {
+    fields.push({ label: "Rate Value", value: row.rateValue });
+  } else if (isAuxmark) {
+    fields.push({ label: "Shape", value: row.shape });
+  }
+  return fields;
+}
+
 export function CatalogRecordFields({
   row,
-  record,
-  variant = "search",
+  variant = "list",
 }: {
   row: CatalogFieldValues;
   record?: MarkingRecord;
-  variant?: "search" | "detail";
+  variant?: "list" | "gallery" | "detail" | "contribution";
 }) {
-  const isManuscript =
-    record?.isManuscript === true ||
-    (!record && row.manuscript.trim().toLowerCase() === "yes");
-  const isNonTownmark = record
-    ? record.type !== "TOWNMARK"
-    : row.type.trim().toLowerCase() !== "townmark";
-  const isRatemark = record
-    ? record.type === "RATEMARK"
-    : row.type.trim().toLowerCase() === "ratemark";
-  const isAuxmark = record
-    ? record.type === "AUXMARK"
-    : row.type.trim().toLowerCase() === "auxmark";
-  const hidePhysicalFieldsOnSearch = variant === "search" && (isManuscript || isNonTownmark);
-  const descForSearch = truncateWithEllipsis(row.desc === "-" ? "" : row.desc, 140);
-  const showSearchRateValue = variant === "search" && isRatemark;
-  const showSearchAuxmarkShape = variant === "search" && isAuxmark;
+  const fields =
+    variant === "detail"
+      ? [
+          { label: "Type", value: row.type },
+          { label: "Manuscript", value: row.manuscript },
+          { label: "Shape", value: row.shape },
+          { label: "Lettering style", value: row.lettering },
+          { label: "Dimensions", value: row.dimensions },
+          { label: "Color", value: row.color },
+        ]
+      : variant === "contribution"
+        ? contributionFields(row)
+      : searchFields(row, variant);
 
   return (
     <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-      <div className="min-w-0">
-        <span className="text-muted-foreground">Type:</span>{" "}
-        <span className="text-foreground break-words">{row.type}</span>
-      </div>
-      <div className="min-w-0">
-        <span className="text-muted-foreground">Manuscript:</span>{" "}
-        <span className="text-foreground break-words">{row.manuscript}</span>
-      </div>
-
-      {hidePhysicalFieldsOnSearch ? (
-        descForSearch ? (
-          <div className="min-w-0 sm:col-span-2">
-            <span className="text-muted-foreground">Description:</span>{" "}
-            <span className="text-foreground break-words">{descForSearch}</span>
-          </div>
-        ) : null
-      ) : (
-        <>
-          <div className="min-w-0">
-            <span className="text-muted-foreground">Shape:</span>{" "}
-            <span className="text-foreground break-words">{row.shape}</span>
-          </div>
-          <div className="min-w-0">
-            <span className="text-muted-foreground">Lettering style:</span>{" "}
-            <span className="text-foreground break-words">{row.lettering}</span>
-          </div>
-          <div className="min-w-0">
-            <span className="text-muted-foreground">Dimensions:</span>{" "}
-            <span className="text-foreground break-words">{row.dimensions}</span>
-          </div>
-        </>
-      )}
-
-      <div className="min-w-0">
-        <span className="text-muted-foreground">Color:</span>{" "}
-        <span className="text-foreground break-words">{row.color}</span>
-      </div>
-      {showSearchRateValue ? (
-        <div className="min-w-0">
-          <span className="text-muted-foreground">Rate Value:</span>{" "}
-          <span className="text-foreground break-words">{row.rateValue}</span>
+      {fields.map((field) => (
+        <div key={field.label} className="min-w-0">
+          <span className="text-muted-foreground">{field.label}:</span>{" "}
+          <span className="text-foreground break-words">{field.value}</span>
         </div>
-      ) : null}
-      {showSearchAuxmarkShape ? (
-        <div className="min-w-0">
-          <span className="text-muted-foreground">Shape:</span>{" "}
-          <span className="text-foreground break-words">{row.shape}</span>
-        </div>
-      ) : null}
+      ))}
       <div className="min-w-0 sm:col-span-2 grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2">
         <div className="min-w-0">
           <span className="text-muted-foreground">Earliest Seen:</span>{" "}
