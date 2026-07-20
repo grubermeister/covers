@@ -5,11 +5,12 @@ equivalent to 'python backend/manage.py runserver' with backend/ on
 sys.path. All built-in and custom Django management commands work
 identically (same args, same exit codes). The ASCC workflow also has a
 grouped public wrapper at './woco ascc', including './woco ascc import'
-for import_ascc_bundle. The data-deploy scripts are exposed as './woco push'
-and './woco reload'. './woco secretkey' prints a fresh DJANGO_SECRET_KEY
-value; it runs before Django settings load, so it works on a fresh clone
-that has no .env yet. './woco setup dev' and './woco setup prod' run the
-one-command environment setup in tools/setup.sh.
+for import_ascc_bundle and './woco ascc drop' for drop_ascc_state. The
+data-deploy scripts are exposed as './woco push' and './woco reload'.
+'./woco secretkey' prints a fresh DJANGO_SECRET_KEY value; it runs before
+Django settings load, so it works on a fresh clone that has no .env yet.
+'./woco setup dev' and './woco setup prod' run the one-command environment
+setup in tools/setup.sh.
 """
 import os
 import sys

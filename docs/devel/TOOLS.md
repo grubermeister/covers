@@ -34,6 +34,7 @@ which is exactly when you need it).
 | `ascc_image_extract.py` | Extract marking images from page chunks | `tools/ascc_image_extract.py` |
 | `ascc_data_munger.py` | Build Django-shape ASCC CSV bundles | `tools/ascc_data_munger.py` |
 | `ascc import` | Load an ASCC CSV bundle | `backend/common/management/commands/import_ascc_bundle.py` |
+| `ascc drop` | Delete one region's imported catalog data | `backend/common/management/commands/drop_ascc_state.py` |
 | `import_apmc_bundle` | Umbrella importer; delegates to ASCC today | `backend/common/management/commands/import_apmc_bundle.py` |
 | `wipe_user_data` | Clear submission/version/recycle-bin data | `backend/common/management/commands/wipe_user_data.py` |
 | `drop_ascc_state` | Delete one state's imported catalog data | `backend/common/management/commands/drop_ascc_state.py` |
@@ -333,19 +334,18 @@ The exported data contains email addresses and password hashes. Store it as
 a sensitive artifact. For the full host-to-host sync procedure, see
 [RUNBOOK.md](RUNBOOK.md#auth-sync-between-hosts).
 
-### `drop_ascc_state`
+### `ascc drop`
 
-Delete one state's imported catalog data.
+Delete imported catalog data using an exact `Region.code`.
 
 ```sh
-./woco drop_ascc_state VA --dry-run
-./woco drop_ascc_state VA
-./woco drop_ascc_state --region-code USA-VA1
+./woco ascc drop USA-VA1 --dry-run
+./woco ascc drop USA-VA1
 ```
 
-Expected exit code: `0`. The state argument is a two or three letter
-`Region.abbrev`; `--region-code` targets an exact `Region.code` instead.
-The dry run reports delete counts and rolls back.
+Expected exit code: `0`. The region code is positional. The dry run reports
+delete counts and rolls back. The legacy top-level command remains available
+as `./woco drop_ascc_state`.
 
 ### `consolidate_superseded_contributions`
 

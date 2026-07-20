@@ -18,9 +18,9 @@ python backend/manage.py backup_user_markings ./tools/wip/user-backups --list-on
 # 1. Backup (fail-fast: any export error aborts before anything is dropped).
 python backend/manage.py backup_user_markings ./tools/wip/user-backups
 
-# 2. Drop each state being refreshed (dry-run first).
-python backend/manage.py drop_ascc_state VA --dry-run
-python backend/manage.py drop_ascc_state VA
+# 2. Drop each region being refreshed (dry-run first).
+./woco ascc drop USA-VA1 --dry-run
+./woco ascc drop USA-VA1
 
 # 3. Re-import the re-run bundles (natural-key incremental).
 python backend/manage.py import_apmc_bundle ./tools/wip/out/

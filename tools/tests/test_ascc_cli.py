@@ -195,6 +195,17 @@ class AsccCliTests(unittest.TestCase):
             ["tools/wip/out/v1_va", "--dry-run", "--only", "markings,images"],
         )
 
+    def test_parser_accepts_drop_region_code_and_dry_run(self):
+        args = ascc_cli.build_parser().parse_args([
+            "drop",
+            "USA-MI1",
+            "--dry-run",
+        ])
+
+        self.assertEqual(args.command, "drop")
+        self.assertEqual(args.region_code, "USA-MI1")
+        self.assertTrue(args.dry_run)
+
     def test_parser_accepts_clean_with_optional_state(self):
         all_args = ascc_cli.build_parser().parse_args(["clean"])
         state_args = ascc_cli.build_parser().parse_args(["clean", "va"])
@@ -549,6 +560,25 @@ class AsccCliTests(unittest.TestCase):
         self.assertTrue(cmd[1].endswith("backend/manage.py"))
         self.assertEqual(cmd[2], "import_ascc_bundle")
         self.assertEqual(cmd[3:], ["tools/wip/out/v1_va", "--dry-run", "--allow-missing"])
+
+    def test_drop_delegates_exact_region_code_to_management_command(self):
+        args = ascc_cli.build_parser().parse_args([
+            "drop",
+            "USA-MI1",
+            "--dry-run",
+        ])
+        with patch.object(ascc_cli, "run_command") as run_command:
+            rc = ascc_cli.command_drop(args)
+
+        self.assertEqual(rc, 0)
+        cmd = run_command.call_args.args[0]
+        self.assertTrue(cmd[1].endswith("backend/manage.py"))
+        self.assertEqual(cmd[2:], [
+            "drop_ascc_state",
+            "--region-code",
+            "USA-MI1",
+            "--dry-run",
+        ])
 
     def test_import_check_uses_additive_dry_run(self):
         with tempfile.TemporaryDirectory() as td:
