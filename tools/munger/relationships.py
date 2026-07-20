@@ -1,6 +1,8 @@
 import re
 import pandas as pd
 
+from .text_utils import strip_trailing_state_suffix
+
 
 LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
 CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
@@ -35,19 +37,6 @@ def extract_town_root(inscription):
     if '/' in inscription:
         return inscription.split('/')[0]
     return inscription
-
-
-def _strip_trailing_state_suffix(text):
-    value = str(text or '').strip()
-    for pattern in (
-        r"\s+[A-Za-z]{1,4}\.?$",
-        r"/\s*[A-Za-z]{1,4}\.?$",
-        r"\.\s*[A-Za-z]{1,4}\.?$",
-    ):
-        stem = re.sub(pattern, "", value).strip()
-        if stem != value:
-            return stem
-    return value
 
 
 def _split_location_state_suffix(text):
@@ -96,7 +85,7 @@ def parent_townmark_text_for_same(parent_inscription, parent_town, suffix=''):
         return parent_text
     if '/' in parent_text:
         return extract_town_root(parent_text).strip() or parent_text
-    stem = _strip_trailing_state_suffix(parent_text)
+    stem = strip_trailing_state_suffix(parent_text)
     return stem or parent_text
 
 

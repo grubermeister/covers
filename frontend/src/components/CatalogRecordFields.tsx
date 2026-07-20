@@ -127,7 +127,7 @@ export function CatalogRecordFields({
         ]
       : variant === "contribution"
         ? contributionFields(row)
-      : searchFields(row, variant);
+        : searchFields(row, variant);
 
   return (
     <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">

@@ -38,6 +38,7 @@ from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_fi
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
 from munger.rate_assembly import parse_rate_amount
+from munger.text_utils import strip_trailing_state_suffix
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
 from v1_synthetic_listing import (
     DATE_SENTINEL_YEARS,
@@ -155,19 +156,6 @@ def strip_inscription_markers(inscription: object) -> str:
             return clean(stripped)
         value = stripped
     return ""
-
-
-def strip_trailing_state_suffix(text: object) -> str:
-    value = clean(text)
-    for pattern in (
-        r"\s+[A-Za-z]{1,4}\.?$",
-        r"/\s*[A-Za-z]{1,4}\.?$",
-        r"\.\s*[A-Za-z]{1,4}\.?$",
-    ):
-        stem = re.sub(pattern, "", value).strip()
-        if stem != value:
-            return stem
-    return value
 
 
 def split_location_state_suffix(text: object) -> tuple[str, str]:

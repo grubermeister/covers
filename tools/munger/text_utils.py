@@ -17,3 +17,17 @@ def strip_dot_leaders(text):
     t = re.sub(r'\.{2,}', ' ', str(text))
     t = re.sub(r'(?<=\s)\.(?=\s)', ' ', t)
     return re.sub(r'  +', ' ', t).strip()
+
+
+def strip_trailing_state_suffix(text):
+    """Remove a trailing one-to-four-letter state abbreviation."""
+    value = str(text or "").strip()
+    for pattern in (
+        r"\s+[A-Za-z]{1,4}\.?$",
+        r"/\s*[A-Za-z]{1,4}\.?$",
+        r"\.\s*[A-Za-z]{1,4}\.?$",
+    ):
+        stem = re.sub(pattern, "", value).strip()
+        if stem != value:
+            return stem
+    return value
