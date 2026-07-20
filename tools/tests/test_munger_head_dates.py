@@ -36,6 +36,10 @@ def _parsed_head_date(seg_head):
     return parse_head(_head_row(seg_head))['head_date_text']
 
 
+def _has_leading_star(seg_head):
+    return bool(parse_head(_head_row(seg_head))['head_has_leading_star'])
+
+
 class TestMsDateAtEnd(unittest.TestCase):
 
     def test_decade_suffix_on_first_range_element(self):
@@ -94,6 +98,14 @@ class TestParseHeadPeel(unittest.TestCase):
         self.assertEqual(parsed["head_name_body"], "Yorktown")
         self.assertEqual(parsed["head_date_text"], "Mar. 1852")
         self.assertEqual(parsed["head_annotations"], ["E"])
+
+    def test_only_leading_star_sets_catalog_marker(self):
+        self.assertTrue(_has_leading_star("*RICHMOND/VA."))
+        self.assertTrue(_has_leading_star("  *RICHMOND/VA."))
+        self.assertFalse(_has_leading_star("RICHMOND/*VA.*"))
+        self.assertFalse(_has_leading_star("RICHMOND/VA.*"))
+        self.assertEqual(_parsed_name("*RICHMOND/VA."), "RICHMOND/VA.")
+        self.assertEqual(_parsed_name("RICHMOND/*VA.*"), "RICHMOND/*VA.*")
 
 
 if __name__ == '__main__':

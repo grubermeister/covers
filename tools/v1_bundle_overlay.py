@@ -34,11 +34,14 @@ from pathlib import Path
 
 from PIL import Image as PILImage
 
-from munger.fields.dates import FULL_DATE_RE, parse_date_field
+from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_field
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
+from munger.rate_assembly import parse_rate_amount
+from munger.text_utils import strip_trailing_state_suffix
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
 from v1_synthetic_listing import (
+    DATE_SENTINEL_YEARS,
     color_tokens as v1_color_tokens,
     has_synthetic_listing_evidence,
     synthetic_desc_lines,
@@ -81,6 +84,18 @@ CITATION_COLUMNS = [
     "subject_type",
     "subject_id",
     "citation_detail",
+    *AUDIT_TAIL,
+]
+COVER_MARKING_COLUMNS = [
+    "cover",
+    "marking",
+    "is_backstamp",
+    "placement",
+    "contributor_comment",
+    "review_status",
+    "reviewer",
+    "review_notes",
+    "reviewed_at",
     *AUDIT_TAIL,
 ]
 POST_OFFICE_REGION_COLUMNS = [
@@ -143,16 +158,39 @@ def strip_inscription_markers(inscription: object) -> str:
     return ""
 
 
+def split_location_state_suffix(text: object) -> tuple[str, str]:
+    value = clean(text)
+    for pattern in (
+        r"^(?P<location>.+?)(?P<state>/\s*[A-Za-z]{1,4}\.?)$",
+        r"^(?P<location>.+?)(?P<state>\s+[A-Za-z]{1,4}\.?)$",
+    ):
+        match = re.match(pattern, value)
+        if match:
+            return match.group("location").strip(), match.group("state")
+    return "", ""
+
+
+def compact_location_token(text: object) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", clean(text)).upper()
+
+
+def trailing_location_token(text: object) -> str:
+    match = re.search(r"([A-Za-z.]+)\s*$", clean(text))
+    return match.group(1) if match else ""
+
+
+def same_suffix_repeats_parent_tail(parent_stem: str, suffix_location: str) -> bool:
+    parent_tail = compact_location_token(trailing_location_token(parent_stem))
+    suffix_tail = compact_location_token(suffix_location)
+    return 2 <= len(parent_tail) <= 4 and parent_tail == suffix_tail
+
+
 def townmark_text_stem(text: object) -> str:
     """Return the townmark text prefix before a state or device suffix."""
     value = strip_inscription_markers(text)
     if "/" in value:
         return value.split("/", 1)[0].strip()
-    return re.sub(
-        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
-        "",
-        value,
-    ).strip() or value
+    return strip_trailing_state_suffix(value) or value
 
 
 def resolve_same_inscription(inscription: object, parent_text: object) -> str:
@@ -175,8 +213,13 @@ def resolve_same_inscription(inscription: object, parent_text: object) -> str:
     suffix = strip_inscription_markers(value[match.end():])
     if not suffix.strip():
         return parent
+    parent_stem = townmark_text_stem(parent)
+    if "/" not in parent:
+        suffix_location, suffix_state = split_location_state_suffix(suffix)
+        if suffix_state and same_suffix_repeats_parent_tail(parent_stem, suffix_location):
+            return strip_inscription_markers(parent_stem + suffix_state)
     sep = "" if suffix.startswith("/") else " "
-    return strip_inscription_markers(townmark_text_stem(parent) + sep + suffix)
+    return strip_inscription_markers(parent_stem + sep + suffix)
 
 
 def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
@@ -453,6 +496,17 @@ def split_date_tokens(value: object) -> list[str]:
     return tokens
 
 
+def is_v1_sentinel_year(value: object) -> bool:
+    """Return True for legacy v1 date-placeholder years.
+
+    The v1 split-column export uses 1700 and 1900 as unknown-date sentinel
+    values. This helper is intentionally used only for v1 split-column date
+    sources such as txtDatesSeen; ordinary catalog text may still parse any
+    syntactically valid year through munger.fields.dates.parse_date_field.
+    """
+    return str(value or "").strip() in DATE_SENTINEL_YEARS
+
+
 def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str]) -> list[dict[str, str]]:
     rows = []
     seen = set()
@@ -460,10 +514,14 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
         parsed = parse_date_field(token)
         if parsed.get("date_error") or parsed.get("date_granularity") == "UNKNOWN":
             continue
+        if is_approximate_date(parsed):
+            continue
         observations = []
         gran = parsed.get("date_granularity")
         try:
             if gran == "DAY":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(
                     int(parsed["date_year_start"]),
                     int(parsed["date_month"]),
@@ -471,6 +529,8 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                 )
                 observations.append((str(observed), "DAY"))
             elif gran == "MONTH":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(
                     int(parsed["date_year_start"]),
                     int(parsed["date_month"]),
@@ -478,12 +538,18 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                 )
                 observations.append((str(observed), "MONTH"))
             elif gran == "YEAR":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
                 observed = date(int(parsed["date_year_start"]), 1, 1)
                 observations.append((str(observed), "YEAR"))
-            elif gran in {"RANGE", "DECADE"}:
+            elif gran == "RANGE":
                 for year in (parsed.get("date_year_start"), parsed.get("date_year_end")):
+                    if is_v1_sentinel_year(year):
+                        continue
                     observed = date(int(year), 1, 1)
                     observations.append((str(observed), "YEAR"))
+            # Approximate dates stay out of dates_seen. The munger preserves
+            # their exact source text in the marking description.
         except (TypeError, ValueError):
             continue
         for subject_id in subject_ids:
@@ -524,15 +590,25 @@ def dedupe_date_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
 def parsed_rate_values(value: object) -> list[str]:
     out = []
     for token in split_rate_tokens(clean(value)):
-        parsed = parse_rate_token(token)
-        amount = parsed.get("rate_amount_raw")
-        if amount:
-            norm = decimal_text(amount)
-            if norm:
-                out.append(norm)
+        # parse_rate_amount understands romans (X -> 10, V -> 5) and
+        # fractions (12-1/2 -> 12.5). decimal_text alone dropped those, so
+        # "X,PAID,PAID 3" collapsed to ["3"] and the single-value branch in
+        # apply_row_fields stamped 3 onto every ratemark in the listing.
+        # Try the whole token first (fractions survive only this way), then
+        # the amount parse_rate_token extracts (for "PAID 3" style tokens).
+        numeric, _ = parse_rate_amount(token)
+        if numeric is None:
+            amount = parse_rate_token(token).get("rate_amount_raw")
+            if amount:
+                numeric, _ = parse_rate_amount(amount)
+        if numeric is not None:
+            out.append(decimal_text(numeric))
     if out:
         return out
     return [decimal_text(m.group(0)) for m in re.finditer(r"\d+(?:\.\d+)?", clean(value)) if decimal_text(m.group(0))]
+
+
+RATE_NOTE_PREFIX = "Rate note: "
 
 
 def append_desc(existing: object, extras: list[str]) -> str:
@@ -540,8 +616,16 @@ def append_desc(existing: object, extras: list[str]) -> str:
     for value in [existing, *extras]:
         for line in str(value or "").splitlines():
             line = clean(line)
-            if line and line not in lines:
-                lines.append(line)
+            if not line or line in lines:
+                continue
+            # The munger records an unparseable paren field verbatim ("day in
+            # ms") and the v1 overlay re-adds the same text as "Rate note:
+            # day in ms"; treat the two forms as one note, first one wins.
+            if line.startswith(RATE_NOTE_PREFIX) and line[len(RATE_NOTE_PREFIX):] in lines:
+                continue
+            if RATE_NOTE_PREFIX + line in lines:
+                continue
+            lines.append(line)
     return "\n".join(lines)
 
 
@@ -795,7 +879,16 @@ def apply_row_fields(
     if nonblank(raw_row.get("txtRatesText")):
         rate_values = parsed_rate_values(raw_row.get("txtRatesText"))
         ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
-        if len(rate_values) == 1 and ratemark_rows:
+        # A single v1 value may only correct a uniform set of ratemarks.
+        # When the bundle already carries distinct values (e.g. X=10 and
+        # PAID 3=3 from the same listing), stamping the one v1 value over
+        # all of them destroys correct data -- warn instead.
+        existing_values = {
+            decimal_text(row.get("rate_val"))
+            for row in ratemark_rows
+            if nonblank(row.get("rate_val"))
+        }
+        if len(rate_values) == 1 and ratemark_rows and len(existing_values) <= 1:
             for row in ratemark_rows:
                 row["rate_val"] = rate_values[0]
         elif len(rate_values) == len(ratemark_rows):
@@ -917,58 +1010,84 @@ def build_images(
         data = dest_path.read_bytes()
         with PILImage.open(dest_path) as image:
             image_width, image_height = image.size
-        for subject_id in subject_ids:
-            display_order[subject_id] += 1
-            row = {
-                "subject_type": "MARKING",
-                "subject_id": subject_id,
-                "original_filename": basename,
-                "storage_filename": "{0}/{1}".format(state.lower(), basename),
-                "file_checksum": hashlib.sha256(data).hexdigest(),
-                "mime_type": mimetypes.guess_type(basename)[0] or "application/octet-stream",
-                "image_width": str(image_width),
-                "image_height": str(image_height),
-                "file_size_bytes": str(len(data)),
-                "image_view": clean(ref.get("image_view")) or "FULL",
-                "image_description": clean(ref.get("image_description")),
-                "is_tracing": clean(ref.get("is_tracing")) or "False",
-                "display_order": str(display_order[subject_id]),
-                "uploaded_by": "1",
-            }
-            row.update(audit)
-            rows.append(row)
+        # Color fan-out can map one raw row to several townmarks. The source
+        # image belongs only to the first generated townmark.
+        subject_id = subject_ids[0]
+        display_order[subject_id] += 1
+        row = {
+            "subject_type": "MARKING",
+            "subject_id": subject_id,
+            "original_filename": basename,
+            "storage_filename": "{0}/{1}".format(state.lower(), basename),
+            "file_checksum": hashlib.sha256(data).hexdigest(),
+            "mime_type": mimetypes.guess_type(basename)[0] or "application/octet-stream",
+            "image_width": str(image_width),
+            "image_height": str(image_height),
+            "file_size_bytes": str(len(data)),
+            "image_view": clean(ref.get("image_view")) or "FULL",
+            "image_description": clean(ref.get("image_description")),
+            "is_tracing": clean(ref.get("is_tracing")) or "False",
+            "display_order": str(display_order[subject_id]),
+            "uploaded_by": "1",
+        }
+        row.update(audit)
+        rows.append(row)
     return rows
 
 
 def reconcile_preserved_images(
     images: list[dict[str, str]],
     deleted_ids: set[str],
-    clone_sources: dict[str, str],
 ) -> list[dict[str, str]]:
     rows = [
         dict(row)
         for row in images
         if clean(row.get("subject_id")) not in deleted_ids
     ]
-    by_subject = defaultdict(list)
-    for row in rows:
-        subject_id = clean(row.get("subject_id"))
-        if subject_id:
-            by_subject[subject_id].append(row)
-    existing_subjects = set(by_subject)
-    for new_id, source_id in clone_sources.items():
-        if new_id in existing_subjects:
-            continue
-        for source_row in by_subject.get(source_id, []):
-            clone = dict(source_row)
-            clone["subject_id"] = new_id
-            rows.append(clone)
     display_order = defaultdict(int)
     for row in rows:
         subject_id = clean(row.get("subject_id"))
         if subject_id and "display_order" in row:
             display_order[subject_id] += 1
             row["display_order"] = str(display_order[subject_id])
+    return rows
+
+
+def reconcile_cover_markings(
+    cover_markings: list[dict[str, str]],
+    deleted_ids: set[str],
+    clone_sources: dict[str, str],
+) -> list[dict[str, str]]:
+    """Keep institutional CoverMarking rows aligned with color fan-out."""
+    source_rows = [dict(row) for row in cover_markings]
+    by_marking = defaultdict(list)
+    for row in source_rows:
+        marking_code = clean(row.get("marking"))
+        if marking_code:
+            by_marking[marking_code].append(row)
+    rows = [
+        row
+        for row in source_rows
+        if clean(row.get("marking")) not in deleted_ids
+    ]
+    existing_pairs = {
+        (clean(row.get("cover")), clean(row.get("marking")))
+        for row in rows
+        if clean(row.get("cover")) and clean(row.get("marking"))
+    }
+    for new_code, source_code in clone_sources.items():
+        if new_code in deleted_ids:
+            continue
+        for source_row in list(by_marking.get(source_code, [])):
+            cover_code = clean(source_row.get("cover"))
+            pair = (cover_code, new_code)
+            if not cover_code or pair in existing_pairs:
+                continue
+            clone = dict(source_row)
+            clone["marking"] = new_code
+            rows.append(clone)
+            by_marking[new_code].append(clone)
+            existing_pairs.add(pair)
     return rows
 
 
@@ -991,12 +1110,13 @@ def apply_overlay(args: argparse.Namespace) -> int:
         "letterings": bundle_dir / "letterings.csv",
         "shapes": bundle_dir / "shapes.csv",
         "dates": bundle_dir / "dates_seen.csv",
+        "cover_markings": bundle_dir / "cover_markings.csv",
         "citations": bundle_dir / "citations.csv",
         "images": bundle_dir / "images.csv",
         "reference_works": bundle_dir / "reference_works.csv",
     }
     for label, path in paths.items():
-        if label == "images":
+        if label in {"images", "cover_markings"}:
             continue
         if not path.is_file():
             sys.exit("error: missing bundle CSV: {0}".format(path))
@@ -1010,6 +1130,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
     lettering_fields, letterings = read_csv(paths["letterings"])
     shape_fields, shapes = read_csv(paths["shapes"])
     date_fields, dates = read_csv(paths["dates"])
+    cover_marking_fields, cover_markings = (
+        read_csv(paths["cover_markings"])
+        if paths["cover_markings"].is_file()
+        else (COVER_MARKING_COLUMNS, [])
+    )
     citation_fields, citations = read_csv(paths["citations"])
     image_fields, existing_images = read_csv(paths["images"]) if paths["images"].is_file() else (IMAGE_COLUMNS, [])
     reference_work_fields, reference_works = read_csv(paths["reference_works"])
@@ -1084,6 +1209,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
 
     by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
     dates = rebuild_dates(raw_rows, by_raw, dates, clone_sources, audit)
+    cover_markings = reconcile_cover_markings(
+        cover_markings,
+        deleted_ids,
+        clone_sources,
+    )
     reference_work_id = ""
     if citations:
         reference_work_id = clean(citations[0].get("reference_work"))
@@ -1092,7 +1222,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
     reference_work_id = reference_work_id or "ASCC"
     citations = rebuild_citations(source_map_rows, reference_work_id, audit)
     if args.preserve_images:
-        images = reconcile_preserved_images(existing_images, deleted_ids, clone_sources)
+        images = reconcile_preserved_images(existing_images, deleted_ids)
     else:
         images = build_images(
             state,
@@ -1111,6 +1241,12 @@ def apply_overlay(args: argparse.Namespace) -> int:
     write_csv(paths["post_office_regions"], por_fields or POST_OFFICE_REGION_COLUMNS, post_office_regions)
     write_csv(paths["colors"], color_fields, colors)
     write_csv(paths["dates"], date_fields or DATE_COLUMNS, dates)
+    if paths["cover_markings"].is_file():
+        write_csv(
+            paths["cover_markings"],
+            cover_marking_fields or COVER_MARKING_COLUMNS,
+            cover_markings,
+        )
     write_csv(paths["citations"], citation_fields or CITATION_COLUMNS, citations)
     write_csv(paths["images"], image_fields or IMAGE_COLUMNS, images)
     write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
@@ -1118,6 +1254,8 @@ def apply_overlay(args: argparse.Namespace) -> int:
     print("v1 overlay rows: {0}".format(len(raw_rows)))
     print("markings: {0}".format(len(markings)))
     print("dates_seen: {0}".format(len(dates)))
+    if paths["cover_markings"].is_file():
+        print("cover_markings: {0}".format(len(cover_markings)))
     print("citations: {0}".format(len(citations)))
     image_note = " (preserved)" if args.preserve_images else ""
     print("images: {0}{1}".format(len(images), image_note))

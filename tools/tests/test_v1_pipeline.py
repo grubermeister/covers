@@ -25,7 +25,7 @@ import v1_attach_images
 import v1_catalog_rows
 import ascc_data_munger
 from munger.relationships import roll_up_catalog_text
-from v1_synthetic_listing import synthetic_desc_lines, synthetic_listing
+from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
 
 
 AUDIT = {
@@ -129,6 +129,40 @@ def write_munger_seeds(root):
 
 
 class V1PipelineTests(unittest.TestCase):
+    def test_overlay_reconciles_cover_markings_for_color_variant_changes(self):
+        cover_markings = [
+            stamped({
+                "cover": "ASCC6-VA-C1001",
+                "marking": "ASCC6-VA-M1001",
+                "review_status": "approved",
+            }),
+            stamped({
+                "cover": "ASCC6-VA-C1002",
+                "marking": "ASCC6-VA-M1002",
+                "review_status": "approved",
+            }),
+        ]
+
+        rows = v1_bundle_overlay.reconcile_cover_markings(
+            cover_markings,
+            {"ASCC6-VA-M1001", "ASCC6-VA-M1002"},
+            {
+                "ASCC6-VA-M1001-C1": "ASCC6-VA-M1001",
+                "ASCC6-VA-M1001-C2": "ASCC6-VA-M1001-C1",
+            },
+        )
+
+        self.assertEqual(
+            {(row["cover"], row["marking"]) for row in rows},
+            {
+                ("ASCC6-VA-C1001", "ASCC6-VA-M1001-C1"),
+                ("ASCC6-VA-C1001", "ASCC6-VA-M1001-C2"),
+            },
+        )
+        self.assertEqual({row["review_status"] for row in rows}, {"approved"})
+        self.assertEqual({row["created_by"] for row in rows}, {"1"})
+        self.assertEqual({row["modified_by"] for row in rows}, {"1"})
+
     def test_v1_overlay_replaces_same_with_parent_townmark_text(self):
         cases = [
             ("Same/Wis.", "WATERTOWN/Wis.", "WATERTOWN/Wis."),
@@ -138,6 +172,8 @@ class V1PipelineTests(unittest.TestCase):
             ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
             ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA./5"),
             ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("Same C.H. VA.", "KANAWHA CH. VA", "KANAWHA CH. VA."),
+            ("Same C.H./Va.", "KANAWHA CH. VA.", "KANAWHA CH./Va."),
             ("(1)BETHANY/Va.", "", "BETHANY/Va."),
             ("*RICHMOND/VA.", "", "RICHMOND/VA."),
             ("Wyocena W.T.(E)", "", "Wyocena W.T."),
@@ -337,6 +373,92 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(
             catalog_rows[2]["listing_text"],
             "Petersburg(Feb. 1, 1770;Ms;Black) 1,000",
+        )
+
+    def test_split_glued_same_listings_handles_v1_variants(self):
+        cases = [
+            (
+                "Same/GEO(1851;31.5;FREE,PAID,3,5;Black,Red) 25  "
+                "Same/GA(1856-58;31.5;FREE,5;Black) 20",
+                [
+                    "Same/GEO(1851;31.5;FREE,PAID,3,5;Black,Red) 25",
+                    "Same/GA(1856-58;31.5;FREE,5;Black) 20",
+                ],
+            ),
+            (
+                "MARYVILLE/Te.(1834-46;30;FREE,PAID;Black,Brown,Red) 65  "
+                "Same(Green,Purple) 100",
+                [
+                    "MARYVILLE/Te.(1834-46;30;FREE,PAID;Black,Brown,Red) 65",
+                    "Same(Green,Purple) 100",
+                ],
+            ),
+            (
+                "(L)(March 31, 1859) 200  "
+                "Same/sans serif letters(Sept. 20, --;C-34;FREE;Black) 200",
+                [
+                    "(L)(March 31, 1859) 200",
+                    "Same/sans serif letters(Sept. 20, --;C-34;FREE;Black) 200",
+                ],
+            ),
+            (
+                "BASE(1850;Black) 10 +Same(Blue) 20",
+                ["BASE(1850;Black) 10", "+Same(Blue) 20"],
+            ),
+            (
+                "Same VA.(1855-61;--;FREE;Black) 60 Same note only",
+                ["Same VA.(1855-61;--;FREE;Black) 60 Same note only"],
+            ),
+        ]
+        for text, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(
+                    v1_catalog_rows.split_glued_same_listings(text),
+                    expected,
+                )
+
+    def test_catalog_rows_split_glued_same_listing_after_value(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            slice_out = root / "slice.csv"
+            catalog_out = root / "catalog_rows.csv"
+            write_csv(
+                slice_out,
+                [
+                    "nRawStateDataID",
+                    "txtRawStateData",
+                    "txtTown",
+                    "txtTownPostmark",
+                ],
+                [{
+                    "nRawStateDataID": "109453",
+                    "txtRawStateData": (
+                        "Same VA.(1855-61;--;FREE;Black) 60 "
+                        "(1)Same(PAID,3;Green) 50"
+                    ),
+                    "txtTown": "",
+                    "txtTownPostmark": "",
+                }],
+            )
+
+            rows_written, raw_ids = v1_catalog_rows.write_v1_catalog_rows(
+                slice_out,
+                catalog_out,
+            )
+            catalog_rows = read_csv(catalog_out)
+
+        self.assertEqual(rows_written, 2)
+        self.assertEqual(raw_ids, ["109453", "109453"])
+        self.assertEqual(
+            [row["listing_text"] for row in catalog_rows],
+            [
+                "Same VA.(1855-61;--;FREE;Black) 60",
+                "(1)Same(PAID,3;Green) 50",
+            ],
+        )
+        self.assertEqual(
+            [row["chunk_number"] for row in catalog_rows],
+            ["109453", "109453"],
         )
 
     def test_blank_raw_rows_are_synthesized_and_image_refs_included(self):
@@ -564,9 +686,95 @@ class V1PipelineTests(unittest.TestCase):
             ["Rate note: Use on #U10 envelope"],
         )
 
-    def test_overlay_dedupes_decade_endpoint_dates(self):
+    def test_color_stranded_in_rate_column_is_color_not_rate_note(self):
+        # IA ATHENS (raw 10465): the catalog line has no rate field, so the
+        # v1 positional split put the second color in txtRatesText. The
+        # stranded color must join color_tokens (so ensure_townmark_colors
+        # keeps both fan-out townmarks) and must NOT become a desc line.
+        row = {
+            "txtColors": "Red",
+            "txtRatesText": "Blue",
+            "txtTownmarkColor": "Blue,Red",
+        }
+
+        self.assertEqual(color_tokens(row), ["RED", "BLUE"])
+        self.assertEqual(synthetic_desc_lines(row), [])
+
+    def test_rate_fragment_in_color_column_falls_back_to_townmark_color(self):
+        # VA RICHMOND (raw 569): the legacy split put "PAID,6" in txtColors
+        # and "MDD" in txtRatesText. txtTownmarkColor is the authoritative
+        # v1 color source for this malformed split.
+        row = {
+            "txtRawStateData": (
+                "RICHMOND,(1788-89;SL-25x3;MDD;PAID,6;Black) 150"
+            ),
+            "txtColors": "PAID,6",
+            "txtRatesText": "MDD",
+            "txtTownmarkColor": "Black",
+        }
+
+        self.assertEqual(color_tokens(row), ["BLACK"])
+        self.assertEqual(synthetic_desc_lines(row), [])
+
+    def test_v1_color_source_accepts_compound_color_phrases(self):
+        row = {"txtColors": "Black brown,Blue/Green,Bright red"}
+
+        self.assertEqual(
+            color_tokens(row),
+            ["BLACK BROWN", "BLUE/GREEN", "BRIGHT RED"],
+        )
+
+    def test_multi_color_rate_cell_joins_color_tokens(self):
+        row = {"txtRates": "Blue,Black"}
+
+        self.assertEqual(color_tokens(row), ["BLUE", "BLACK"])
+        self.assertEqual(synthetic_desc_lines(row), [])
+
+    def test_non_color_rate_note_still_preserved_as_desc(self):
+        row = {
+            "txtColors": "Black",
+            "txtRates": "Use on #U10 envelope",
+        }
+
+        self.assertEqual(color_tokens(row), ["BLACK"])
+        self.assertEqual(
+            synthetic_desc_lines(row),
+            ["Rate note: Use on #U10 envelope"],
+        )
+
+    def test_parsed_rate_values_understands_roman_numerals(self):
+        # IA DAVENPORT (raw txtRatesText='X,PAID,PAID 3'): X is a 10 cent
+        # ratemark. Dropping it collapsed the list to ['3'] and the overlay
+        # then stamped 3 onto every ratemark of the listing.
+        self.assertEqual(
+            v1_bundle_overlay.parsed_rate_values("X,PAID,PAID 3"),
+            ["10", "3"],
+        )
+        self.assertEqual(v1_bundle_overlay.parsed_rate_values("V"), ["5"])
+
+    def test_parsed_rate_values_understands_fractions(self):
+        self.assertEqual(
+            v1_bundle_overlay.parsed_rate_values("12-1/2"),
+            ["12.5"],
+        )
+
+    def test_append_desc_dedupes_rate_note_against_bare_errata_line(self):
+        self.assertEqual(
+            v1_bundle_overlay.append_desc("day in ms", ["Rate note: day in ms"]),
+            "day in ms",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.append_desc("Rate note: day in ms", ["day in ms"]),
+            "Rate note: day in ms",
+        )
+        self.assertEqual(
+            v1_bundle_overlay.append_desc("Backstamp", ["Rate note: Double rate"]),
+            "Backstamp\nRate note: Double rate",
+        )
+
+    def test_overlay_skips_approximate_dates_seen_tokens(self):
         rows = v1_bundle_overlay.parsed_date_rows(
-            "1857, 1859, 1850s",
+            "1857, 1859, 1850s, c1850, 1850c",
             ["ASCC6-WV-M2283"],
             AUDIT,
         )
@@ -580,8 +788,32 @@ class V1PipelineTests(unittest.TestCase):
             [
                 ("ASCC6-WV-M2283", "1857-01-01", "YEAR"),
                 ("ASCC6-WV-M2283", "1859-01-01", "YEAR"),
-                ("ASCC6-WV-M2283", "1850-01-01", "YEAR"),
             ],
+        )
+
+    def test_overlay_skips_v1_sentinel_dates_seen_years(self):
+        rows = v1_bundle_overlay.parsed_date_rows(
+            "1700 - 1900",
+            ["ASCC6-WV-M1834", "ASCC6-WV-M1835"],
+            AUDIT,
+        )
+
+        self.assertEqual(rows, [])
+
+    def test_overlay_keeps_real_dates_when_sentinel_years_are_mixed_in(self):
+        rows = v1_bundle_overlay.parsed_date_rows(
+            "1700, 1854, 1900",
+            ["ASCC6-WV-M1834"],
+            AUDIT,
+        )
+        observed = [
+            (row["subject_id"], row["date"], row["granularity"])
+            for row in rows
+        ]
+
+        self.assertEqual(
+            observed,
+            [("ASCC6-WV-M1834", "1854-01-01", "YEAR")],
         )
 
     def test_overlay_parses_numeric_month_year_as_month(self):
@@ -655,6 +887,51 @@ class V1PipelineTests(unittest.TestCase):
                     "ynManuscript": "True",
                     "txtTownmarkColor": "Black",
                 },
+                {
+                    "nRawStateDataID": "5",
+                    "txtTownPostmark": "Franklin",
+                    "nEarliestUseDay": "1",
+                    "txtEarliestUseMonth": "5",
+                    "txtEarliestUseYear": "1855",
+                    "txtRates": "PM frank",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "6",
+                    "txtTownPostmark": "Freeport",
+                    "nEarliestUseDay": "2",
+                    "txtEarliestUseMonth": "5",
+                    "txtEarliestUseYear": "1855",
+                    "txtRates": "free frank[ms]",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "7",
+                    "txtTownPostmark": "Bare Circle",
+                    "txtRates": "PAID",
+                    "txtTownmarkShape": "Circle",
+                    "txtTownmarkColor": "Red",
+                },
+                {
+                    "nRawStateDataID": "8",
+                    "txtTownPostmark": "WEBSTER/Va",
+                    "txtDatesSeen": "1859-61",
+                    "txtSizes": "32",
+                    "txtRates": "PD 3[neg]",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "9",
+                    "txtTownPostmark": "Stencilville",
+                    "txtRates": "stencil 5",
+                    "txtTownmarkColor": "Black",
+                },
+                {
+                    "nRawStateDataID": "10",
+                    "txtTownPostmark": "MARTINSBURGVA.",
+                    "txtRates": "DUE 3",
+                    "txtTownmarkColor": "Black",
+                },
             ]
             catalog_rows = [
                 {
@@ -669,6 +946,16 @@ class V1PipelineTests(unittest.TestCase):
                 }
                 for row in source_rows
             ]
+            catalog_rows.append({
+                "listing_text": "(1)PARKERSBURG/VA.(1832-36;stencil C-31;Black) 250",
+                "catalog_page": "0",
+                "chunk_number": "11",
+                "image_count": "0",
+                "row_type": "LISTING",
+                "is_manuscript": "",
+                "default_shape": "",
+                "institutional_owner": "",
+            })
             write_csv(
                 catalog_rows_path,
                 list(catalog_rows[0].keys()),
@@ -684,6 +971,12 @@ class V1PipelineTests(unittest.TestCase):
             ])
             markings = read_csv(out_dir / "markings.csv")
             dates = read_csv(out_dir / "dates_seen.csv")
+            covers = read_csv(out_dir / "covers.csv")
+            cover_markings = read_csv(out_dir / "cover_markings.csv")
+            covers_header = (out_dir / "covers.csv").read_text().splitlines()[0]
+            cover_markings_header = (
+                out_dir / "cover_markings.csv"
+            ).read_text().splitlines()[0]
 
         falls_ratemarks = [
             row for row in markings
@@ -698,13 +991,100 @@ class V1PipelineTests(unittest.TestCase):
             if row["type"] in {"RATEMARK", "AUXMARK"}
             and row["catalog_txt"].startswith("Locust Level")
         ]
+        franklin_townmarks = [
+            row for row in markings
+            if row["type"] == "TOWNMARK"
+            and row["catalog_txt"].startswith("Franklin")
+        ]
+        franklin_children = [
+            row for row in markings
+            if row["type"] in {"RATEMARK", "AUXMARK"}
+            and row["catalog_txt"].startswith("Franklin")
+        ]
+        freeport_townmarks = [
+            row for row in markings
+            if row["type"] == "TOWNMARK"
+            and row["catalog_txt"].startswith("Freeport")
+        ]
+        freeport_children = [
+            row for row in markings
+            if row["type"] in {"RATEMARK", "AUXMARK"}
+            and row["catalog_txt"].startswith("Freeport")
+        ]
+        bare_circle_townmarks = [
+            row for row in markings
+            if row["type"] == "TOWNMARK"
+            and row["catalog_txt"].startswith("Bare Circle")
+        ]
+        bare_circle_auxmarks = [
+            row for row in markings
+            if row["type"] == "AUXMARK"
+            and row["catalog_txt"].startswith("Bare Circle")
+        ]
+        bare_circle_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK"
+            and row["catalog_txt"].startswith("Bare Circle")
+        ]
+        webster_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK"
+            and row["catalog_txt"].startswith("WEBSTER")
+        ]
+        stencil_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK"
+            and row["catalog_txt"].startswith("Stencilville")
+        ]
+        martinsburg_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK"
+            and row["catalog_txt"].startswith("MARTINSBURGVA.")
+        ]
+        parkersburg_townmarks = [
+            row for row in markings
+            if row["type"] == "TOWNMARK"
+            and "PARKERSBURG/VA." in row["catalog_txt"]
+        ]
+        parkersburg_children = [
+            row for row in markings
+            if row["type"] in {"RATEMARK", "AUXMARK"}
+            and "PARKERSBURG/VA." in row["catalog_txt"]
+        ]
         self.assertEqual(len(falls_ratemarks), 1)
-        self.assertEqual(falls_ratemarks[0]["inscription_txt"], "Paid 3")
+        self.assertEqual(falls_ratemarks[0]["inscription_txt"], "Falls Church Paid 3")
         self.assertEqual(falls_ratemarks[0]["is_manuscript"], "True")
         self.assertEqual(falls_ratemarks[0]["rate_val"], "3.0")
         self.assertEqual(len(lewisburg_auxmarks), 1)
-        self.assertEqual(lewisburg_auxmarks[0]["inscription_txt"], "PAID")
+        self.assertEqual(lewisburg_auxmarks[0]["inscription_txt"], "LEWISBURG/Va. PAID")
         self.assertEqual(locust_children, [])
+        self.assertEqual(len(franklin_townmarks), 1)
+        self.assertEqual(franklin_townmarks[0]["desc"], "PM frank")
+        self.assertEqual(franklin_children, [])
+        self.assertEqual(len(freeport_townmarks), 1)
+        self.assertEqual(freeport_townmarks[0]["desc"], "free frank")
+        self.assertEqual(freeport_children, [])
+        self.assertEqual(len(bare_circle_townmarks), 1)
+        self.assertEqual(bare_circle_townmarks[0]["shape"], "C - Circle")
+        self.assertEqual([row["inscription_txt"] for row in bare_circle_auxmarks], ["Bare Circle PAID"])
+        self.assertEqual(bare_circle_ratemarks, [])
+        self.assertEqual(len(webster_ratemarks), 1)
+        self.assertEqual(webster_ratemarks[0]["inscription_txt"], "WEBSTER/Va PD 3")
+        self.assertEqual(webster_ratemarks[0]["impression"], "Negative")
+        self.assertEqual(len(stencil_ratemarks), 1)
+        self.assertEqual(stencil_ratemarks[0]["inscription_txt"], "Stencilville 5")
+        self.assertEqual(stencil_ratemarks[0]["impression"], "Stencil")
+        self.assertEqual(len(martinsburg_ratemarks), 1)
+        self.assertEqual(
+            martinsburg_ratemarks[0]["inscription_txt"],
+            "MARTINSBURGVA. DUE 3",
+        )
+        self.assertEqual(len(parkersburg_townmarks), 1)
+        self.assertEqual(parkersburg_townmarks[0]["shape"], "C - Circle")
+        self.assertEqual(parkersburg_townmarks[0]["width"], "31.0")
+        self.assertEqual(parkersburg_townmarks[0]["height"], "31.0")
+        self.assertEqual(parkersburg_townmarks[0]["impression"], "Stencil")
+        self.assertEqual(parkersburg_children, [])
         forks = [
             row for row in markings
             if row["type"] == "TOWNMARK"
@@ -717,11 +1097,426 @@ class V1PipelineTests(unittest.TestCase):
         ]
         self.assertEqual(
             [(row["date"], row["granularity"]) for row in fork_dates],
-            [("1860-01-01", "YEAR")],
+            [],
         )
+        self.assertEqual(forks[0]["desc"], "Date(s) seen: c1860")
         self.assertNotIn("1700-01-01", {row["date"] for row in dates})
         self.assertNotIn("1900-01-01", {row["date"] for row in dates})
         self.assertIn("1861-04-16", {row["date"] for row in dates})
+        self.assertEqual(covers, [])
+        self.assertEqual(cover_markings, [])
+        self.assertTrue(covers_header.startswith("code,color,type,"))
+        self.assertTrue(
+            cover_markings_header.startswith("cover,marking,is_backstamp,")
+        )
+
+    def test_munger_emits_institutional_covers_for_starred_townmark_variants(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            headers = [
+                "listing_text",
+                "catalog_page",
+                "chunk_number",
+                "image_count",
+                "row_type",
+                "is_manuscript",
+                "default_shape",
+                "institutional_owner",
+            ]
+            base = {
+                "catalog_page": "0",
+                "image_count": "0",
+                "row_type": "LISTING",
+                "is_manuscript": "",
+                "default_shape": "",
+                "institutional_owner": "",
+            }
+            write_csv(
+                catalog_rows_path,
+                headers,
+                [
+                    {
+                        **base,
+                        "listing_text": "PLAIN/W.VA.(1850;C-30;Black) 10",
+                        "chunk_number": "1",
+                    },
+                    {
+                        **base,
+                        "listing_text": (
+                            "*STARRED/W.VA.(1851;C-31;PAID,5;Blue,Red) 20"
+                        ),
+                        "chunk_number": "2",
+                    },
+                    {
+                        **base,
+                        "listing_text": (
+                            "PARENT/W.VA.(1852;C-32;Black,Green) 30"
+                        ),
+                        "chunk_number": "3",
+                    },
+                    {
+                        **base,
+                        "listing_text": "*(L)(1853) 40",
+                        "chunk_number": "4",
+                    },
+                ],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            source_map = read_csv(out_dir / "source_marking_map.csv")
+            covers = read_csv(out_dir / "covers.csv")
+            cover_markings = read_csv(out_dir / "cover_markings.csv")
+
+        townmark_codes_by_chunk = {}
+        for row in source_map:
+            if row["marking_type"] != "TOWNMARK":
+                continue
+            townmark_codes_by_chunk.setdefault(row["chunk"], []).append(
+                row["marking_code"]
+            )
+        expected_linked_codes = set(townmark_codes_by_chunk["2"])
+        expected_linked_codes.update(townmark_codes_by_chunk["3"])
+        non_townmark_codes = {
+            row["code"] for row in markings if row["type"] != "TOWNMARK"
+        }
+
+        self.assertEqual([row["code"] for row in covers], [
+            "ASCC6-WV-C1001",
+            "ASCC6-WV-C1002",
+        ])
+        self.assertEqual({row["is_institutional"] for row in covers}, {"True"})
+        self.assertEqual({row["has_adhesive"] for row in covers}, {"False"})
+        self.assertEqual(
+            {row["display_submitter_name"] for row in covers},
+            {"False"},
+        )
+        for row in covers:
+            self.assertEqual(row["color"], "")
+            self.assertEqual(row["type"], "")
+            self.assertEqual(row["height"], "")
+            self.assertEqual(row["width"], "")
+            self.assertEqual(row["description"], "")
+            self.assertEqual(row["created_by"], "1")
+            self.assertEqual(row["modified_by"], "1")
+
+        self.assertEqual(len(townmark_codes_by_chunk["2"]), 2)
+        self.assertEqual(len(townmark_codes_by_chunk["3"]), 2)
+        self.assertEqual(len(cover_markings), 4)
+        self.assertEqual(
+            {row["marking"] for row in cover_markings},
+            expected_linked_codes,
+        )
+        self.assertTrue(
+            {row["marking"] for row in cover_markings}.isdisjoint(
+                non_townmark_codes
+            )
+        )
+        self.assertEqual(
+            {
+                row["marking"]
+                for row in cover_markings
+                if row["cover"] == "ASCC6-WV-C1001"
+            },
+            set(townmark_codes_by_chunk["2"]),
+        )
+        self.assertEqual(
+            {
+                row["marking"]
+                for row in cover_markings
+                if row["cover"] == "ASCC6-WV-C1002"
+            },
+            set(townmark_codes_by_chunk["3"]),
+        )
+        for row in cover_markings:
+            self.assertEqual(row["is_backstamp"], "False")
+            self.assertEqual(row["placement"], "")
+            self.assertEqual(row["contributor_comment"], "")
+            self.assertEqual(row["review_status"], "approved")
+            self.assertEqual(row["reviewer"], "")
+            self.assertEqual(row["review_notes"], "")
+            self.assertEqual(row["reviewed_at"], "")
+            self.assertEqual(row["created_by"], "1")
+            self.assertEqual(row["modified_by"], "1")
+
+    def test_munger_does_not_copy_images_to_color_fanout_siblings(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            media_root = root / "media"
+            image_path = media_root / "wv" / "wv-12-34-1.png"
+            image_path.parent.mkdir(parents=True)
+            Image.new("RGB", (4, 3)).save(image_path)
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": "WHEELING/VA.(1840;C-30;Blue,Red) 50",
+                    "catalog_page": "12",
+                    "chunk_number": "34",
+                    "image_count": "1",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            original_media_root = ascc_data_munger.MEDIA_ROOT
+            try:
+                ascc_data_munger.MEDIA_ROOT = media_root
+                ascc_data_munger.main([
+                    "--input", str(catalog_rows_path),
+                    "--input-dir", str(input_dir),
+                    "--out-dir", str(out_dir),
+                    "--reference-work-code", "ASCC6",
+                    "--region-abbrev", "WV",
+                ])
+            finally:
+                ascc_data_munger.MEDIA_ROOT = original_media_root
+
+            markings = [
+                row for row in read_csv(out_dir / "markings.csv")
+                if row["type"] == "TOWNMARK"
+            ]
+            images = read_csv(out_dir / "images.csv")
+
+        self.assertEqual([row["color"] for row in markings], ["BLUE", "RED"])
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["subject_id"], markings[0]["code"])
+
+    def test_munger_keeps_decade_text_in_desc_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": "STEILACOOM CITY/W.T.(1850s;C-37;FREE;Black) 750",
+                    "catalog_page": "0",
+                    "chunk_number": "99",
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            dates = read_csv(out_dir / "dates_seen.csv")
+
+        townmark = next(row for row in markings if row["type"] == "TOWNMARK")
+        self.assertEqual(townmark["desc"], "Date(s) seen: 1850s")
+        self.assertEqual(
+            [row for row in dates if row["subject_id"] == townmark["code"]],
+            [],
+        )
+
+    def test_munger_parses_arc_unknown_size_with_nor_qualifier(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            catalog_text = (
+                "ADAMSVILLE/MICH."
+                "(1850s;arc--,NOR;PAID/3[arc];Black) 500"
+            )
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": catalog_text,
+                    "catalog_page": "0",
+                    "chunk_number": "21114",
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            dates = read_csv(out_dir / "dates_seen.csv")
+
+        townmark = next(row for row in markings if row["type"] == "TOWNMARK")
+        self.assertEqual(townmark["shape"], "ARC - Arc or Semi-circle")
+        self.assertEqual(townmark["desc"], "Date(s) seen: 1850s\nNOR")
+        self.assertEqual(
+            [row for row in dates if row["subject_id"] == townmark["code"]],
+            [],
+        )
+
+    def test_munger_splits_fancy_double_circle_rate_bracket(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": (
+                        "WELLSBURG/VA.(1832-52;30;5[F,DC];Blue) 25"
+                    ),
+                    "catalog_page": "0",
+                    "chunk_number": "99",
+                    "image_count": "0",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+
+        ratemark = next(row for row in markings if row["type"] == "RATEMARK")
+        self.assertEqual(ratemark["shape"], "DC - Double Circle")
+        self.assertEqual(ratemark["desc"], "Fancy")
+        self.assertEqual(ratemark["rate_val"], "5.0")
+
+    def test_munger_emits_fractional_rate_from_same_row(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            headers = [
+                "listing_text",
+                "catalog_page",
+                "chunk_number",
+                "image_count",
+                "row_type",
+                "is_manuscript",
+                "default_shape",
+                "institutional_owner",
+            ]
+            base = {
+                "catalog_page": "0",
+                "image_count": "0",
+                "row_type": "LISTING",
+                "is_manuscript": "",
+                "default_shape": "",
+                "institutional_owner": "",
+            }
+            write_csv(
+                catalog_rows_path,
+                headers,
+                [
+                    {
+                        **base,
+                        "listing_text": (
+                            "(1)WHITE SULr.SPRs.VA."
+                            "(1834-51;30;PAID,5,10;Brown,Red) 35"
+                        ),
+                        "chunk_number": "1",
+                    },
+                    {
+                        **base,
+                        "listing_text": (
+                            "Same(1838-44;30;18-3/4,25;Red) 50"
+                        ),
+                        "chunk_number": "2",
+                    },
+                ],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+
+        same_ratemarks = [
+            row for row in markings
+            if row["type"] == "RATEMARK"
+            and "18-3/4,25" in row["catalog_txt"]
+        ]
+        observed = {
+            (row["inscription_txt"], float(row["rate_val"]))
+            for row in same_ratemarks
+        }
+
+        self.assertIn(("WHITE SULr.SPRs.VA. 18-3/4", 18.75), observed)
+        self.assertIn(("WHITE SULr.SPRs.VA. 25", 25.0), observed)
 
     def test_overlay_uses_townmark_color_for_blank_text_fanout(self):
         with tempfile.TemporaryDirectory() as td:
@@ -970,11 +1765,12 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(len(dates), 3)
         self.assertEqual({r["date"] for r in dates}, {"1850-01-01"})
         self.assertEqual({r["citation_detail"] for r in citations}, {""})
-        self.assertEqual(len(images), 2)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["subject_id"], townmarks[0]["code"])
         self.assertTrue(media_exists)
         self.assertIn("unsupported_column", {r["issue"] for r in report})
 
-    def test_attach_images_maps_refs_to_townmark_source_map(self):
+    def test_attach_images_does_not_copy_refs_to_color_fanout_townmarks(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             bundle = root / "bundle"
@@ -1040,7 +1836,7 @@ class V1PipelineTests(unittest.TestCase):
             report = read_csv(report_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual([r["subject_id"] for r in images], ["ASCC2-VA-M1100", "ASCC2-VA-M1101"])
+        self.assertEqual([r["subject_id"] for r in images], ["ASCC2-VA-M1100"])
         self.assertEqual({r["image_width"] for r in images}, {"4"})
         self.assertEqual({r["image_height"] for r in images}, {"5"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/marking.png"})
@@ -1158,7 +1954,7 @@ class V1PipelineTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual({r["color"] for r in markings}, {"BLACK", "BLUE"})
-        self.assertEqual({r["subject_id"] for r in images}, {"ASCC2-VA-M1100", "ASCC2-VA-M1100-C1"})
+        self.assertEqual({r["subject_id"] for r in images}, {"ASCC2-VA-M1100"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/kept.png"})
         self.assertIn("missing_image_file", {r["issue"] for r in report})
         self.assertIn("unsupported_column", {r["issue"] for r in report})

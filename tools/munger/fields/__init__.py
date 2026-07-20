@@ -3,8 +3,15 @@ import re
 import pandas as pd
 
 from .dates import parse_date_field, MONTHS_PAT, DATE_FIELD_RE
-from .sizes import parse_size_field, SHAPE_CODE_SET, SHAPE_CODE_PAT, SIZE_SUFFIX_PAT, SIZE_FIELD_RE
-from .rates import parse_rate_field
+from .sizes import (
+    SIZE_IMPRESSION_PREFIX_RE,
+    parse_size_field,
+    SHAPE_CODE_SET,
+    SHAPE_CODE_PAT,
+    SIZE_SUFFIX_PAT,
+    SIZE_FIELD_RE,
+)
+from .rates import RATE_KEYWORD_RE, parse_rate_field
 from .colors import parse_color_field
 from ..classify import _csv_manuscript_truthy
 
@@ -14,6 +21,7 @@ RATE_FIELD_RE = re.compile(
     r'\bPAID\b|\bFREE\b|\bSTEAM\b|\bDUE\b'
     r'|\bP\.?M\.?'
     r'|\bfrank\b'
+    r'|\bnegative\b|\bstencil\b'
     # Bracketed rate hints: [ms], [C], and OCR close variants like [C[.
     r'|[\[\{\|][^\[\{\|\]\}]*[\[\{\|\]\}]'
     r'|\bwith\s+\d'        # "with 24" = with adhesive
@@ -39,6 +47,13 @@ def is_color_field(field):
     return bool(tokens) and all(is_color_token(t) for t in tokens)
 
 BARE_NUMBER_RE = re.compile(r'^\d{1,3}(?:\.\d+)?$')
+
+# Leading shape-code + dimension signature ("SL-42x5...", "DC 25...").
+# A field that OPENS like this is a size field even when a later annotation
+# bracket would otherwise trip RATE_FIELD_RE's catch-all bracket alternative.
+SIZE_LEADING_SHAPE_RE = re.compile(
+    r'^(?:' + SHAPE_CODE_PAT + r')[\s\-]?\d', re.IGNORECASE
+)
 
 # Smallest plausible circular-datestamp diameter (mm). A bare number below this
 # in the size slot of an unknown-date listing is a rate (e.g. a 2c drop rate),
@@ -72,11 +87,31 @@ def classify_paren_field(field_text):
     if DATE_FIELD_RE.search(f):
         return 'date'
 
-    # 3. Rate/auxmark (checked before size -- brackets disambiguate)
+    # 2b. Impression-prefixed size, not rate: "stencil C-31" describes a
+    # stencil townmark with a 31mm circle, while "stencil 5" remains a rate.
+    impression_m = SIZE_IMPRESSION_PREFIX_RE.match(f)
+    if impression_m:
+        remainder = f[impression_m.end():].strip()
+        if (not RATE_KEYWORD_RE.search(remainder)
+                and (remainder.upper() in SHAPE_CODE_SET
+                     or SIZE_FIELD_RE.search(remainder))):
+            return 'size'
+
+    # 3. Rate/auxmark (checked before size -- brackets disambiguate).
+    # Exception: a field that opens with a shape-code+dimension signature is
+    # a size no matter what a trailing annotation bracket contains.
+    # "SL-42x5,MDD[separate hdstp]" was misread as a 42c ratemark because
+    # the bracket alternative in RATE_FIELD_RE matched "[separate hdstp]"
+    # (ANNAPOLIS, woco record ASCC6-MD-M1005). An explicit rate keyword
+    # (PAID/FREE/STEAM/DUE) still outranks the size signature.
     if RATE_FIELD_RE.search(f):
-        return 'rate'
+        if not (SIZE_LEADING_SHAPE_RE.match(f)
+                and not RATE_KEYWORD_RE.search(f)):
+            return 'rate'
 
     # 4. Size/shape/dateformat composite
+    if f.upper() in SHAPE_CODE_SET:
+        return 'size'
     if SIZE_FIELD_RE.search(f):
         return 'size'
 
@@ -143,9 +178,9 @@ SIZE_WITH_DASH_RE = re.compile(
 )
 
 BARE_RATE_RE = re.compile(
-    r'^(?:(?:large|fancy|shaded|Double|small)\s+)?'
-    r'(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLCDM]+)'
-    r'(?:\s*,\s*(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLCDM]+))*$'
+    r'^(?:(?:large|fancy|shaded|Double|small|negative|stencil)\s+)?'
+    r'(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLDM]+)'
+    r'(?:\s*,\s*(?:\d+(?:-\d+(?:/\d+)?)?|[IVXLDM]+))*$'
 )
 
 IRREGULAR_SIZE_RE = re.compile(r'^irregular\s+\d', re.IGNORECASE)

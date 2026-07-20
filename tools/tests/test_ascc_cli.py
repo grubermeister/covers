@@ -140,6 +140,26 @@ class AsccCliTests(unittest.TestCase):
         self.assertEqual(str(args.v1_image_root), "legacy-images")
         self.assertTrue(args.allow_missing_v1_images)
 
+    def test_parser_v1_commands_default_to_missing_image_tolerance(self):
+        parser = ascc_cli.build_parser()
+
+        doctor = parser.parse_args(["doctor", "va"])
+        munge = parser.parse_args(["munge", "va"])
+        run = parser.parse_args(["run", "va"])
+
+        self.assertTrue(doctor.allow_missing_v1_images)
+        self.assertTrue(munge.allow_missing_v1_images)
+        self.assertTrue(run.allow_missing_v1_images)
+
+    def test_parser_v1_strict_images_disables_missing_image_tolerance(self):
+        args = ascc_cli.build_parser().parse_args([
+            "run",
+            "va",
+            "--strict-v1-images",
+        ])
+
+        self.assertFalse(args.allow_missing_v1_images)
+
     def test_parser_munge_defaults_to_ascc6(self):
         args = ascc_cli.build_parser().parse_args([
             "munge",
@@ -174,6 +194,17 @@ class AsccCliTests(unittest.TestCase):
             args.import_args,
             ["tools/wip/out/v1_va", "--dry-run", "--only", "markings,images"],
         )
+
+    def test_parser_accepts_drop_region_code_and_dry_run(self):
+        args = ascc_cli.build_parser().parse_args([
+            "drop",
+            "USA-MI1",
+            "--dry-run",
+        ])
+
+        self.assertEqual(args.command, "drop")
+        self.assertEqual(args.region_code, "USA-MI1")
+        self.assertTrue(args.dry_run)
 
     def test_parser_accepts_clean_with_optional_state(self):
         all_args = ascc_cli.build_parser().parse_args(["clean"])
@@ -445,6 +476,8 @@ class AsccCliTests(unittest.TestCase):
         self.assertEqual(commands[1][commands[1].index("--region-abbrev") + 1], "VA")
         self.assertIn("--v1-image-root", commands[2])
         self.assertIn("--media-dir", commands[2])
+        self.assertIn("--allow-missing-v1-images", commands[2])
+        self.assertIn("--allow-missing-v1-images", commands[3])
         self.assertIn("--preserve-images", commands[3])
         self.assertIn("--slice", commands[3])
         self.assertIn("--bundle-dir", commands[3])
@@ -479,10 +512,38 @@ class AsccCliTests(unittest.TestCase):
         self.assertTrue(commands[2][1].endswith("v1_attach_images.py"))
         self.assertTrue(commands[3][1].endswith("v1_bundle_overlay.py"))
         self.assertTrue(commands[4][1].endswith("backend/manage.py"))
+        self.assertIn("--allow-missing-v1-images", commands[2])
+        self.assertIn("--allow-missing-v1-images", commands[3])
         self.assertEqual(commands[4][2], "import_ascc_bundle")
         self.assertTrue(commands[4][3].endswith("tools/wip/out/v1_va"))
         self.assertIn("--dry-run", commands[4])
         self.assertIn("--allow-missing", commands[4])
+
+    def test_run_strict_v1_images_omits_missing_image_tolerance(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            with _PatchedRoots(root):
+                image_root = root / "legacy-images"
+                image_root.mkdir()
+                args = ascc_cli.build_parser().parse_args([
+                    "run",
+                    "VA",
+                    "--v1-image-root",
+                    str(image_root),
+                    "--strict-v1-images",
+                    "--dry-run",
+                ])
+                ok_checks = [{"name": "ok", "ok": True, "required": True, "detail": ""}]
+                with patch.object(ascc_cli, "v1_doctor_checks", return_value=ok_checks):
+                    with patch.object(ascc_cli, "run_command") as run_command:
+                        with patch.object(ascc_cli, "clean_bundle_dir"):
+                            with patch.object(ascc_cli, "write_v1_run_manifest"):
+                                rc = ascc_cli.command_run(args)
+
+        self.assertEqual(rc, 0)
+        commands = [call.args[0] for call in run_command.call_args_list]
+        self.assertNotIn("--allow-missing-v1-images", commands[2])
+        self.assertNotIn("--allow-missing-v1-images", commands[3])
 
     def test_import_delegates_to_ascc_bundle_management_command(self):
         args = ascc_cli.build_parser().parse_args([
@@ -499,6 +560,25 @@ class AsccCliTests(unittest.TestCase):
         self.assertTrue(cmd[1].endswith("backend/manage.py"))
         self.assertEqual(cmd[2], "import_ascc_bundle")
         self.assertEqual(cmd[3:], ["tools/wip/out/v1_va", "--dry-run", "--allow-missing"])
+
+    def test_drop_delegates_exact_region_code_to_management_command(self):
+        args = ascc_cli.build_parser().parse_args([
+            "drop",
+            "USA-MI1",
+            "--dry-run",
+        ])
+        with patch.object(ascc_cli, "run_command") as run_command:
+            rc = ascc_cli.command_drop(args)
+
+        self.assertEqual(rc, 0)
+        cmd = run_command.call_args.args[0]
+        self.assertTrue(cmd[1].endswith("backend/manage.py"))
+        self.assertEqual(cmd[2:], [
+            "drop_ascc_state",
+            "--region-code",
+            "USA-MI1",
+            "--dry-run",
+        ])
 
     def test_import_check_uses_additive_dry_run(self):
         with tempfile.TemporaryDirectory() as td:

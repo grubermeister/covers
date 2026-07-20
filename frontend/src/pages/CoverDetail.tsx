@@ -5,6 +5,7 @@ import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type CarouselApi } from "@/components/ui/carousel";
 import { formatDateSeen } from "@/lib/catalogRecordDisplay";
@@ -165,6 +166,7 @@ const CoverDetailPage = () => {
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
   const [linkMarkingOpen, setLinkMarkingOpen] = useState(false);
   const [linkMarkingInput, setLinkMarkingInput] = useState("");
+  const [linkMarkingIsBackstamp, setLinkMarkingIsBackstamp] = useState(false);
   const [linkMarkingBusy, setLinkMarkingBusy] = useState(false);
   const [linkMarkingError, setLinkMarkingError] = useState<string | null>(null);
   const [moveImageIndex, setMoveImageIndex] = useState<number | null>(null);
@@ -572,13 +574,18 @@ const CoverDetailPage = () => {
         setLinkMarkingError(`Marking ${markingIdTarget} not found.`);
         return;
       }
-      await createCoverMarking({ cover: coverPk, marking: markingIdTarget });
+      await createCoverMarking({
+        cover: coverPk,
+        marking: markingIdTarget,
+        is_backstamp: linkMarkingIsBackstamp,
+      });
       toast({
         title: "Marking linked",
         description: `Marking ${marking.code ?? markingIdTarget} is now linked to this cover.`,
       });
       setLinkMarkingOpen(false);
       setLinkMarkingInput("");
+      setLinkMarkingIsBackstamp(false);
       const linksResult = await getCoverMarkingsByCover(coverPk);
       const linkForMarking =
         markingId != null
@@ -866,6 +873,7 @@ const CoverDetailPage = () => {
                       variant="outline"
                       onClick={() => {
                         setLinkMarkingInput("");
+                        setLinkMarkingIsBackstamp(false);
                         setLinkMarkingError(null);
                         setLinkMarkingOpen(true);
                       }}
@@ -994,6 +1002,7 @@ const CoverDetailPage = () => {
           setLinkMarkingOpen(open);
           if (!open) {
             setLinkMarkingInput("");
+            setLinkMarkingIsBackstamp(false);
             setLinkMarkingError(null);
           }
         }}
@@ -1022,6 +1031,14 @@ const CoverDetailPage = () => {
               }}
               autoFocus
             />
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={linkMarkingIsBackstamp}
+                onCheckedChange={(value) => setLinkMarkingIsBackstamp(value === true)}
+                disabled={linkMarkingBusy}
+              />
+              Backstamp
+            </label>
             {linkMarkingError && <p className="text-sm text-destructive">{linkMarkingError}</p>}
           </div>
           <DialogFooter>

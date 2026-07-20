@@ -97,10 +97,11 @@ def parse_head(row):
     """Extract structured components from seg_head."""
     head = str(row['seg_head']) if pd.notna(row['seg_head']) else ''
 
-    # 1. First-of-town marker (leading *)
-    first_of_town = head.startswith('*')
-    if first_of_town:
-        head = head[1:]
+    # 1. Catalog ownership marker (leading *)
+    head_without_indent = head.lstrip()
+    has_leading_star = head_without_indent.startswith('*')
+    if has_leading_star:
+        head = head_without_indent[1:]
 
     # 2. Plus prefix (rare; allowed by S1 regex but uncommon)
     plus_prefix = head.startswith('+')
@@ -171,7 +172,7 @@ def parse_head(row):
     name_body = name_body if name_body else None
 
     return pd.Series({
-        'head_first_of_town': first_of_town,
+        'head_has_leading_star': has_leading_star,
         'head_rel_type': rel_type,
         'head_name_body': name_body,
         'head_annotations': annotations,

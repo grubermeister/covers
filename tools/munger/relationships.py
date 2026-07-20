@@ -1,6 +1,8 @@
 import re
 import pandas as pd
 
+from .text_utils import strip_trailing_state_suffix
+
 
 LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*1\s*\))\s*", re.IGNORECASE)
 CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
@@ -37,6 +39,33 @@ def extract_town_root(inscription):
     return inscription
 
 
+def _split_location_state_suffix(text):
+    value = str(text or '').strip()
+    for pattern in (
+        r"^(?P<location>.+?)(?P<state>/\s*[A-Za-z]{1,4}\.?)$",
+        r"^(?P<location>.+?)(?P<state>\s+[A-Za-z]{1,4}\.?)$",
+    ):
+        match = re.match(pattern, value)
+        if match:
+            return match.group('location').strip(), match.group('state')
+    return '', ''
+
+
+def _compact_location_token(text):
+    return re.sub(r"[^A-Za-z0-9]+", "", str(text or '')).upper()
+
+
+def _trailing_location_token(text):
+    match = re.search(r"([A-Za-z.]+)\s*$", str(text or '').strip())
+    return match.group(1) if match else ''
+
+
+def _same_suffix_repeats_parent_tail(parent_stem, suffix_location):
+    parent_tail = _compact_location_token(_trailing_location_token(parent_stem))
+    suffix_tail = _compact_location_token(suffix_location)
+    return 2 <= len(parent_tail) <= 4 and parent_tail == suffix_tail
+
+
 def parent_townmark_text_for_same(parent_inscription, parent_town, suffix=''):
     """Return carry-source inscription text to use when catalog text says Same.
 
@@ -56,12 +85,22 @@ def parent_townmark_text_for_same(parent_inscription, parent_town, suffix=''):
         return parent_text
     if '/' in parent_text:
         return extract_town_root(parent_text).strip() or parent_text
-    stem = re.sub(
-        r"\s+[A-Za-z]{1,4}\.?$|[./]\s*[A-Za-z]{1,4}\.?$",
-        "",
-        parent_text,
-    ).strip()
+    stem = strip_trailing_state_suffix(parent_text)
     return stem or parent_text
+
+
+def resolve_same_inscription(parent_inscription, parent_town, suffix=''):
+    parent_text = parent_townmark_text_for_same(parent_inscription, parent_town, suffix)
+    suffix_text = str(suffix or '').strip()
+    if not suffix_text:
+        return strip_inscription_markers(parent_text)
+    parent_source = str(parent_inscription or parent_town or '').strip()
+    if '/' not in parent_source:
+        suffix_location, suffix_state = _split_location_state_suffix(suffix_text)
+        if suffix_state and _same_suffix_repeats_parent_tail(parent_text, suffix_location):
+            return strip_inscription_markers(parent_text + suffix_state)
+    sep = '' if suffix_text.startswith('/') else ' '
+    return strip_inscription_markers(parent_text + sep + suffix_text)
 
 
 def resolve_relationships(listings_df):
@@ -153,19 +192,13 @@ def resolve_relationships(listings_df):
                     # a literal space between 'Same' and the name body
                     # (e.g. 'Same C.H./Va.') that parse_head stripped; put
                     # one space back to avoid 'ACCOMACKC.H./VA.'.
-                    parent_text = parent_townmark_text_for_same(
+                    resolved_inscription[pos] = resolve_same_inscription(
                         carry_inscription,
                         carry_town,
                         name_body_clean,
                     )
                     if not name_body_clean.startswith('/'):
                         warnings.append('same_name_body_no_slash')
-                        sep = ' '
-                    else:
-                        sep = ''
-                    resolved_inscription[pos] = strip_inscription_markers(
-                        parent_text + sep + name_body_clean
-                    )
                     resolved_town[pos] = carry_town
                 else:
                     # Same device (Same w/o name, (L), (E)): inherit

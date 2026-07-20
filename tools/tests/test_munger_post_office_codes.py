@@ -66,6 +66,17 @@ class PostOfficeTownNormalizationTests(unittest.TestCase):
         self.assertEqual(normalize_post_office_town("Barnett's"), "BARNETTS")
         self.assertEqual(normalize_post_office_town("B&O"), "B AND O")
 
+    def test_strips_quote_marks_from_florida_v1_rows(self):
+        self.assertEqual(normalize_post_office_town('"Pensacola'), "PENSACOLA")
+        self.assertEqual(
+            normalize_post_office_town("\u201cEast Florida"),
+            "EAST FLORIDA",
+        )
+        self.assertEqual(
+            normalize_post_office_town("\u201cFlorida 12 April 1774"),
+            "FLORIDA",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

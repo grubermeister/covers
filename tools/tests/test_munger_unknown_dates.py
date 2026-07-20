@@ -75,6 +75,18 @@ class TestUnknownDateFields(unittest.TestCase):
         self.assertEqual(parsed['date_year_end'], 1869)
         self.assertIsNone(parsed['date_error'])
 
+    def test_circa_year_prefix_and_suffix(self):
+        for raw in ['c1850', 'c. 1850', '1850c', '1850c.']:
+            with self.subTest(raw=raw):
+                self.assertEqual(classify_all_fields([raw]), ['date'])
+                parsed = parse_date_field(raw)
+                self.assertEqual(parsed['date_granularity'], 'YEAR')
+                self.assertEqual(parsed['date_year_start'], 1850)
+                self.assertEqual(parsed['date_year_end'], 1850)
+                self.assertTrue(parsed['date_is_circa'])
+                self.assertEqual(parsed['date_raw'], raw)
+                self.assertIsNone(parsed['date_error'])
+
     def test_month_name_year_parses_as_month(self):
         for raw, month in [
             ('Mar. 1852', 3),

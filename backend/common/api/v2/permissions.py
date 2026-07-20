@@ -75,9 +75,11 @@ def _user_is_responsible_for_cover(user, cover):
     """
     A cover has no region of its own; its regions are derived from the markings
     linked to it (CoverMarking -> Marking -> post_office -> region). An editor
-    is responsible for the cover if any of those regions is in their assigned
-    regions. A cover with no linked markings has no region, so only a superuser
-    can act on it.
+    is responsible for the whole cover only if every one of those regions is in
+    their assigned regions. This prevents an editor from removing a multi-state
+    cover through one assigned marking while lacking authority over its other
+    markings. A cover with no linked markings has no region, so only a
+    superuser can act on it.
     """
     if not user or not user.is_authenticated:
         return False
@@ -85,8 +87,10 @@ def _user_is_responsible_for_cover(user, cover):
         return True
     if not user_can_review_contributions(user):
         return False
-    assigned = _get_user_assigned_regions(user)
-    if not assigned.exists():
+    assigned_ids = set(
+        _get_user_assigned_regions(user).values_list("pk", flat=True)
+    )
+    if not assigned_ids:
         return False
     region_ids = set()
     for cm in cover.cover_markings.select_related("marking__post_office").all():
@@ -97,7 +101,7 @@ def _user_is_responsible_for_cover(user, cover):
             region_ids.add(region.pk)
     if not region_ids:
         return False
-    return assigned.filter(pk__in=region_ids).exists()
+    return region_ids.issubset(assigned_ids)
 
 
 class IsEditor(BasePermission):

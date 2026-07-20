@@ -19,10 +19,10 @@ Expected layout:
         citations.csv
         images.csv
 
-    Three cover-related stems are optional because the munger no
-    longer auto-creates a Cover per listing; users author Covers,
-    CoverMarkings, and CoverValuations by hand after the bundle has
-    been imported. A bundle that omits those CSVs entirely still loads
+    The three cover-related stems remain optional for older or hand-built
+    bundles. Current munger bundles emit Covers and CoverMarkings for
+    institutional listings marked with a leading star, but do not emit
+    CoverValuations. A bundle that omits those CSVs entirely still loads
     cleanly. (When --allow-missing is set, ANY stem may be absent.)
 
     dates_seen.csv, citations.csv, and images.csv are polymorphic: each row
@@ -113,11 +113,10 @@ ASCC_LOAD_ORDER = (
 )
 
 # Stems whose CSV may be absent from the bundle without --allow-missing.
-# Reason: the munger no longer auto-creates Covers and therefore does not
-# emit CoverMarking or CoverValuation rows either. Bundles produced after
-# that change omit these three files; older bundles still include them
-# and load normally. dates_seen.csv is NOT optional: under the new policy
-# the munger emits MARKING-scoped DateSeen rows anchored to markings.
+# Older and hand-built bundles may omit all cover-side files. Current munger
+# bundles emit Covers and CoverMarkings only for institutional listings and
+# still omit CoverValuations. dates_seen.csv is NOT optional: the munger emits
+# MARKING-scoped DateSeen rows anchored to markings.
 OPTIONAL_STEMS = frozenset({
     "covers",
     "cover_markings",

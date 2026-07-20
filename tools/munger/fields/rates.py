@@ -51,9 +51,13 @@ RATE_KEYWORD_RE = re.compile(
 
 PM_RE = re.compile(r'P\.?M\.?\s*(Free|frank)', re.IGNORECASE)
 
-NEGATIVE_RE = re.compile(r'^negative\s+', re.IGNORECASE)
+IMPRESSION_PREFIX_RE = re.compile(r'^(negative|stencil)\s+', re.IGNORECASE)
+IMPRESSION_BY_TOKEN = {
+    'negative': 'Negative',
+    'stencil': 'Stencil',
+}
 
-ROMAN_RE = re.compile(r'^[IVXLCDM]+$')
+ROMAN_RE = re.compile(r'^[IVXLDM]+$')
 
 def parse_rate_token(tok):
     """Parse a single rate token into structured components."""
@@ -65,14 +69,17 @@ def parse_rate_token(tok):
         'rate_bracket': None,
         'rate_is_manuscript': False,
         'rate_impression': None,
+        'rate_inscription_raw': None,
         'rate_raw': t,
     }
 
-    # Check for negative impression prefix
-    neg_m = NEGATIVE_RE.match(t)
-    if neg_m:
-        result['rate_impression'] = 'Negative'
-        t = t[neg_m.end():]
+    # Check for an impression prefix such as "negative 5" or "stencil 5".
+    impression_m = IMPRESSION_PREFIX_RE.match(t)
+    if impression_m:
+        impression_key = impression_m.group(1).lower()
+        result['rate_impression'] = IMPRESSION_BY_TOKEN[impression_key]
+        t = t[impression_m.end():].strip()
+        result['rate_inscription_raw'] = t
 
     # P.M. notation
     pm_m = PM_RE.search(t)
@@ -99,8 +106,13 @@ def parse_rate_token(tok):
     br_m = RATE_BRACKET_RE.search(t)
     if br_m:
         bracket_val = br_m.group(1).strip()
-        if bracket_val.lower() == 'ms':
+        bracket_key = bracket_val.rstrip('.').lower()
+        if bracket_key == 'ms':
             result['rate_is_manuscript'] = True
+        elif bracket_key in ('neg', 'negative'):
+            result['rate_impression'] = 'Negative'
+        elif bracket_key == 'stencil':
+            result['rate_impression'] = 'Stencil'
         else:
             result['rate_bracket'] = bracket_val
 
@@ -117,7 +129,7 @@ def parse_rate_token(tok):
     t_stripped = RATE_BRACKET_RE.sub('', t)
     t_stripped = RATE_KEYWORD_RE.sub('', t_stripped)
     t_stripped = PM_RE.sub('', t_stripped)
-    t_stripped = t_stripped.replace('/', ' ').strip()
+    t_stripped = t_stripped.strip()
     amt_m = RATE_AMOUNT_RE.search(t_stripped)
     if amt_m:
         result['rate_amount_raw'] = amt_m.group(1)

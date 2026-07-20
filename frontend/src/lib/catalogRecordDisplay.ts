@@ -137,6 +137,8 @@ export type CatalogFieldValues = {
   markingTextSingle: string;
   shape: string;
   lettering: string;
+  impression: string;
+  irregular: string;
   dimensions: string;
   color: string;
   rateValue: string;
@@ -195,6 +197,10 @@ export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValu
     markingTextSingle,
     shape: displayCatalogField(record.shapeName),
     lettering: displayCatalogField(record.letteringName),
+    impression: displayCatalogField(record.impression),
+    irregular: displayCatalogField(
+      record.isIrreg == null ? null : record.isIrreg ? "Yes" : "No",
+    ),
     dimensions: displayCatalogField(dimensionsField(record)),
     color: displayCatalogField(record.colorName),
     rateValue: displayCatalogField(formatRateValue(record.rateVal)),

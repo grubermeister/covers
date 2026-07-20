@@ -6,9 +6,16 @@ SHAPE_CODE_PAT = (
     r'(?:DLDC|DLDO|DLC|DLO|Octagon|Box|Arc|Pmk|SL|DC|DO|NOR|O|C)'
 )
 
+SIZE_IMPRESSION_PREFIX_RE = re.compile(r'^(negative|stencil)\s+', re.IGNORECASE)
+SIZE_IMPRESSION_BY_TOKEN = {
+    'negative': 'Negative',
+    'stencil': 'Stencil',
+}
+
 SIZE_FIELD_RE = re.compile(
     r'(?:'
-    + SHAPE_CODE_PAT + r'[\-\s]?\d'
+    + r'(?:(?:negative|stencil)\s+)?' + SHAPE_CODE_PAT + r'[\-\s]?\d'
+    + r'|^' + SHAPE_CODE_PAT + r'\s*-{1,2}(?:\s*,\s*NOR)?$'
     + r'|\d+\.?\d*\s*x\s*\d'
     + r'|^-{1,2}(?:\s*,'
     + SIZE_SUFFIX_PAT + r')?$'
@@ -81,14 +88,22 @@ def _collapse_ampersand_shape(t):
 
 def parse_size_field(text):
     """Decompose a size-classified paren field into components."""
-    t = text.strip()
+    raw = text.strip()
+    t = raw
+    size_impression = None
+    impression_m = SIZE_IMPRESSION_PREFIX_RE.match(t)
+    if impression_m:
+        impression_key = impression_m.group(1).lower()
+        size_impression = SIZE_IMPRESSION_BY_TOKEN[impression_key]
+        t = t[impression_m.end():].strip()
 
     # Catch bare dashes
     if t in ('-', '--'):
         return {
             'size_shape_code': None, 'size_dim1': None, 'size_dim2': None,
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_raw': t, 'size_error': None,
+            'size_qualifier': None, 'size_impression': size_impression,
+            'size_raw': raw, 'size_error': None,
         }
 
     # Collapse ampersand-joined shape lists ("arc & SL-46x26" -> "arc-46x26")
@@ -98,8 +113,8 @@ def parse_size_field(text):
         return {
             'size_shape_code': None, 'size_dim1': None, 'size_dim2': None,
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_raw': t,
-            'size_error': f'unparsed size: {t!r}',
+            'size_qualifier': None, 'size_impression': size_impression,
+            'size_raw': raw, 'size_error': f'unparsed size: {raw!r}',
         }
 
     irregular_prefix = m.group(1)
@@ -147,6 +162,7 @@ def parse_size_field(text):
         'size_dateformat': dateformat,
         'size_is_irregular': is_irregular,
         'size_qualifier': qualifier,
-        'size_raw': t,
+        'size_impression': size_impression,
+        'size_raw': raw,
         'size_error': None,
     }

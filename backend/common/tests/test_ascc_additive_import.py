@@ -174,14 +174,14 @@ class AsccAdditiveImportTests(TestCase):
             ["code", "color", "type", "has_adhesive", "height", "is_institutional", "width", "display_submitter_name", "description", *AUDIT_COLUMNS],
             [_stamp({
                 "code": "ASCC1-VA-C1001",
-                "color": "BLACK",
-                "type": "FC",
+                "color": "",
+                "type": "",
                 "has_adhesive": "False",
-                "height": "80",
-                "is_institutional": "False",
-                "width": "120",
+                "height": "",
+                "is_institutional": "True",
+                "width": "",
                 "display_submitter_name": "False",
-                "description": "imported cover",
+                "description": "",
             }, user)],
         )
         _write_csv(
@@ -260,6 +260,14 @@ class AsccAdditiveImportTests(TestCase):
         self.assertEqual(Citation.objects.get().subject_id, marking.pk)
         self.assertEqual(Image.objects.get().subject_id, marking.pk)
         self.assertEqual(CoverValuation.objects.get().cover.code, "ASCC1-VA-C1001")
+        self.assertTrue(Cover.objects.get(code="ASCC1-VA-C1001").is_institutional)
+        self.assertTrue(
+            CoverMarking.objects.filter(
+                cover__code="ASCC1-VA-C1001",
+                marking=marking,
+                review_status=CoverMarking.REVIEW_APPROVED,
+            ).exists()
+        )
 
         marking.inscription_txt = "MANUAL EDIT"
         marking.save()
@@ -304,6 +312,32 @@ class AsccAdditiveImportTests(TestCase):
             json.loads(date_rows[0]["row_values_json"])["subject_id"],
             "ASCC1-VA-M1001",
         )
+
+    def test_imported_institutional_cover_enables_marking_filter(self):
+        call_command("import_ascc_bundle", str(self.bundle), verbosity=0)
+        self.client.force_login(self.user)
+        post_office = PostOffice.objects.get(code="USA-VA1-1")
+        plain = Marking.objects.create(
+            code="ASCC1-VA-M1002",
+            type="TOWNMARK",
+            catalog_txt="PLAIN",
+            inscription_txt="PLAIN",
+            desc="",
+            is_manuscript=True,
+            post_office=post_office,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        response = self.client.get(
+            "/api/v2/markings/",
+            {"institutional": "true", "page_size": "50"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        result_codes = {row["code"] for row in response.json()["results"]}
+        self.assertIn("ASCC1-VA-M1001", result_codes)
+        self.assertNotIn(plain.code, result_codes)
 
     def test_import_allows_marking_with_blank_shape_and_color(self):
         path = self.bundle / "markings.csv"

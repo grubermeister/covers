@@ -3,6 +3,7 @@
 This module keeps the demo-facing workflow small:
 
     ./woco ascc doctor VA
+    ./woco ascc drop USA-VA1 --dry-run
     ./woco ascc munge VA
     ./woco ascc run VA --dry-run
     ./woco ascc ocr VA --pdf ~/Downloads/va-catalog.pdf
@@ -170,6 +171,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
 
+    drop = sub.add_parser(
+        "drop",
+        help="delete imported catalog data for an exact Region.code",
+    )
+    drop.add_argument("region_code", help="exact Region.code, for example USA-MI1")
+    drop.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report delete counts and roll back all changes",
+    )
+
     clean = sub.add_parser("clean", help="delete generated ASCC cache and output files")
     clean.add_argument("state", nargs="?")
 
@@ -207,9 +219,19 @@ def add_v1_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--allow-missing-v1-images",
+        dest="allow_missing_v1_images",
         action="store_true",
-        default=False,
-        help="write warning rows for missing v1 image files instead of failing",
+        default=True,
+        help=(
+            "write warning rows for missing v1 image files instead of "
+            "failing (default)"
+        ),
+    )
+    parser.add_argument(
+        "--strict-v1-images",
+        dest="allow_missing_v1_images",
+        action="store_false",
+        help="fail if the v1 image root or any referenced v1 image file is missing",
     )
     parser.add_argument(
         "--strict",
@@ -270,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_ocr_run(args)
         if args.command == "import":
             return command_import(args)
+        if args.command == "drop":
+            return command_drop(args)
         if args.command == "clean":
             return command_clean(args)
     except AsccCliError as exc:
@@ -352,6 +376,20 @@ def command_import(args) -> int:
             "[--dry-run] [--truncate] [--only STEMS] [--allow-missing]"
         )
     run_command(import_bundle_cmd(args.import_args))
+    return 0
+
+
+def command_drop(args) -> int:
+    cmd = [
+        sys.executable,
+        str(REPO_ROOT / "backend" / "manage.py"),
+        "drop_ascc_state",
+        "--region-code",
+        args.region_code,
+    ]
+    if args.dry_run:
+        cmd.append("--dry-run")
+    run_command(cmd)
     return 0
 
 
