@@ -812,7 +812,7 @@ def main(argv=None):
     head_parts = listings.apply(parse_head, axis=1)
     listings = pd.concat([listings, head_parts], axis=1)
     print(f'Step 4: Head parsing applied to {len(listings)} listings')
-    print(f'  First-of-town markers: {listings["head_first_of_town"].sum()}')
+    print(f'  Leading-star markers: {listings["head_has_leading_star"].sum()}')
     print(f'  Relationship indicators: {listings["head_rel_type"].notna().sum()}')
     has_name = listings['head_name_body'].notna()
     print(f'  Entries with name body: {has_name.sum()} ({has_name.sum()/len(listings)*100:.1f}%)')
@@ -874,7 +874,7 @@ def main(argv=None):
     print(f'Step 4: Head Parsing')
     print(f'  Input listings: {total}')
     print()
-    print(f'  First-of-town: {listings["head_first_of_town"].sum()} ({listings["head_first_of_town"].sum()/total*100:.1f}%)')
+    print(f'  Leading star: {listings["head_has_leading_star"].sum()} ({listings["head_has_leading_star"].sum()/total*100:.1f}%)')
     print()
     print(f'  Relationship indicators:')
     for val, count in listings['head_rel_type'].value_counts(dropna=True).items():
@@ -1388,7 +1388,7 @@ def main(argv=None):
         # Last META at a given location wins (closest-above semantics).
         meta_by_loc[key] = _norm_for_alias(txt)
     hs_first = listings[
-        listings['head_first_of_town'].fillna(False)
+        listings['head_has_leading_star'].fillna(False)
         & (~listings['is_manuscript_section'].fillna(False))
     ]
     for _, lrow in hs_first.iterrows():
@@ -1510,12 +1510,12 @@ def main(argv=None):
               f'(orphan_rel). They inherit from best-effort fallback inscription.\n'
               + detail.to_string(index=False))
     print()
-    fot_entries = listings[listings['head_first_of_town']]
-    fot_rel = fot_entries[fot_entries['head_rel_type'].notna()]
-    print(f'V3: first_of_town entries: {len(fot_entries)}')
-    print(f'    of which are rel indicators: {len(fot_rel)}')
-    if len(fot_rel):
-        for _, row in fot_rel.iterrows():
+    starred_entries = listings[listings['head_has_leading_star']]
+    starred_rel = starred_entries[starred_entries['head_rel_type'].notna()]
+    print(f'V3: leading-star entries: {len(starred_entries)}')
+    print(f'    of which are rel indicators: {len(starred_rel)}')
+    if len(starred_rel):
+        for _, row in starred_rel.iterrows():
             print(f'  [{row["head_rel_type"]}] {row["clean_text"][:100]}')
     print()
     all_warnings = [w for wlist in listings['s7_warnings'] for w in wlist]
@@ -3353,6 +3353,90 @@ def main(argv=None):
             f"{_missing_ct} markings emitted with null catalog_txt; "
             f"first offenders:\n{_bad.head(10).to_string(index=False)}"
         )
+    townmark_codes_by_listing = {}
+    if townmarks_df is not None and len(townmarks_df):
+        for _, _tm in townmarks_df.sort_values("townmark_id").iterrows():
+            _mid = marking_id_by_tm.get(_tm["townmark_id"])
+            if _mid is None:
+                continue
+            _listing_idx = int(_tm["source_listing_idx"])
+            townmark_codes_by_listing.setdefault(_listing_idx, []).append(
+                marking_code_by_id[_mid]
+            )
+    cover_rows = []
+    cover_marking_rows = []
+    for _listing_idx, _listing in listings.iterrows():
+        if not bool(_listing.get("head_has_leading_star")):
+            continue
+        _target_listing_idx = int(_listing_idx)
+        if bool(_listing.get("is_latest_merge")):
+            _parent_idx = _listing.get("parent_idx")
+            if _parent_idx is None or pd.isna(_parent_idx):
+                raise AssertionError(
+                    f"Starred latest-use listing {_listing_idx} has no parent marking."
+                )
+            _target_listing_idx = int(_parent_idx)
+        _townmark_codes = list(dict.fromkeys(
+            townmark_codes_by_listing.get(_target_listing_idx, [])
+        ))
+        if not _townmark_codes:
+            raise AssertionError(
+                f"Starred listing {_listing_idx} produced no townmark link target."
+            )
+        _cover_code = f"{RW_CODE}-{REGION_ABBREV}-C{len(cover_rows) + 1001}"
+        cover_rows.append({
+            "code": _cover_code,
+            "color": None,
+            "type": None,
+            "has_adhesive": False,
+            "height": None,
+            "is_institutional": True,
+            "width": None,
+            "display_submitter_name": False,
+            "description": "",
+        })
+        for _marking_code in _townmark_codes:
+            cover_marking_rows.append({
+                "cover": _cover_code,
+                "marking": _marking_code,
+                "is_backstamp": False,
+                "placement": None,
+                "contributor_comment": None,
+                "review_status": "approved",
+                "reviewer": None,
+                "review_notes": "",
+                "reviewed_at": None,
+            })
+    covers_out = pd.DataFrame(cover_rows) if cover_rows else pd.DataFrame(columns=[
+        "code", "color", "type", "has_adhesive", "height", "is_institutional",
+        "width", "display_submitter_name", "description",
+    ])
+    covers_out = _stamp(covers_out)
+    cover_markings_out = (
+        pd.DataFrame(cover_marking_rows)
+        if cover_marking_rows
+        else pd.DataFrame(columns=[
+            "cover", "marking", "is_backstamp", "placement",
+            "contributor_comment", "review_status", "reviewer",
+            "review_notes", "reviewed_at",
+        ])
+    )
+    cover_markings_out = _stamp(cover_markings_out)
+    if cover_marking_rows:
+        _known_cover_codes = set(covers_out["code"])
+        _known_townmark_codes = {
+            code
+            for codes in townmark_codes_by_listing.values()
+            for code in codes
+        }
+        if not set(cover_markings_out["cover"]).issubset(_known_cover_codes):
+            raise AssertionError("CoverMarking row references an unknown Cover code.")
+        if not set(cover_markings_out["marking"]).issubset(_known_townmark_codes):
+            raise AssertionError("CoverMarking row references a non-townmark code.")
+    print(
+        f"Institutional covers: {len(covers_out)}; "
+        f"townmark links: {len(cover_markings_out)}"
+    )
     _source_code_to_marking_code = {}
     if townmarks_df is not None and len(townmarks_df) and "townmark_id" in townmarks_df.columns and "code" in townmarks_df.columns:
         for _, _r in townmarks_df.iterrows():
@@ -3423,7 +3507,17 @@ def main(argv=None):
                                 "is_irreg", "width", "height", "date_fmt", "impression",
                                 "rate_val", "post_office",
                              ]),
+        ("covers",           covers_out,           [
+                                "code", "color", "type", "has_adhesive", "height",
+                                "is_institutional", "width", "display_submitter_name",
+                                "description",
+                             ]),
         ("dates_seen",       dates_seen_out,       ["subject_type", "subject_id", "date", "granularity"]),
+        ("cover_markings",   cover_markings_out,   [
+                                "cover", "marking", "is_backstamp", "placement",
+                                "contributor_comment", "review_status", "reviewer",
+                                "review_notes", "reviewed_at",
+                             ]),
         ("citations",        citations_out,        [
                                 "reference_work", "subject_type", "subject_id",
                                 "citation_detail",
@@ -3484,10 +3578,15 @@ def main(argv=None):
     }
     image_rows = []
     # Driven by per-source-listing image_file_refs computed in Step 8.25.
-    # Every townmark (including each color-fanout sibling) gets its own
-    # image rows pointing at the same on-disk files: same original_filename
-    # and storage_filename, different subject_id.
-    for _, pm in townmarks_df.sort_values('townmark_id').iterrows():
+    # A source listing owns one set of images. When color fan-out creates
+    # multiple townmarks, attach those images only to the first townmark.
+    image_owner_townmarks = (
+        townmarks_df
+        .sort_values('townmark_id')
+        .drop_duplicates(subset=['source_listing_idx'], keep='first')
+    )
+    image_owner_ids = set(image_owner_townmarks['townmark_id'])
+    for _, pm in image_owner_townmarks.iterrows():
         src_idx = int(pm['source_listing_idx'])
         refs = listings.loc[src_idx, 'image_file_refs']
         if not refs:
@@ -3541,17 +3640,13 @@ def main(argv=None):
     )
     images_out = _stamp(images_out)
     _img_counts = images_out.groupby('subject_id')['storage_filename'].count()
-    # Per-townmark validation: every townmark must have one image row per
-    # ref in its source listing's image_file_refs (post flow-down). This
-    # asserts both the flow-down arithmetic (counts match the flowed
-    # totals) and the color-fanout duplication (every color child has its
-    # own rows).
+    # Per-townmark validation: the first townmark for each source listing
+    # owns its image refs. Color fan-out siblings must have no image rows.
     for _, pm in townmarks_df.iterrows():
         src_idx = int(pm['source_listing_idx'])
         refs = listings.loc[src_idx, 'image_file_refs']
-        expected = len(refs) if refs else 0
-        if expected == 0:
-            continue
+        owns_images = pm['townmark_id'] in image_owner_ids
+        expected = len(refs) if owns_images and refs else 0
         mcode = pm_to_final_code.get(pm['townmark_id'])
         if mcode is None:
             continue

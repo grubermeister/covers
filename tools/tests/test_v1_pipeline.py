@@ -129,6 +129,40 @@ def write_munger_seeds(root):
 
 
 class V1PipelineTests(unittest.TestCase):
+    def test_overlay_reconciles_cover_markings_for_color_variant_changes(self):
+        cover_markings = [
+            stamped({
+                "cover": "ASCC6-VA-C1001",
+                "marking": "ASCC6-VA-M1001",
+                "review_status": "approved",
+            }),
+            stamped({
+                "cover": "ASCC6-VA-C1002",
+                "marking": "ASCC6-VA-M1002",
+                "review_status": "approved",
+            }),
+        ]
+
+        rows = v1_bundle_overlay.reconcile_cover_markings(
+            cover_markings,
+            {"ASCC6-VA-M1001", "ASCC6-VA-M1002"},
+            {
+                "ASCC6-VA-M1001-C1": "ASCC6-VA-M1001",
+                "ASCC6-VA-M1001-C2": "ASCC6-VA-M1001-C1",
+            },
+        )
+
+        self.assertEqual(
+            {(row["cover"], row["marking"]) for row in rows},
+            {
+                ("ASCC6-VA-C1001", "ASCC6-VA-M1001-C1"),
+                ("ASCC6-VA-C1001", "ASCC6-VA-M1001-C2"),
+            },
+        )
+        self.assertEqual({row["review_status"] for row in rows}, {"approved"})
+        self.assertEqual({row["created_by"] for row in rows}, {"1"})
+        self.assertEqual({row["modified_by"] for row in rows}, {"1"})
+
     def test_v1_overlay_replaces_same_with_parent_townmark_text(self):
         cases = [
             ("Same/Wis.", "WATERTOWN/Wis.", "WATERTOWN/Wis."),
@@ -937,6 +971,12 @@ class V1PipelineTests(unittest.TestCase):
             ])
             markings = read_csv(out_dir / "markings.csv")
             dates = read_csv(out_dir / "dates_seen.csv")
+            covers = read_csv(out_dir / "covers.csv")
+            cover_markings = read_csv(out_dir / "cover_markings.csv")
+            covers_header = (out_dir / "covers.csv").read_text().splitlines()[0]
+            cover_markings_header = (
+                out_dir / "cover_markings.csv"
+            ).read_text().splitlines()[0]
 
         falls_ratemarks = [
             row for row in markings
@@ -1063,6 +1103,207 @@ class V1PipelineTests(unittest.TestCase):
         self.assertNotIn("1700-01-01", {row["date"] for row in dates})
         self.assertNotIn("1900-01-01", {row["date"] for row in dates})
         self.assertIn("1861-04-16", {row["date"] for row in dates})
+        self.assertEqual(covers, [])
+        self.assertEqual(cover_markings, [])
+        self.assertTrue(covers_header.startswith("code,color,type,"))
+        self.assertTrue(
+            cover_markings_header.startswith("cover,marking,is_backstamp,")
+        )
+
+    def test_munger_emits_institutional_covers_for_starred_townmark_variants(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            headers = [
+                "listing_text",
+                "catalog_page",
+                "chunk_number",
+                "image_count",
+                "row_type",
+                "is_manuscript",
+                "default_shape",
+                "institutional_owner",
+            ]
+            base = {
+                "catalog_page": "0",
+                "image_count": "0",
+                "row_type": "LISTING",
+                "is_manuscript": "",
+                "default_shape": "",
+                "institutional_owner": "",
+            }
+            write_csv(
+                catalog_rows_path,
+                headers,
+                [
+                    {
+                        **base,
+                        "listing_text": "PLAIN/W.VA.(1850;C-30;Black) 10",
+                        "chunk_number": "1",
+                    },
+                    {
+                        **base,
+                        "listing_text": (
+                            "*STARRED/W.VA.(1851;C-31;PAID,5;Blue,Red) 20"
+                        ),
+                        "chunk_number": "2",
+                    },
+                    {
+                        **base,
+                        "listing_text": (
+                            "PARENT/W.VA.(1852;C-32;Black,Green) 30"
+                        ),
+                        "chunk_number": "3",
+                    },
+                    {
+                        **base,
+                        "listing_text": "*(L)(1853) 40",
+                        "chunk_number": "4",
+                    },
+                ],
+            )
+
+            ascc_data_munger.main([
+                "--input", str(catalog_rows_path),
+                "--input-dir", str(input_dir),
+                "--out-dir", str(out_dir),
+                "--reference-work-code", "ASCC6",
+                "--region-abbrev", "WV",
+            ])
+            markings = read_csv(out_dir / "markings.csv")
+            source_map = read_csv(out_dir / "source_marking_map.csv")
+            covers = read_csv(out_dir / "covers.csv")
+            cover_markings = read_csv(out_dir / "cover_markings.csv")
+
+        townmark_codes_by_chunk = {}
+        for row in source_map:
+            if row["marking_type"] != "TOWNMARK":
+                continue
+            townmark_codes_by_chunk.setdefault(row["chunk"], []).append(
+                row["marking_code"]
+            )
+        expected_linked_codes = set(townmark_codes_by_chunk["2"])
+        expected_linked_codes.update(townmark_codes_by_chunk["3"])
+        non_townmark_codes = {
+            row["code"] for row in markings if row["type"] != "TOWNMARK"
+        }
+
+        self.assertEqual([row["code"] for row in covers], [
+            "ASCC6-WV-C1001",
+            "ASCC6-WV-C1002",
+        ])
+        self.assertEqual({row["is_institutional"] for row in covers}, {"True"})
+        self.assertEqual({row["has_adhesive"] for row in covers}, {"False"})
+        self.assertEqual(
+            {row["display_submitter_name"] for row in covers},
+            {"False"},
+        )
+        for row in covers:
+            self.assertEqual(row["color"], "")
+            self.assertEqual(row["type"], "")
+            self.assertEqual(row["height"], "")
+            self.assertEqual(row["width"], "")
+            self.assertEqual(row["description"], "")
+            self.assertEqual(row["created_by"], "1")
+            self.assertEqual(row["modified_by"], "1")
+
+        self.assertEqual(len(townmark_codes_by_chunk["2"]), 2)
+        self.assertEqual(len(townmark_codes_by_chunk["3"]), 2)
+        self.assertEqual(len(cover_markings), 4)
+        self.assertEqual(
+            {row["marking"] for row in cover_markings},
+            expected_linked_codes,
+        )
+        self.assertTrue(
+            {row["marking"] for row in cover_markings}.isdisjoint(
+                non_townmark_codes
+            )
+        )
+        self.assertEqual(
+            {
+                row["marking"]
+                for row in cover_markings
+                if row["cover"] == "ASCC6-WV-C1001"
+            },
+            set(townmark_codes_by_chunk["2"]),
+        )
+        self.assertEqual(
+            {
+                row["marking"]
+                for row in cover_markings
+                if row["cover"] == "ASCC6-WV-C1002"
+            },
+            set(townmark_codes_by_chunk["3"]),
+        )
+        for row in cover_markings:
+            self.assertEqual(row["is_backstamp"], "False")
+            self.assertEqual(row["placement"], "")
+            self.assertEqual(row["contributor_comment"], "")
+            self.assertEqual(row["review_status"], "approved")
+            self.assertEqual(row["reviewer"], "")
+            self.assertEqual(row["review_notes"], "")
+            self.assertEqual(row["reviewed_at"], "")
+            self.assertEqual(row["created_by"], "1")
+            self.assertEqual(row["modified_by"], "1")
+
+    def test_munger_does_not_copy_images_to_color_fanout_siblings(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            media_root = root / "media"
+            image_path = media_root / "wv" / "wv-12-34-1.png"
+            image_path.parent.mkdir(parents=True)
+            Image.new("RGB", (4, 3)).save(image_path)
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [{
+                    "listing_text": "WHEELING/VA.(1840;C-30;Blue,Red) 50",
+                    "catalog_page": "12",
+                    "chunk_number": "34",
+                    "image_count": "1",
+                    "row_type": "LISTING",
+                    "is_manuscript": "",
+                    "default_shape": "",
+                    "institutional_owner": "",
+                }],
+            )
+
+            original_media_root = ascc_data_munger.MEDIA_ROOT
+            try:
+                ascc_data_munger.MEDIA_ROOT = media_root
+                ascc_data_munger.main([
+                    "--input", str(catalog_rows_path),
+                    "--input-dir", str(input_dir),
+                    "--out-dir", str(out_dir),
+                    "--reference-work-code", "ASCC6",
+                    "--region-abbrev", "WV",
+                ])
+            finally:
+                ascc_data_munger.MEDIA_ROOT = original_media_root
+
+            markings = [
+                row for row in read_csv(out_dir / "markings.csv")
+                if row["type"] == "TOWNMARK"
+            ]
+            images = read_csv(out_dir / "images.csv")
+
+        self.assertEqual([row["color"] for row in markings], ["BLUE", "RED"])
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["subject_id"], markings[0]["code"])
 
     def test_munger_keeps_decade_text_in_desc_only(self):
         with tempfile.TemporaryDirectory() as td:
@@ -1524,11 +1765,12 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(len(dates), 3)
         self.assertEqual({r["date"] for r in dates}, {"1850-01-01"})
         self.assertEqual({r["citation_detail"] for r in citations}, {""})
-        self.assertEqual(len(images), 2)
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["subject_id"], townmarks[0]["code"])
         self.assertTrue(media_exists)
         self.assertIn("unsupported_column", {r["issue"] for r in report})
 
-    def test_attach_images_maps_refs_to_townmark_source_map(self):
+    def test_attach_images_does_not_copy_refs_to_color_fanout_townmarks(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             bundle = root / "bundle"
@@ -1594,7 +1836,7 @@ class V1PipelineTests(unittest.TestCase):
             report = read_csv(report_path)
 
         self.assertEqual(rc, 0)
-        self.assertEqual([r["subject_id"] for r in images], ["ASCC2-VA-M1100", "ASCC2-VA-M1101"])
+        self.assertEqual([r["subject_id"] for r in images], ["ASCC2-VA-M1100"])
         self.assertEqual({r["image_width"] for r in images}, {"4"})
         self.assertEqual({r["image_height"] for r in images}, {"5"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/marking.png"})
@@ -1712,7 +1954,7 @@ class V1PipelineTests(unittest.TestCase):
 
         self.assertEqual(rc, 0)
         self.assertEqual({r["color"] for r in markings}, {"BLACK", "BLUE"})
-        self.assertEqual({r["subject_id"] for r in images}, {"ASCC2-VA-M1100", "ASCC2-VA-M1100-C1"})
+        self.assertEqual({r["subject_id"] for r in images}, {"ASCC2-VA-M1100"})
         self.assertEqual({r["storage_filename"] for r in images}, {"va/kept.png"})
         self.assertIn("missing_image_file", {r["issue"] for r in report})
         self.assertIn("unsupported_column", {r["issue"] for r in report})

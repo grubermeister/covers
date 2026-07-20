@@ -38,7 +38,9 @@ INT_COLS = {
     "post_offices": ["created_by", "modified_by"],
     "post_office_regions": ["created_by", "modified_by"],
     "markings": ["created_by", "modified_by"],
+    "covers": ["created_by", "modified_by"],
     "dates_seen": ["created_by", "modified_by"],
+    "cover_markings": ["created_by", "modified_by"],
     "citations": ["created_by", "modified_by"],
 }
 

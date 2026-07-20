@@ -85,6 +85,18 @@ CITATION_COLUMNS = [
     "citation_detail",
     *AUDIT_TAIL,
 ]
+COVER_MARKING_COLUMNS = [
+    "cover",
+    "marking",
+    "is_backstamp",
+    "placement",
+    "contributor_comment",
+    "review_status",
+    "reviewer",
+    "review_notes",
+    "reviewed_at",
+    *AUDIT_TAIL,
+]
 POST_OFFICE_REGION_COLUMNS = [
     "post_office",
     "region",
@@ -1010,58 +1022,84 @@ def build_images(
         data = dest_path.read_bytes()
         with PILImage.open(dest_path) as image:
             image_width, image_height = image.size
-        for subject_id in subject_ids:
-            display_order[subject_id] += 1
-            row = {
-                "subject_type": "MARKING",
-                "subject_id": subject_id,
-                "original_filename": basename,
-                "storage_filename": "{0}/{1}".format(state.lower(), basename),
-                "file_checksum": hashlib.sha256(data).hexdigest(),
-                "mime_type": mimetypes.guess_type(basename)[0] or "application/octet-stream",
-                "image_width": str(image_width),
-                "image_height": str(image_height),
-                "file_size_bytes": str(len(data)),
-                "image_view": clean(ref.get("image_view")) or "FULL",
-                "image_description": clean(ref.get("image_description")),
-                "is_tracing": clean(ref.get("is_tracing")) or "False",
-                "display_order": str(display_order[subject_id]),
-                "uploaded_by": "1",
-            }
-            row.update(audit)
-            rows.append(row)
+        # Color fan-out can map one raw row to several townmarks. The source
+        # image belongs only to the first generated townmark.
+        subject_id = subject_ids[0]
+        display_order[subject_id] += 1
+        row = {
+            "subject_type": "MARKING",
+            "subject_id": subject_id,
+            "original_filename": basename,
+            "storage_filename": "{0}/{1}".format(state.lower(), basename),
+            "file_checksum": hashlib.sha256(data).hexdigest(),
+            "mime_type": mimetypes.guess_type(basename)[0] or "application/octet-stream",
+            "image_width": str(image_width),
+            "image_height": str(image_height),
+            "file_size_bytes": str(len(data)),
+            "image_view": clean(ref.get("image_view")) or "FULL",
+            "image_description": clean(ref.get("image_description")),
+            "is_tracing": clean(ref.get("is_tracing")) or "False",
+            "display_order": str(display_order[subject_id]),
+            "uploaded_by": "1",
+        }
+        row.update(audit)
+        rows.append(row)
     return rows
 
 
 def reconcile_preserved_images(
     images: list[dict[str, str]],
     deleted_ids: set[str],
-    clone_sources: dict[str, str],
 ) -> list[dict[str, str]]:
     rows = [
         dict(row)
         for row in images
         if clean(row.get("subject_id")) not in deleted_ids
     ]
-    by_subject = defaultdict(list)
-    for row in rows:
-        subject_id = clean(row.get("subject_id"))
-        if subject_id:
-            by_subject[subject_id].append(row)
-    existing_subjects = set(by_subject)
-    for new_id, source_id in clone_sources.items():
-        if new_id in existing_subjects:
-            continue
-        for source_row in by_subject.get(source_id, []):
-            clone = dict(source_row)
-            clone["subject_id"] = new_id
-            rows.append(clone)
     display_order = defaultdict(int)
     for row in rows:
         subject_id = clean(row.get("subject_id"))
         if subject_id and "display_order" in row:
             display_order[subject_id] += 1
             row["display_order"] = str(display_order[subject_id])
+    return rows
+
+
+def reconcile_cover_markings(
+    cover_markings: list[dict[str, str]],
+    deleted_ids: set[str],
+    clone_sources: dict[str, str],
+) -> list[dict[str, str]]:
+    """Keep institutional CoverMarking rows aligned with color fan-out."""
+    source_rows = [dict(row) for row in cover_markings]
+    by_marking = defaultdict(list)
+    for row in source_rows:
+        marking_code = clean(row.get("marking"))
+        if marking_code:
+            by_marking[marking_code].append(row)
+    rows = [
+        row
+        for row in source_rows
+        if clean(row.get("marking")) not in deleted_ids
+    ]
+    existing_pairs = {
+        (clean(row.get("cover")), clean(row.get("marking")))
+        for row in rows
+        if clean(row.get("cover")) and clean(row.get("marking"))
+    }
+    for new_code, source_code in clone_sources.items():
+        if new_code in deleted_ids:
+            continue
+        for source_row in list(by_marking.get(source_code, [])):
+            cover_code = clean(source_row.get("cover"))
+            pair = (cover_code, new_code)
+            if not cover_code or pair in existing_pairs:
+                continue
+            clone = dict(source_row)
+            clone["marking"] = new_code
+            rows.append(clone)
+            by_marking[new_code].append(clone)
+            existing_pairs.add(pair)
     return rows
 
 
@@ -1084,12 +1122,13 @@ def apply_overlay(args: argparse.Namespace) -> int:
         "letterings": bundle_dir / "letterings.csv",
         "shapes": bundle_dir / "shapes.csv",
         "dates": bundle_dir / "dates_seen.csv",
+        "cover_markings": bundle_dir / "cover_markings.csv",
         "citations": bundle_dir / "citations.csv",
         "images": bundle_dir / "images.csv",
         "reference_works": bundle_dir / "reference_works.csv",
     }
     for label, path in paths.items():
-        if label == "images":
+        if label in {"images", "cover_markings"}:
             continue
         if not path.is_file():
             sys.exit("error: missing bundle CSV: {0}".format(path))
@@ -1103,6 +1142,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
     lettering_fields, letterings = read_csv(paths["letterings"])
     shape_fields, shapes = read_csv(paths["shapes"])
     date_fields, dates = read_csv(paths["dates"])
+    cover_marking_fields, cover_markings = (
+        read_csv(paths["cover_markings"])
+        if paths["cover_markings"].is_file()
+        else (COVER_MARKING_COLUMNS, [])
+    )
     citation_fields, citations = read_csv(paths["citations"])
     image_fields, existing_images = read_csv(paths["images"]) if paths["images"].is_file() else (IMAGE_COLUMNS, [])
     reference_work_fields, reference_works = read_csv(paths["reference_works"])
@@ -1177,6 +1221,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
 
     by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
     dates = rebuild_dates(raw_rows, by_raw, dates, clone_sources, audit)
+    cover_markings = reconcile_cover_markings(
+        cover_markings,
+        deleted_ids,
+        clone_sources,
+    )
     reference_work_id = ""
     if citations:
         reference_work_id = clean(citations[0].get("reference_work"))
@@ -1185,7 +1234,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
     reference_work_id = reference_work_id or "ASCC"
     citations = rebuild_citations(source_map_rows, reference_work_id, audit)
     if args.preserve_images:
-        images = reconcile_preserved_images(existing_images, deleted_ids, clone_sources)
+        images = reconcile_preserved_images(existing_images, deleted_ids)
     else:
         images = build_images(
             state,
@@ -1204,6 +1253,12 @@ def apply_overlay(args: argparse.Namespace) -> int:
     write_csv(paths["post_office_regions"], por_fields or POST_OFFICE_REGION_COLUMNS, post_office_regions)
     write_csv(paths["colors"], color_fields, colors)
     write_csv(paths["dates"], date_fields or DATE_COLUMNS, dates)
+    if paths["cover_markings"].is_file():
+        write_csv(
+            paths["cover_markings"],
+            cover_marking_fields or COVER_MARKING_COLUMNS,
+            cover_markings,
+        )
     write_csv(paths["citations"], citation_fields or CITATION_COLUMNS, citations)
     write_csv(paths["images"], image_fields or IMAGE_COLUMNS, images)
     write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
@@ -1211,6 +1266,8 @@ def apply_overlay(args: argparse.Namespace) -> int:
     print("v1 overlay rows: {0}".format(len(raw_rows)))
     print("markings: {0}".format(len(markings)))
     print("dates_seen: {0}".format(len(dates)))
+    if paths["cover_markings"].is_file():
+        print("cover_markings: {0}".format(len(cover_markings)))
     print("citations: {0}".format(len(citations)))
     image_note = " (preserved)" if args.preserve_images else ""
     print("images: {0}{1}".format(len(images), image_note))

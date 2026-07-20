@@ -311,6 +311,7 @@ const RecordDetail = () => {
   const [restoring, setRestoring] = useState(false);
   const [linkCoverOpen, setLinkCoverOpen] = useState(false);
   const [linkCoverInput, setLinkCoverInput] = useState("");
+  const [linkCoverIsBackstamp, setLinkCoverIsBackstamp] = useState(false);
   const [linkCoverBusy, setLinkCoverBusy] = useState(false);
   const [linkCoverError, setLinkCoverError] = useState<string | null>(null);
   const [moveImageDialogImg, setMoveImageDialogImg] = useState<MarkingImage | null>(null);
@@ -795,13 +796,18 @@ const RecordDetail = () => {
         setLinkCoverError(`Cover ${coverId} not found.`);
         return;
       }
-      await createCoverMarking({ cover: coverId, marking: markingId });
+      await createCoverMarking({
+        cover: coverId,
+        marking: markingId,
+        is_backstamp: linkCoverIsBackstamp,
+      });
       toast({
         title: "Cover linked",
         description: `Cover ${cover.code ?? coverId} is now linked to this marking.`,
       });
       setLinkCoverOpen(false);
       setLinkCoverInput("");
+      setLinkCoverIsBackstamp(false);
       const { covers: rows, error: coversErr } = await loadAssociatedCoversForMarking(markingId);
       setCoversLoadError(coversErr);
       setAssociatedCovers(rows);
@@ -1220,6 +1226,7 @@ const RecordDetail = () => {
                             variant="outline"
                             onClick={() => {
                               setLinkCoverInput("");
+                              setLinkCoverIsBackstamp(false);
                               setLinkCoverError(null);
                               setLinkCoverOpen(true);
                             }}
@@ -1647,6 +1654,7 @@ const RecordDetail = () => {
           setLinkCoverOpen(open);
           if (!open) {
             setLinkCoverInput("");
+            setLinkCoverIsBackstamp(false);
             setLinkCoverError(null);
           }
         }}
@@ -1675,6 +1683,14 @@ const RecordDetail = () => {
               }}
               autoFocus
             />
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={linkCoverIsBackstamp}
+                onCheckedChange={(value) => setLinkCoverIsBackstamp(value === true)}
+                disabled={linkCoverBusy}
+              />
+              Backstamp
+            </label>
             {linkCoverError && <p className="text-sm text-destructive">{linkCoverError}</p>}
           </div>
           <DialogFooter>
