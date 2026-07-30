@@ -77,6 +77,28 @@ class PostOfficeTownNormalizationTests(unittest.TestCase):
             "FLORIDA",
         )
 
+    def test_auxmark_only_alabama_heads_route_to_unknown(self):
+        for town in [
+            "ADVERTISED",
+            "ADV",
+            "ADV.2",
+            "REGISTERED",
+        ]:
+            with self.subTest(town=town):
+                self.assertTrue(pd.isna(normalize_post_office_town(town)))
+
+    def test_no_town_marking_routes_to_unknown(self):
+        for town in [
+            "(No town marking)",
+            "No town marking",
+            "No town mark",
+        ]:
+            with self.subTest(town=town):
+                self.assertTrue(pd.isna(normalize_post_office_town(town)))
+
+    def test_auxmark_prefix_inside_real_town_is_preserved(self):
+        self.assertEqual(normalize_post_office_town("Advertised Creek"), "ADVERTISED CREEK")
+
 
 if __name__ == "__main__":
     unittest.main()

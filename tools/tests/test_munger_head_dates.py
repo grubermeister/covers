@@ -107,6 +107,11 @@ class TestParseHeadPeel(unittest.TestCase):
         self.assertEqual(_parsed_name("*RICHMOND/VA."), "RICHMOND/VA.")
         self.assertEqual(_parsed_name("RICHMOND/*VA.*"), "RICHMOND/*VA.*")
 
+    def test_no_town_marking_annotation_becomes_inscription_text(self):
+        parsed = parse_head(_head_row("(No town marking)(E)"))
+        self.assertEqual(parsed["head_name_body"], "(No town marking)")
+        self.assertEqual(parsed["head_annotations"], ["No town marking", "E"])
+
 
 if __name__ == '__main__':
     unittest.main()

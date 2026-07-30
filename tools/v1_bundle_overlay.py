@@ -38,7 +38,7 @@ from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_fi
 from munger.fields.rates import split_rate_tokens, parse_rate_token
 from munger.fields.sizes import parse_size_field
 from munger.rate_assembly import parse_rate_amount
-from munger.text_utils import strip_trailing_state_suffix
+from munger.text_utils import normalize_post_office_town_text, strip_trailing_state_suffix
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
 from v1_synthetic_listing import (
     DATE_SENTINEL_YEARS,
@@ -228,6 +228,21 @@ def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
     if town:
         return town
     return townmark_text_stem(townmark_text).upper()
+
+
+def overlay_post_office_town(raw_row: dict[str, str]) -> str:
+    """Return v1 txtTown only when the townmark text has a real town."""
+    town = clean(raw_row.get("txtTown"))
+    if not town:
+        return ""
+    for value in (
+        townmark_text_stem(raw_row.get("txtTownPostmark")),
+        townmark_text_stem(raw_row.get("txtPostmark")),
+        town,
+    ):
+        if clean(value) and normalize_post_office_town_text(value) is None:
+            return ""
+    return town
 
 
 def overlay_row_inscription(
@@ -796,10 +811,11 @@ def apply_row_fields(
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
     marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
-    if nonblank(raw_row.get("txtTown")) and marking_rows:
+    overlay_town = overlay_post_office_town(raw_row)
+    if overlay_town and marking_rows:
         first_po = clean(marking_rows[0].get("post_office"))
         new_po = ensure_post_office(
-            raw_row.get("txtTown"),
+            overlay_town,
             first_po,
             tables["post_offices"],
             tables["post_office_fields"],

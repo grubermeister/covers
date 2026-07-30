@@ -85,6 +85,11 @@ def parse_manuscript_row(row):
     })
 
 PAREN_GROUP_RE = re.compile(r'\(([^)]*)\)')
+NO_TOWN_MARKING_ANNOTATION_RE = re.compile(
+    r'^\s*no\s+town\s+mark(?:ing)?\s*$',
+    re.IGNORECASE,
+)
+NO_TOWN_MARKING_INSCRIPTION = '(No town marking)'
 
 REL_INDICATOR_RE = re.compile(
     r'^(?:'
@@ -121,6 +126,10 @@ def parse_head(row):
 
     # 5. Name body: head text with annotation parens removed, stripped
     name_body = PAREN_GROUP_RE.sub('', head).strip()
+    if not name_body and any(
+        NO_TOWN_MARKING_ANNOTATION_RE.match(a) for a in annotations
+    ):
+        name_body = NO_TOWN_MARKING_INSCRIPTION
 
     # 5b. Peel a bare trailing date field off town-table headings.
     #     Town-listing rows print as "NAME .... YEAR(S) .... VALUE" with

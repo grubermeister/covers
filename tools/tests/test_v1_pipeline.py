@@ -271,6 +271,89 @@ class V1PipelineTests(unittest.TestCase):
             "ABINGDON/*VA.*",
         )
 
+    def test_v1_overlay_keeps_unknown_post_office_for_no_town_text(self):
+        cases = [
+            (
+                {
+                    "txtTown": "(No Town Marking)",
+                    "txtTownPostmark": "(No town marking)",
+                    "txtPostmark": "(No town marking)",
+                },
+                "(No town marking)",
+            ),
+            (
+                {
+                    "txtTown": "Mobile",
+                    "txtTownPostmark": "ADVERTISED",
+                    "txtPostmark": "ADVERTISED",
+                },
+                "ADVERTISED",
+            ),
+            (
+                {
+                    "txtTown": "Mobile",
+                    "txtTownPostmark": "REGISTERED/NO____",
+                    "txtPostmark": "REGISTERED/NO____",
+                },
+                "REGISTERED/NO____",
+            ),
+        ]
+        for raw_row, expected_inscription in cases:
+            with self.subTest(raw_row=raw_row):
+                markings_by_id = {
+                    "M1": {
+                        "code": "ASCC6-AL-M1051",
+                        "type": "TOWNMARK",
+                        "inscription_txt": "",
+                        "post_office": "USA-AL1-999",
+                        "is_manuscript": "False",
+                    },
+                }
+                post_offices = [
+                    stamped({"name": "UNKNOWN", "code": "USA-AL1-999"}),
+                    stamped({"name": "MOBILE", "code": "USA-AL1-326"}),
+                ]
+                post_office_regions = [
+                    stamped({"post_office": "USA-AL1-999", "region": "USA-AL1"}),
+                    stamped({"post_office": "USA-AL1-326", "region": "USA-AL1"}),
+                ]
+                raw_row = {
+                    **raw_row,
+                    "txtTownmarkShape": "",
+                    "txtTownmarkLettering": "",
+                    "txtTownmarkDateFormat": "",
+                }
+
+                v1_bundle_overlay.apply_row_fields(
+                    "10447",
+                    raw_row,
+                    markings_by_id,
+                    ["M1"],
+                    ["M1"],
+                    [],
+                    {"shapes": {}, "letterings": {}},
+                    {
+                        "post_offices": post_offices,
+                        "post_office_fields": ["name", "code", *AUDIT],
+                        "post_office_regions": post_office_regions,
+                        "post_office_region_fields": [
+                            "post_office",
+                            "region",
+                            *AUDIT,
+                        ],
+                        "regions": [{"code": "USA-AL1", "name": "Alabama"}],
+                        "audit": AUDIT,
+                    },
+                    [],
+                )
+
+                self.assertEqual(markings_by_id["M1"]["post_office"], "USA-AL1-999")
+                self.assertEqual(markings_by_id["M1"]["inscription_txt"], expected_inscription)
+                self.assertNotIn(
+                    "(NO TOWN MARKING)",
+                    {row["name"] for row in post_offices},
+                )
+
     def test_catalog_rows_include_approve_deleted_when_not_deleted(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

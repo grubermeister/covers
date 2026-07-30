@@ -52,7 +52,7 @@ from munger.io import (
 from munger.rate_assembly import BRACKET_DIM_RE, BRACKET_SHAPE_MAP, _date_cls, _tm_codes_by_listing, parse_rate_amount
 from munger.relationships import OR_ALIAS_RE, TOWN_HEADING_RE, _is_abbrev_of, _norm_for_alias, resolve_relationships, roll_up_catalog_text
 from munger.segment import classify_entry_form, decompose_tail, segment_entry, split_paren_fields, split_valuation_tiers
-from munger.text_utils import strip_dot_leaders
+from munger.text_utils import normalize_post_office_town_text, strip_dot_leaders
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
@@ -174,19 +174,6 @@ def frank_rate_desc_notes(parsed_rates):
     return notes
 
 
-_POST_OFFICE_APOSTROPHE_RE = re.compile(r"[\u2019']")
-_POST_OFFICE_QUOTE_RE = re.compile(r"[\u201c\u201d\u201e\u201f\"]")
-_POST_OFFICE_AMP_RE = re.compile(r"\s*&\s*")
-_POST_OFFICE_STRIP_PUNCT_RE = re.compile(r"[,/=()\[\]:;_`*?]")
-_POST_OFFICE_DOUBLE_DASH_RE = re.compile(r"-{2,}")
-_POST_OFFICE_MULTI_SPACE_RE = re.compile(r"\s+")
-_POST_OFFICE_EDGE_TRIM_RE = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
-_POST_OFFICE_ATTACHED_YEAR_TAIL_RE = re.compile(
-    r"(?<=[A-Z])C?\d{3,4}(?:'?[S])?(?:[,-]\d{1,4}(?:'?[S])?)*(?:\s+.*)?$"
-)
-_POST_OFFICE_DIGIT_TOKEN_TAIL_RE = re.compile(r"\s+\S*\d\S*.*$")
-
-
 def normalize_post_office_town(raw_town):
     """Normalize ASCC town text into the PostOffice.name alphabet.
 
@@ -198,19 +185,7 @@ def normalize_post_office_town(raw_town):
     """
     if raw_town is None or pd.isna(raw_town):
         return pd.NA
-    town = str(raw_town).upper()
-    town = _POST_OFFICE_APOSTROPHE_RE.sub("", town)
-    town = _POST_OFFICE_QUOTE_RE.sub("", town)
-    town = _POST_OFFICE_AMP_RE.sub(" AND ", town)
-    town = _POST_OFFICE_STRIP_PUNCT_RE.sub(" ", town)
-    town = _POST_OFFICE_DOUBLE_DASH_RE.sub("-", town)
-    town = _POST_OFFICE_MULTI_SPACE_RE.sub(" ", town)
-    # v1 descriptive entries glue dates and prose to the town name.
-    # Strip whitespace-delimited date tokens before attached date suffixes.
-    town = _POST_OFFICE_DIGIT_TOKEN_TAIL_RE.sub("", town)
-    town = _POST_OFFICE_ATTACHED_YEAR_TAIL_RE.sub("", town)
-    town = _POST_OFFICE_EDGE_TRIM_RE.sub("", town)
-    return town or pd.NA
+    return normalize_post_office_town_text(raw_town) or pd.NA
 
 
 def assign_post_office_codes(post_offices_df, region_code):
