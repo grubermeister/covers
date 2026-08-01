@@ -4,12 +4,22 @@ import re
 import pandas as pd
 
 from .fields.dates import MONTHS_PAT
+_MS_VALUE_TOKEN = (
+    r"(?:"
+    r"\d[\d,]*(?:\.\d+)?-"
+    r"|"
+    r"\d[\d,]*(?:\.\d+)?"
+    r"|---?"
+    r")"
+    r"(?:[/,-](?:\d[\d,]*(?:\.\d+)?|---?))*"
+)
 MS_TAIL_AT_END = re.compile(
-    # Trailing value: digits, dots, commas, slashes, dashes (slash-tiered
-    # values; `100/--`, `--/15.00`, `1500.00`, `--` all match). Requires
+    # Trailing value: digits, commas, decimal points, slashes, dashes
+    # (slash-tiered values; `100/--`, `--/15.00`, `1500.00`, `--` all
+    # match). A final catalog period is allowed but not captured. Requires
     # whitespace before so embedded year ranges like `1835-39` are not
     # mistaken for a value.
-    r"\s+([0-9./,-]+|--)\s*$"
+    r"\s+(" + _MS_VALUE_TOKEN + r")(?:\.)?\s*$"
 )
 
 MS_DASH_AT_END = re.compile(r"[\s/]*(--|---)\s*$")

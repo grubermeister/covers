@@ -99,6 +99,35 @@ class PostOfficeTownNormalizationTests(unittest.TestCase):
     def test_auxmark_prefix_inside_real_town_is_preserved(self):
         self.assertEqual(normalize_post_office_town("Advertised Creek"), "ADVERTISED CREEK")
 
+    def test_digit_leading_device_heads_route_to_unknown(self):
+        for town in [
+            "3 O'CLOCK/DELIVERY",
+            "11 O'CLOCK",
+            "18 CENTS",
+        ]:
+            with self.subTest(town=town):
+                self.assertTrue(pd.isna(normalize_post_office_town(town)))
+
+    def test_rail_road_abbreviation_expands(self):
+        self.assertEqual(
+            normalize_post_office_town("R1 Rd Plains"),
+            "RAIL ROAD PLAINS",
+        )
+        self.assertEqual(
+            normalize_post_office_town("Rl Rd Plains 1846"),
+            "RAIL ROAD PLAINS",
+        )
+
+    def test_plus_catalog_markers_are_removed(self):
+        self.assertEqual(
+            normalize_post_office_town("+SAM RICKER JR.+"),
+            "SAM RICKER JR",
+        )
+        self.assertEqual(
+            normalize_post_office_town("+WM.BRYAN+"),
+            "WM.BRYAN",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

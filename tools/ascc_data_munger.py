@@ -135,6 +135,42 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
     return lines
 
 
+_SEE_PAREN_RE = re.compile(r'\(\s*(See\b[^)]*)\)', re.IGNORECASE)
+_SEE_TRAILING_VALUE_TOKEN = (
+    r'(?:'
+    r'\d[\d,]*(?:\.\d+)?-'
+    r'|'
+    r'\d[\d,]*(?:\.\d+)?(?:[-/]\d[\d,]*(?:\.\d+)?)*'
+    r'|---?'
+    r')'
+)
+_SEE_BARE_RE = re.compile(
+    r'\b(See\b[^;)]*?)(?='
+    r'\s+' + _SEE_TRAILING_VALUE_TOKEN + r'(?:\.)?\s*$'
+    r'|\s*(?:--|\.{2,}|;|$)'
+    r')',
+    re.IGNORECASE,
+)
+_MULTI_WS_RE = re.compile(r'\s{2,}')
+
+
+def extract_and_strip_see_clause(text):
+    """Return (see_clause, text_without_clause), preserving any tail value."""
+    s = str(text or '')
+    clause = None
+    m = _SEE_PAREN_RE.search(s)
+    if m:
+        clause = m.group(1).strip()
+        s = _SEE_PAREN_RE.sub('', s, count=1)
+    else:
+        m = _SEE_BARE_RE.search(s)
+        if m:
+            clause = m.group(1).strip()
+            s = _SEE_BARE_RE.sub('', s, count=1)
+    s = _MULTI_WS_RE.sub(' ', s).strip()
+    return clause, s
+
+
 FRANK_WORD_RE = re.compile(r'\bfranks?\b', re.IGNORECASE)
 FRANK_MS_PAREN_RE = re.compile(r'\(\s*ms\.?\s*\)', re.IGNORECASE)
 
@@ -380,27 +416,6 @@ def main(argv=None):
     # Without this, head parsing pollutes inscription/town with the See
     # fragment ("FREDERICKSBURGSee Colonial listing" -> creates a new bogus
     # post_office) and "(L) See State" rows lose their relationship marker.
-    _SEE_PAREN_RE = re.compile(r'\(\s*(See\b[^)]*)\)', re.IGNORECASE)
-    # Bare-See regex: stop the lazy capture before '--' (the no-valuation tail
-    # marker), '...', ';', or end-of-string. The '--' alternative is critical:
-    # otherwise the lazy match extends through it (no other terminator before
-    # $) and the tail marker gets eaten, breaking later tail decomposition.
-    _SEE_BARE_RE  = re.compile(r'\b(See\b[^;)]*?)(?=\s*(?:--|\.{2,}|;|$))', re.IGNORECASE)
-    _MULTI_WS_RE  = re.compile(r'\s{2,}')
-    def _extract_and_strip_see(text):
-        s = str(text or '')
-        clause = None
-        m = _SEE_PAREN_RE.search(s)
-        if m:
-            clause = m.group(1).strip()
-            s = _SEE_PAREN_RE.sub('', s, count=1)
-        else:
-            m = _SEE_BARE_RE.search(s)
-            if m:
-                clause = m.group(1).strip()
-                s = _SEE_BARE_RE.sub('', s, count=1)
-        s = _MULTI_WS_RE.sub(' ', s).strip()
-        return clause, s
     _see_clauses = []
     _cleaned_texts = []
     # Bare-rel-marker pattern: '(L) --', '(E) --', etc. with nothing else.
@@ -414,7 +429,7 @@ def main(argv=None):
     _BARE_REL_RE = re.compile(r'^\s*[(\[{][LE][)\]}]\s*--\s*$', re.IGNORECASE)
     for _, _row in df.iterrows():
         if _row['s2_cross_ref']:
-            _c, _s = _extract_and_strip_see(_row['clean_text'])
+            _c, _s = extract_and_strip_see_clause(_row['clean_text'])
             _see_clauses.append(_c)
             if _s:
                 if _BARE_REL_RE.match(_s):

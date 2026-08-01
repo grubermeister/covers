@@ -15,7 +15,7 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent
 if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
-from ascc_data_munger import listing_desc_lines
+from ascc_data_munger import extract_and_strip_see_clause, listing_desc_lines
 
 
 class ListingDescLinesTests(unittest.TestCase):
@@ -121,6 +121,28 @@ class ListingDescLinesTests(unittest.TestCase):
             [],
         )
         self.assertEqual(lines, [])
+
+    def test_see_clause_extraction_preserves_trailing_value(self):
+        clause, clean_text = extract_and_strip_see_clause(
+            "(L)(May 20, 1828) + See note below 750"
+        )
+
+        self.assertEqual(clause, "See note below")
+        self.assertEqual(clean_text, "(L)(May 20, 1828) + 750")
+
+    def test_see_clause_extraction_preserves_comma_value(self):
+        clause, clean_text = extract_and_strip_see_clause(
+            "(L)(April 21, 1780;Way) See Way Mail section 2,000"
+        )
+
+        self.assertEqual(clause, "See Way Mail section")
+        self.assertEqual(clean_text, "(L)(April 21, 1780;Way) 2,000")
+
+    def test_see_clause_extraction_preserves_dash_value(self):
+        clause, clean_text = extract_and_strip_see_clause("(L) See State --")
+
+        self.assertEqual(clause, "See State")
+        self.assertEqual(clean_text, "(L) --")
 
 
 if __name__ == "__main__":
