@@ -40,6 +40,7 @@ from v1_to_v2_catalog_format import (
     write_image_refs,
 )
 from v1_synthetic_listing import synthetic_listing
+from v1_massachusetts import normalize_boston_listing_for_munger
 
 
 CATALOG_PAGE_VALUE = "0"
@@ -224,6 +225,7 @@ def write_v1_catalog_rows(
     slice_path: Path,
     out_path: Path,
     image_counts: dict[str, int] | None = None,
+    state: str = "",
 ) -> tuple[int, list[str]]:
     """Write a v1 slice as munger-safe catalog rows.
 
@@ -267,6 +269,7 @@ def write_v1_catalog_rows(
                 listing = synthetic_listing(row)
             if not listing:
                 continue
+            listing = normalize_boston_listing_for_munger(state, row, listing)
             raw_id = (row.get(RAW_ID_COL) or "").strip()
             listing_parts = split_glued_same_listings(listing)
             if len(listing_parts) > 1:
@@ -355,6 +358,7 @@ def main(argv: list[str] | None = None) -> int:
         slice_out,
         catalog_rows_out,
         image_counts=image_counts,
+        state=state,
     )
     region_abbrev = (
         args.region_abbrev.strip().upper()

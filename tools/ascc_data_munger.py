@@ -36,7 +36,12 @@ from munger.fields.colors import parse_color_field
 from munger.fields.dates import is_approximate_date, parse_date_field
 from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
-from munger.head import parse_head, parse_manuscript_row
+from munger.head import (
+    head_note_has_lettering_note,
+    head_note_lettering_name,
+    parse_head,
+    parse_manuscript_row,
+)
 from munger.images import (
     MEDIA_ROOT,
     image_filename,
@@ -132,6 +137,16 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
             continue
         if line and line not in lines:
             lines.append(line)
+    return lines
+
+
+def merge_desc_lines(*groups):
+    lines = []
+    for group in groups:
+        for value in (group or []):
+            line = str(value).strip()
+            if line and line not in lines:
+                lines.append(line)
     return lines
 
 
@@ -801,9 +816,18 @@ def main(argv=None):
     # ======================================================================
     head_parts = listings.apply(parse_head, axis=1)
     listings = pd.concat([listings, head_parts], axis=1)
+    listings['paren_annotations_desc'] = listings.apply(
+        lambda row: merge_desc_lines(
+            row.get('paren_annotations_desc'),
+            row.get('head_annotation_notes'),
+        ),
+        axis=1,
+    )
+    head_note_count = sum(len(notes) for notes in listings['head_annotation_notes'])
     print(f'Step 4: Head parsing applied to {len(listings)} listings')
     print(f'  Leading-star markers: {listings["head_has_leading_star"].sum()}')
     print(f'  Relationship indicators: {listings["head_rel_type"].notna().sum()}')
+    print(f'  Head annotation notes: {head_note_count}')
     has_name = listings['head_name_body'].notna()
     print(f'  Entries with name body: {has_name.sum()} ({has_name.sum()/len(listings)*100:.1f}%)')
     has_ann = listings['head_annotations'].apply(lambda a: len(a) > 0)
@@ -1132,6 +1156,20 @@ def main(argv=None):
     print('Other-field triage self-tests passed')
     parsed = listings.apply(subparse_fields, axis=1)
     listings = pd.concat([listings, parsed], axis=1)
+    listings['lettering_name'] = listings.apply(
+        lambda row: (
+            row.get('head_lettering_name')
+            if isinstance(row.get('head_lettering_name'), str)
+            and row.get('head_lettering_name').strip()
+            else head_note_lettering_name(row.get('other_fields'))
+        ),
+        axis=1,
+    )
+    listings['lettering_is_explicit'] = listings.apply(
+        lambda row: bool(row.get('head_has_lettering_note'))
+        or head_note_has_lettering_note(row.get('other_fields')),
+        axis=1,
+    )
     print('Step 6: Field-level sub-parsing applied')
     print(f'  Listings processed: {len(listings)}')
     print(f'  Manuscript entries: {listings["is_manuscript"].sum()}')
@@ -1306,6 +1344,7 @@ def main(argv=None):
     inherited_color_count = 0
     inherited_size_count = 0
     inherited_dates_count = 0
+    inherited_lettering_count = 0
     # Walk in catalog order. Source is the preceding sibling under the same
     # parent (or the parent itself, for first children) -- prev_sibling_idx
     # encodes both cases. Because earlier siblings have already been mutated
@@ -1344,12 +1383,25 @@ def main(argv=None):
             if src['parsed_dates']:
                 listings.iat[pos, listings.columns.get_loc('parsed_dates')] = src['parsed_dates'].copy()
                 inherited_dates_count += 1
+
+        # lettering_name
+        row_lettering = row.get('lettering_name')
+        src_lettering = src.get('lettering_name')
+        if (
+            (not isinstance(row_lettering, str) or not row_lettering.strip())
+            and not bool(row.get('lettering_is_explicit'))
+            and isinstance(src_lettering, str)
+            and src_lettering.strip()
+        ):
+            listings.iat[pos, listings.columns.get_loc('lettering_name')] = src_lettering
+            inherited_lettering_count += 1
     print()
     print('Step 7.1b: Attribute inheritance (from preceding sibling)')
     print(f'  is_manuscript inherited:  {inherited_ms_count}')
     print(f'  parsed_colors inherited:  {inherited_color_count}')
     print(f'  parsed_sizes inherited:   {inherited_size_count}')
     print(f'  parsed_dates inherited:   {inherited_dates_count}')
+    print(f'  lettering inherited:      {inherited_lettering_count}')
     canonical_by_alias = {}
     for rt in listings['resolved_town'].dropna().unique():
         m = OR_ALIAS_RE.match(str(rt))
@@ -1619,6 +1671,13 @@ def main(argv=None):
     for alias, canonical in _lettering_aliases.items():
         if canonical in lettering_lookup:
             lettering_lookup[alias] = lettering_lookup[canonical]
+    listings['lettering_id'] = listings['lettering_name'].apply(
+        lambda name: (
+            lettering_lookup.get(str(name).strip().lower())
+            if isinstance(name, str) and str(name).strip()
+            else None
+        )
+    )
     print(f'Value tables constructed:')
     print(f'  Shapes:     {len(shapes_df)} seeds')
     print(f'  Colors:     {len(colors_df)} discovered')

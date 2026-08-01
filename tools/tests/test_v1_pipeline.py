@@ -23,6 +23,7 @@ if str(TOOLS_DIR) not in sys.path:
 import v1_bundle_overlay
 import v1_attach_images
 import v1_catalog_rows
+import v1_massachusetts
 import ascc_data_munger
 from munger.relationships import roll_up_catalog_text
 from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
@@ -542,6 +543,124 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(
             [row["chunk_number"] for row in catalog_rows],
             ["109453", "109453"],
+        )
+
+    def test_massachusetts_boston_catalog_rows_strip_bpm_markup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            slice_out = root / "slice.csv"
+            catalog_out = root / "catalog_rows.csv"
+            write_csv(
+                slice_out,
+                [
+                    "nRawStateDataID",
+                    "txtRawStateData",
+                    "txtTown",
+                    "txtPostmark",
+                    "txtTownPostmark",
+                    "txtRatesText",
+                ],
+                [
+                    {
+                        "nRawStateDataID": "17621",
+                        "txtRawStateData": (
+                            "BOSTON(87)(1788-89;SL-28x5;FREE[BPM 103];Black,Brown) 100"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "BOSTON(87)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "FREE[BPM 103]",
+                    },
+                    {
+                        "nRawStateDataID": "17625",
+                        "txtRawStateData": (
+                            "Same(125,132,136)(1789-91;SL-18.5x3,MDD;PAID[BPM 129];Black) 80"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "Same(125,132,136)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "PAID[BPM 129]",
+                    },
+                    {
+                        "nRawStateDataID": "17634",
+                        "txtRawStateData": (
+                            "BOSTON Ms.(202)(5 stars at bottom)(1805-09;27.5;Black,Red) 30"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+                        "txtTownPostmark": "BOSTON Ms.",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "17702",
+                        "txtRawStateData": (
+                            "(493) 3 O'CLOCK/DELIVERY(1854-56;oval-34;Red) 15"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "(493) 3 O'CLOCK/DELIVERY",
+                        "txtTownPostmark": "3 O'CLOCK/DELIVERY",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "17415",
+                        "txtRawStateData": (
+                            "B(1 and others)(E)(April 1703;Ms;Black) See Ocean Mail --"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "B(1 and others)(E)",
+                        "txtTownPostmark": "B",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "90001",
+                        "txtRawStateData": "BOSTON(67)(1850;Black) 10",
+                        "txtTown": "East Boston",
+                        "txtPostmark": "BOSTON(67)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "",
+                    },
+                ],
+            )
+
+            rows_written, raw_ids = v1_catalog_rows.write_v1_catalog_rows(
+                slice_out,
+                catalog_out,
+                state="MA",
+            )
+            catalog_rows = read_csv(catalog_out)
+
+        self.assertEqual(rows_written, 6)
+        self.assertEqual(
+            [row["listing_text"] for row in catalog_rows],
+            [
+                "BOSTON(1788-89;SL-28x5;FREE;Black,Brown) 100",
+                "BOSTON(1789-91;SL-18.5x3,MDD;PAID;Black) 80",
+                "BOSTON Ms.(5 stars at bottom)(1805-09;27.5;Black,Red) 30",
+                "3 O'CLOCK/DELIVERY(1854-56;oval-34;Red) 15",
+                "B(E)(April 1703;Ms;Black) See Ocean Mail --",
+                "BOSTON(67)(1850;Black) 10",
+            ],
+        )
+        self.assertEqual(
+            raw_ids,
+            ["17621", "17625", "17634", "17702", "17415", "90001"],
+        )
+        self.assertEqual(
+            v1_massachusetts.boston_head_description_lines({
+                "txtRawStateData": "(L)(March 19, 1787) 300",
+                "txtPostmark": "(L)(March 19, 1787)",
+            }),
+            [],
+        )
+        self.assertEqual(
+            v1_massachusetts.boston_head_description_lines({
+                "txtRawStateData": (
+                    "BOSTON Ms.(202)(5 stars at bottom)"
+                    "(1805-09;27.5;Black,Red) 30"
+                ),
+                "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+            }),
+            ["5 stars at bottom"],
         )
 
     def test_blank_raw_rows_are_synthesized_and_image_refs_included(self):
@@ -1852,6 +1971,159 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(images[0]["subject_id"], townmarks[0]["code"])
         self.assertTrue(media_exists)
         self.assertIn("unsupported_column", {r["issue"] for r in report})
+
+    def test_overlay_adds_boston_bpm2_citations_and_description(self):
+        raw_rows = {
+            "17621": {
+                "nRawStateDataID": "17621",
+                "txtRawStateData": (
+                    "BOSTON(87)(1788-89;SL-28x5;FREE[BPM 103];Black,Brown) 100"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON(87)",
+                "txtTownPostmark": "BOSTON",
+                "txtRatesText": "FREE[BPM 103]",
+            },
+            "17706": {
+                "nRawStateDataID": "17706",
+                "txtRawStateData": (
+                    "BOSTON./52(652,3,4)(Also 55,58 & 59)"
+                    "(1852-59;C-32.5;Black) On reverse 100"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON./52(652,3,4)(Also 55,58 & 59)",
+                "txtTownPostmark": "BOSTON./52",
+                "txtRatesText": "",
+            },
+            "17634": {
+                "nRawStateDataID": "17634",
+                "txtRawStateData": (
+                    "BOSTON Ms.(202)(5 stars at bottom)(1805-09;27.5;Black,Red) 30"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+                "txtTownPostmark": "BOSTON Ms.",
+                "txtRatesText": "",
+            },
+            "17710": {
+                "nRawStateDataID": "17710",
+                "txtRawStateData": "BOSTON(1837;Black) 10",
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON",
+                "txtTownPostmark": "BOSTON",
+                "txtRatesText": "",
+            },
+            "17415": {
+                "nRawStateDataID": "17415",
+                "txtRawStateData": (
+                    "B(1 and others)(E)(April 1703;Ms;Black) See Ocean Mail --"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "B(1 and others)(E)",
+                "txtTownPostmark": "B",
+                "txtRatesText": "",
+            },
+        }
+        source_map_rows = [
+            {
+                "chunk": "17621",
+                "marking_code": "TM1",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17621",
+                "marking_code": "AX1",
+                "marking_type": "AUXMARK",
+            },
+            {
+                "chunk": "17706",
+                "marking_code": "TM2",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17634",
+                "marking_code": "TM5",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17710",
+                "marking_code": "TM3",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17415",
+                "marking_code": "TM4",
+                "marking_type": "TOWNMARK",
+            },
+        ]
+        markings_by_id = {
+            "TM1": {"code": "TM1", "type": "TOWNMARK", "inscription_txt": "BOSTON(87)", "desc": ""},
+            "AX1": {"code": "AX1", "type": "AUXMARK", "inscription_txt": "BOSTON FREE", "desc": ""},
+            "TM2": {"code": "TM2", "type": "TOWNMARK", "inscription_txt": "BOSTON./52", "desc": "On reverse"},
+            "TM5": {"code": "TM5", "type": "TOWNMARK", "inscription_txt": "BOSTON Ms.", "desc": ""},
+            "TM3": {"code": "TM3", "type": "TOWNMARK", "inscription_txt": "BOSTON", "desc": ""},
+            "TM4": {"code": "TM4", "type": "TOWNMARK", "inscription_txt": "B", "desc": ""},
+        }
+        citations = [
+            stamped({
+                "reference_work": "ASCC6",
+                "subject_type": "MARKING",
+                "subject_id": "TM1",
+                "citation_detail": "",
+            }),
+            stamped({
+                "reference_work": "ASCC6",
+                "subject_type": "MARKING",
+                "subject_id": "AX1",
+                "citation_detail": "",
+            }),
+        ]
+        warnings = []
+
+        out = v1_bundle_overlay.append_massachusetts_bpm_metadata(
+            "MA",
+            raw_rows,
+            source_map_rows,
+            markings_by_id,
+            citations,
+            [{"code": "ASCC6"}, {"code": "BPM2"}],
+            AUDIT,
+            warnings,
+        )
+
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17621"]), "BOSTON")
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17706"]), "BOSTON./52")
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17415"]), "B")
+        self.assertEqual(markings_by_id["TM1"]["desc"], "BPM illustration: 87")
+        self.assertEqual(markings_by_id["AX1"]["desc"], "BPM illustration: 103")
+        self.assertEqual(
+            markings_by_id["TM2"]["desc"],
+            "On reverse\nBPM illustrations: 652,3,4; Also 55,58 & 59",
+        )
+        self.assertEqual(
+            markings_by_id["TM5"]["desc"],
+            "5 stars at bottom\nBPM illustration: 202",
+        )
+        observed = {
+            (
+                row["reference_work"],
+                row["subject_id"],
+                row["citation_detail"],
+            )
+            for row in out
+        }
+        self.assertIn(("ASCC6", "TM1", ""), observed)
+        self.assertIn(("ASCC6", "AX1", ""), observed)
+        self.assertIn(("BPM2", "TM1", "illustration 87"), observed)
+        self.assertIn(("BPM2", "AX1", "illustration 103"), observed)
+        self.assertIn(
+            ("BPM2", "TM2", "illustrations 652,3,4; Also 55,58 & 59"),
+            observed,
+        )
+        self.assertIn(("BPM2", "TM5", "illustration 202"), observed)
+        self.assertIn(("BPM2", "TM3", ""), observed)
+        self.assertIn(("BPM2", "TM4", "illustrations 1 and others"), observed)
+        self.assertEqual(warnings, [])
 
     def test_attach_images_does_not_copy_refs_to_color_fanout_townmarks(self):
         with tempfile.TemporaryDirectory() as td:

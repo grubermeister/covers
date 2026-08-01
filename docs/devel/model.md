@@ -245,6 +245,8 @@ Editorial value table for textual styling assigned to a postal marking. This voc
 * Bold  
 * Block  
 * Gothic
+* Thick
+* Thin
 
 *Invariants:*
 

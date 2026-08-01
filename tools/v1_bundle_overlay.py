@@ -46,6 +46,15 @@ from v1_synthetic_listing import (
     has_synthetic_listing_evidence,
     synthetic_desc_lines,
 )
+from v1_massachusetts import (
+    BPM_REFERENCE_CODE,
+    boston_bpm_details,
+    boston_catalog_head,
+    boston_head_description_lines,
+    format_bpm_citation_detail,
+    format_bpm_description,
+    is_boston_row,
+)
 
 
 AUDIT_TAIL = ["created_date", "modified_date", "created_by", "modified_by"]
@@ -808,6 +817,7 @@ def apply_row_fields(
     tables: dict[str, object],
     warnings: list[dict[str, str]],
     carry_state: dict[str, str] | None = None,
+    state: str = "",
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
     marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
@@ -826,7 +836,10 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    inscription = overlay_row_inscription(raw_row, carry_state)
+    if is_boston_row(state, raw_row):
+        inscription = boston_catalog_head(raw_row)
+    else:
+        inscription = overlay_row_inscription(raw_row, carry_state)
     if inscription:
         for row in townmark_rows:
             row["inscription_txt"] = inscription
@@ -978,6 +991,145 @@ def rebuild_citations(
         row.update(audit)
         rows.append(row)
     return rows
+
+
+def reference_work_has_code(rows: list[dict[str, str]], code: str) -> bool:
+    return any(clean(row.get("code")) == code for row in rows)
+
+
+def keyword_matches_marking(marking: dict[str, str], keyword: str) -> bool:
+    if not keyword:
+        return True
+    text = "{0} {1} {2}".format(
+        marking.get("inscription_txt", ""),
+        marking.get("catalog_txt", ""),
+        marking.get("desc", ""),
+    ).upper()
+    return bool(re.search(r"\b{0}\b".format(re.escape(keyword.upper())), text))
+
+
+def append_massachusetts_bpm_metadata(
+    state: str,
+    raw_rows: dict[str, dict[str, str]],
+    source_map_rows: list[dict[str, str]],
+    markings_by_id: dict[str, dict[str, str]],
+    citations: list[dict[str, str]],
+    reference_works: list[dict[str, str]],
+    audit: dict[str, str],
+    warnings: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    boston_raw_ids = [
+        raw_id for raw_id, raw_row in raw_rows.items()
+        if is_boston_row(state, raw_row)
+    ]
+    if not boston_raw_ids:
+        return citations
+    if not reference_work_has_code(reference_works, BPM_REFERENCE_CODE):
+        sys.exit(
+            "error: Massachusetts Boston overlay requires reference work {0}".format(
+                BPM_REFERENCE_CODE
+            )
+        )
+
+    rows_by_raw = defaultdict(list)
+    for source_map_row in source_map_rows:
+        raw_id = clean(source_map_row.get("chunk"))
+        marking_code = clean(
+            source_map_row.get("marking_code") or source_map_row.get("marking_id")
+        )
+        if raw_id and marking_code:
+            rows_by_raw[raw_id].append(source_map_row)
+
+    out = list(citations)
+    seen_citations = {
+        (
+            clean(row.get("reference_work")),
+            clean(row.get("subject_type")),
+            clean(row.get("subject_id")),
+            clean(row.get("citation_detail")),
+        )
+        for row in out
+    }
+
+    for raw_id in boston_raw_ids:
+        raw_row = raw_rows[raw_id]
+        source_rows = rows_by_raw.get(raw_id, [])
+        if not source_rows:
+            continue
+        codes = [
+            clean(row.get("marking_code") or row.get("marking_id"))
+            for row in source_rows
+            if clean(row.get("marking_code") or row.get("marking_id"))
+        ]
+        townmark_codes = [
+            clean(row.get("marking_code") or row.get("marking_id"))
+            for row in source_rows
+            if clean(row.get("marking_type")).upper() == "TOWNMARK"
+        ]
+        non_townmark_codes = [
+            clean(row.get("marking_code") or row.get("marking_id"))
+            for row in source_rows
+            if clean(row.get("marking_type")).upper() != "TOWNMARK"
+        ]
+
+        explicit_details: dict[str, list[str]] = defaultdict(list)
+        head_details, inline_refs = boston_bpm_details(raw_row)
+        head_desc_lines = boston_head_description_lines(raw_row)
+        if head_desc_lines:
+            for code in townmark_codes or codes:
+                marking = markings_by_id.get(code)
+                if marking:
+                    marking["desc"] = append_desc(marking.get("desc"), head_desc_lines)
+
+        if head_details:
+            for code in townmark_codes or codes:
+                explicit_details[code].extend(head_details)
+
+        for inline_ref in inline_refs:
+            candidates = [
+                code for code in non_townmark_codes
+                if keyword_matches_marking(markings_by_id.get(code, {}), inline_ref.keyword)
+            ]
+            if not candidates:
+                candidates = non_townmark_codes
+                if inline_ref.keyword:
+                    add_warning(
+                        warnings,
+                        raw_id,
+                        "bpm_inline_target",
+                        "could not match {0} to a non-townmark".format(
+                            inline_ref.keyword
+                        ),
+                    )
+            if not candidates:
+                candidates = codes
+            for code in candidates:
+                explicit_details[code].append(inline_ref.detail)
+
+        for code, details in explicit_details.items():
+            marking = markings_by_id.get(code)
+            if not marking:
+                continue
+            desc = format_bpm_description(details)
+            if desc:
+                marking["desc"] = append_desc(marking.get("desc"), [desc])
+
+        for code in codes:
+            details = explicit_details.get(code, [])
+            detail = format_bpm_citation_detail(details)
+            key = (BPM_REFERENCE_CODE, "MARKING", code, detail)
+            if key in seen_citations:
+                continue
+            seen_citations.add(key)
+            row = {
+                "reference_work": BPM_REFERENCE_CODE,
+                "subject_type": "MARKING",
+                "subject_id": code,
+                "citation_detail": detail,
+            }
+            row.update(audit)
+            out.append(row)
+    return out
 
 
 def resolve_image_source(root: Path, source_filename: str) -> Path | None:
@@ -1221,6 +1373,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
             tables,
             warnings,
             carry_state,
+            state=state,
         )
 
     by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
@@ -1237,6 +1390,16 @@ def apply_overlay(args: argparse.Namespace) -> int:
         reference_work_id = clean(reference_works[0].get("code"))
     reference_work_id = reference_work_id or "ASCC"
     citations = rebuild_citations(source_map_rows, reference_work_id, audit)
+    citations = append_massachusetts_bpm_metadata(
+        state,
+        raw_rows,
+        source_map_rows,
+        markings_by_id,
+        citations,
+        reference_works,
+        audit,
+        warnings,
+    )
     if args.preserve_images:
         images = reconcile_preserved_images(existing_images, deleted_ids)
     else:

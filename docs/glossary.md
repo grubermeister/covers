@@ -40,7 +40,7 @@ A reference for the terminology used in WorldCovers data, interface, and support
 
 **Irregularity.** Optional flag indicating that the handstamp outline is non-uniform. Not set on Manuscript Markings.
 
-**Lettering.** Optional typeface style observed on the handstamp: Italic, Serif, Sans-serif, Outline, Bold, Block, Gothic, Small, or Large. Not set on Manuscript Markings.
+**Lettering.** Optional typeface style observed on the handstamp: Italic, Serif, Sans-serif, Outline, Bold, Block, Gothic, Small, Large, Thick, or Thin. Not set on Manuscript Markings.
 
 **Manuscript Marking.** Any Marking applied by hand rather than by handstamp. Set independently of Marking type: manuscript Townmarks, manuscript Ratemarks, and manuscript Auxmarks are all valid. A Manuscript Marking has no Shape.
 

@@ -31,6 +31,7 @@ from ascc_pipeline import checks as pipeline_checks
 from ascc_pipeline import commands as pipeline_commands
 from ascc_pipeline import manifest as pipeline_manifest
 from ascc_pipeline import paths as pipeline_paths
+from v1_massachusetts import BPM_REFERENCE_CODE
 
 
 TOOLS_DIR = Path(__file__).resolve().parent
@@ -473,7 +474,7 @@ def v1_doctor_checks(
     paths = v1_state_paths(state)
     db_ok, db_message = check_db()
     image_required = not allow_missing_images
-    return [
+    checks = [
         check_path("reference works", WIP_IN / "reference_works.csv", True),
         pipeline_checks.check_reference_work(WIP_IN, reference_work, True),
         check_path("regions", WIP_IN / "regions.csv", True),
@@ -488,6 +489,12 @@ def v1_doctor_checks(
         check_item("v1 catalog rows", paths.catalog_rows.exists(), str(paths.catalog_rows), False),
         check_item("v1 bundle", paths.bundle_dir.exists(), str(paths.bundle_dir), False),
     ]
+    if paths.state == "MA":
+        checks.insert(
+            2,
+            pipeline_checks.check_reference_work(WIP_IN, BPM_REFERENCE_CODE, True),
+        )
+    return checks
 
 
 def check_path(name: str, path: Path, required: bool) -> dict[str, object]:

@@ -15,7 +15,7 @@ SHAPE_SEEDS = [
 
 LETTERING_SEEDS = [
     'Italic', 'Serif', 'Sans-serif', 'Small', 'Large',
-    'Outline', 'Bold', 'Block', 'Gothic',
+    'Outline', 'Bold', 'Block', 'Gothic', 'Thick', 'Thin',
 ]
 
 SHAPE_CODE_TO_NAME = {

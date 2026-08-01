@@ -21,7 +21,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from ascc_data_munger import format_dates_seen_desc
-from munger.head import MS_DATE_AT_END, parse_head
+from munger.head import (
+    MS_DATE_AT_END,
+    head_note_has_lettering_note,
+    head_note_lettering_name,
+    parse_head,
+)
 
 
 def _head_row(seg_head):
@@ -34,6 +39,10 @@ def _parsed_name(seg_head):
 
 def _parsed_head_date(seg_head):
     return parse_head(_head_row(seg_head))['head_date_text']
+
+
+def _parsed_head_notes(seg_head):
+    return parse_head(_head_row(seg_head))['head_annotation_notes']
 
 
 def _has_leading_star(seg_head):
@@ -111,6 +120,50 @@ class TestParseHeadPeel(unittest.TestCase):
         parsed = parse_head(_head_row("(No town marking)(E)"))
         self.assertEqual(parsed["head_name_body"], "(No town marking)")
         self.assertEqual(parsed["head_annotations"], ["No town marking", "E"])
+        self.assertEqual(parsed["head_annotation_notes"], [])
+
+    def test_town_head_parenthetical_note_is_description_material(self):
+        parsed = parse_head(_head_row('Columbia/Ten("COLUMBIA" italics)'))
+        self.assertEqual(parsed["head_name_body"], "Columbia/Ten")
+        self.assertEqual(parsed["head_annotation_notes"], ['"COLUMBIA" italics'])
+        self.assertEqual(
+            head_note_lettering_name(parsed["head_annotation_notes"]),
+            "Italic",
+        )
+
+    def test_general_town_head_note_is_kept_for_description(self):
+        self.assertEqual(
+            _parsed_head_notes("Same(sans serif letters)"),
+            ["sans serif letters"],
+        )
+        self.assertEqual(
+            _parsed_head_notes("Winchester (small caps)"),
+            ["small caps"],
+        )
+
+    def test_thick_and_thin_head_notes_assign_lettering(self):
+        thick = _parsed_head_notes("Chicago/Ills.(thick letters)")
+        thin = _parsed_head_notes("Chicago/Ills(thin letters)")
+        self.assertEqual(thick, ["thick letters"])
+        self.assertEqual(thin, ["thin letters"])
+        self.assertEqual(head_note_lettering_name(thick), "Thick")
+        self.assertEqual(head_note_lettering_name(thin), "Thin")
+
+    def test_embedded_name_variant_is_not_description_note(self):
+        self.assertEqual(_parsed_name("Aquia(s) 1811"), "Aquia")
+        self.assertEqual(_parsed_head_notes("Aquia(s) 1811"), [])
+        self.assertEqual(_parsed_head_notes("Fred(erick)Town 1780s"), [])
+
+    def test_control_and_catalog_number_annotations_are_not_notes(self):
+        parsed = parse_head(_head_row("Annapolis(4)(E)"))
+        self.assertEqual(parsed["head_annotations"], ["4", "E"])
+        self.assertEqual(parsed["head_annotation_notes"], [])
+
+    def test_negated_italic_note_does_not_assign_italic(self):
+        notes = _parsed_head_notes('"N.J." (not in italics)')
+        self.assertEqual(notes, ["not in italics"])
+        self.assertIsNone(head_note_lettering_name(notes))
+        self.assertTrue(head_note_has_lettering_note(notes))
 
 
 if __name__ == '__main__':
