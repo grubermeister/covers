@@ -35,8 +35,17 @@ from pathlib import Path
 from PIL import Image as PILImage
 
 from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_field
-from munger.fields.rates import split_rate_tokens, parse_rate_token
+from munger.fields.rates import (
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
 from munger.fields.sizes import parse_size_field
+from munger.head import (
+    head_note_desc_lines,
+    head_note_lettering_name,
+    split_head_annotation_notes,
+)
 from munger.rate_assembly import parse_rate_amount
 from munger.text_utils import normalize_post_office_town_text, strip_trailing_state_suffix
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
@@ -153,18 +162,67 @@ def strip_unambiguous_star_marker(text: str) -> str:
     return re.sub(r"^\s*\*|\*\s*$", "", text).strip()
 
 
-def strip_inscription_markers(inscription: object) -> str:
+def strip_inscription_markers(
+    inscription: object,
+    include_attached_notes: bool = True,
+) -> str:
     """Remove catalog-only markers from inscription text."""
     value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription)).strip()
+    value, _notes = split_head_annotation_notes(
+        value,
+        include_attached_note=include_attached_notes,
+    )
+    value, _tokens = split_inline_rate_from_inscription(value)
     value = strip_unambiguous_star_marker(value)
     while value:
         stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
         stripped = TRAILING_INSCRIPTION_MARKER_RE.sub("", stripped, count=1).strip()
+        stripped, _notes = split_head_annotation_notes(
+            stripped,
+            include_attached_note=include_attached_notes,
+        )
+        stripped, _tokens = split_inline_rate_from_inscription(stripped)
         stripped = strip_unambiguous_star_marker(stripped)
         if stripped == value:
             return clean(stripped)
         value = stripped
     return ""
+
+
+def inscription_notes(raw_row: dict[str, str]) -> list[str]:
+    """Return parenthetical notes removed from v1 inscription text."""
+    notes = []
+    for column in ("txtTownPostmark", "txtPostmark"):
+        value = clean(raw_row.get(column))
+        if not value:
+            continue
+        postmark_is_same = column == "txtPostmark" and bool(
+            SAME_PREFIX_RE.match(
+                strip_inscription_markers(
+                    value,
+                    include_attached_notes=False,
+                )
+            )
+        )
+        _cleaned, found = split_head_annotation_notes(
+            value,
+            require_keyword=postmark_is_same,
+            include_attached_note=not postmark_is_same,
+        )
+        for note in found:
+            if note not in notes:
+                notes.append(note)
+    return notes
+
+
+def inscription_note_lines(raw_row: dict[str, str]) -> list[str]:
+    """Return townmark desc notes removed from v1 inscription text."""
+    return head_note_desc_lines(inscription_notes(raw_row))
+
+
+def inscription_lettering_name(raw_row: dict[str, str]) -> str | None:
+    """Return lettering implied by v1 inscription notes."""
+    return head_note_lettering_name(inscription_notes(raw_row))
 
 
 def split_location_state_suffix(text: object) -> tuple[str, str]:
@@ -820,6 +878,7 @@ def apply_row_fields(
     state: str = "",
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
+    ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
     marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
     overlay_town = overlay_post_office_town(raw_row)
     if overlay_town and marking_rows:
@@ -836,7 +895,8 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    if is_boston_row(state, raw_row):
+    boston_row = is_boston_row(state, raw_row)
+    if boston_row:
         inscription = boston_catalog_head(raw_row)
     else:
         inscription = overlay_row_inscription(raw_row, carry_state)
@@ -860,6 +920,8 @@ def apply_row_fields(
         else:
             add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
     lettering_key = clean(raw_row.get("txtTownmarkLettering")).upper()
+    if not lettering_key:
+        lettering_key = clean(inscription_lettering_name(raw_row)).upper()
     if lettering_key:
         lettering_id = lookups["letterings"].get(lettering_key)
         if lettering_id:
@@ -898,16 +960,20 @@ def apply_row_fields(
             if not row.get("is_irreg"):
                 row["is_irreg"] = "False"
     desc_lines = [
+        *([] if boston_row else inscription_note_lines(raw_row)),
         raw_row.get("txtOther", ""),
         raw_row.get("memNotes", ""),
-        *synthetic_desc_lines(raw_row),
     ]
     if any(nonblank(value) for value in desc_lines):
         for row in townmark_rows:
             row["desc"] = append_desc(row.get("desc"), desc_lines)
+    rate_desc_lines = synthetic_desc_lines(raw_row)
+    if any(nonblank(value) for value in rate_desc_lines):
+        desc_targets = ratemark_rows if ratemark_rows else townmark_rows
+        for row in desc_targets:
+            row["desc"] = append_desc(row.get("desc"), rate_desc_lines)
     if nonblank(raw_row.get("txtRatesText")):
         rate_values = parsed_rate_values(raw_row.get("txtRatesText"))
-        ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
         # A single v1 value may only correct a uniform set of ratemarks.
         # When the bundle already carries distinct values (e.g. X=10 and
         # PAID 3=3 from the same listing), stamping the one v1 value over

@@ -168,11 +168,13 @@ class V1PipelineTests(unittest.TestCase):
         cases = [
             ("Same/Wis.", "WATERTOWN/Wis.", "WATERTOWN/Wis."),
             ("(1)Same/Wis.", "(1)WATERTOWN/Wis.", "WATERTOWN/Wis."),
+            ("Same/ILL.", "CHICAGO/Ill.", "CHICAGO/ILL."),
+            ("Same/ILL. and /Ill.", "ALTON/ILL.", "ALTON/ILL. and /Ill."),
             ("Same", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
             ("The same", "DETROIT / Mich.", "DETROIT / Mich."),
-            ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
-            ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA./5"),
-            ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA."),
+            ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA."),
+            ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA."),
             ("Same C.H. VA.", "KANAWHA CH. VA", "KANAWHA CH. VA."),
             ("Same C.H./Va.", "KANAWHA CH. VA.", "KANAWHA CH./Va."),
             ("(1)BETHANY/Va.", "", "BETHANY/Va."),
@@ -181,6 +183,8 @@ class V1PipelineTests(unittest.TestCase):
             ("(L)", "ALEXANDRIA", ""),
             ("Same(E)", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
             ("The same(L)", "DETROIT / Mich.", "DETROIT / Mich."),
+            ("Same/Ills.(thin letters)", "QUINCY/Ills.(thick letters)", "QUINCY/Ills."),
+            ("Same(Green)", "QUINCY/Ills.", "QUINCY/Ills."),
         ]
         for inscription, parent_text, expected in cases:
             with self.subTest(inscription=inscription):
@@ -204,6 +208,171 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(
             v1_bundle_overlay.strip_inscription_markers("BETHANY/Va.*"),
             "BETHANY/Va.",
+        )
+
+    def test_v1_overlay_strips_town_head_notes_from_inscription_text(self):
+        cases = [
+            ("CHICAGO/Ills.(thick letters)", "CHICAGO/Ills."),
+            ("CHICAGO/Ills(thin letters)", "CHICAGO/Ills"),
+            ('COLUMBIA/Ten("COLUMBIA" italics)', "COLUMBIA/Ten"),
+            ("Caho(Cahokia)", "Caho"),
+            ("Charleston (Peoria)", "Charleston"),
+            ("Warren(s)ville", "Warren(s)ville"),
+            ("CHICAGO/PAID 6", "CHICAGO"),
+            ("CHICAGO/6 PAID", "CHICAGO"),
+            ("CHICAGO/5", "CHICAGO"),
+            ("CHICAGO/ILL", "CHICAGO/ILL"),
+            ("BOSTON(87)", "BOSTON(87)"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    v1_bundle_overlay.strip_inscription_markers(raw),
+                    expected,
+                )
+
+    def test_v1_overlay_collects_removed_inscription_notes_for_desc(self):
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "Caho(Cahokia)",
+                "txtPostmark": "",
+            }),
+            ["Cahokia"],
+        )
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "QUINCY/Ills.",
+                "txtPostmark": "Same(Green)",
+            }),
+            [],
+        )
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "QUINCY/Ills.(sans serif letters)",
+                "txtPostmark": "",
+            }),
+            [],
+        )
+
+    def test_v1_overlay_removes_note_when_writing_inscription_and_desc(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "CHICAGO/Ills.",
+                "desc": "Existing",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "Caho(Cahokia)",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "159",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["M1"]["inscription_txt"], "Caho")
+        self.assertEqual(markings_by_id["M1"]["desc"], "Existing\nCahokia")
+
+    def test_v1_overlay_uses_sans_serif_note_as_lettering(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "QUINCY/Ills.",
+                "desc": "Existing",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+                "lettering": "",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "QUINCY/Ills.(sans serif letters)",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "13420",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {"SANS-SERIF": "Sans-serif"}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["M1"]["inscription_txt"], "QUINCY/Ills.")
+        self.assertEqual(markings_by_id["M1"]["lettering"], "Sans-serif")
+        self.assertEqual(markings_by_id["M1"]["desc"], "Existing")
+
+    def test_v1_overlay_applies_rate_note_to_split_ratemark_desc(self):
+        markings_by_id = {
+            "TM1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "CHICAGO/PAID 3",
+                "desc": "",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+            },
+            "RM1": {
+                "code": "ASCC6-IL-M1001/RM0",
+                "type": "RATEMARK",
+                "inscription_txt": "CHICAGO PAID 3",
+                "desc": "Existing rate",
+                "rate_val": "3.0",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "CHICAGO/PAID 3",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtRates": "Use on #U10 envelope",
+            "txtOther": "Town note",
+            "memNotes": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "13067",
+            raw_row,
+            markings_by_id,
+            ["TM1", "RM1"],
+            ["TM1"],
+            ["RM1"],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["TM1"]["inscription_txt"], "CHICAGO")
+        self.assertEqual(markings_by_id["TM1"]["desc"], "Town note")
+        self.assertEqual(
+            markings_by_id["RM1"]["desc"],
+            "Existing rate\nRate note: Use on #U10 envelope",
         )
 
     def test_v1_overlay_same_uses_immediate_previous_row_text(self):

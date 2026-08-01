@@ -140,6 +140,14 @@ class TestParseHeadPeel(unittest.TestCase):
             _parsed_head_notes("Winchester (small caps)"),
             ["small caps"],
         )
+        self.assertEqual(
+            _parsed_head_notes("Caho(Cahokia)"),
+            ["Cahokia"],
+        )
+        self.assertEqual(
+            _parsed_head_notes("Charleston (Peoria)"),
+            ["Peoria"],
+        )
 
     def test_thick_and_thin_head_notes_assign_lettering(self):
         thick = _parsed_head_notes("Chicago/Ills.(thick letters)")
@@ -153,6 +161,7 @@ class TestParseHeadPeel(unittest.TestCase):
         self.assertEqual(_parsed_name("Aquia(s) 1811"), "Aquia")
         self.assertEqual(_parsed_head_notes("Aquia(s) 1811"), [])
         self.assertEqual(_parsed_head_notes("Fred(erick)Town 1780s"), [])
+        self.assertEqual(_parsed_head_notes("Warren(s)ville 1845"), [])
 
     def test_control_and_catalog_number_annotations_are_not_notes(self):
         parsed = parse_head(_head_row("Annapolis(4)(E)"))

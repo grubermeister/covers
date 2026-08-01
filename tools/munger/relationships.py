@@ -1,6 +1,7 @@
 import re
 import pandas as pd
 
+from .fields.rates import split_inline_rate_from_inscription
 from .text_utils import strip_trailing_state_suffix
 
 
@@ -24,6 +25,7 @@ def strip_inscription_markers(inscription):
     while True:
         cleaned = LEADING_INSCRIPTION_MARKER_RE.sub('', text, count=1).strip()
         cleaned = _strip_unambiguous_star_marker(cleaned)
+        cleaned, _tokens = split_inline_rate_from_inscription(cleaned)
         if cleaned == text:
             return re.sub(r"\s+", " ", cleaned).strip()
         text = cleaned

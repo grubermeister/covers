@@ -204,6 +204,7 @@ class MungerHeadNotesIntegrationTests(unittest.TestCase):
             }
 
         self.assertEqual(len(markings), 5)
+        self.assertIn("Sans-serif", lettering_names)
         self.assertIn("Thick", lettering_names)
         self.assertIn("Thin", lettering_names)
         parent, negated_child, sans_child, thick_mark, thin_mark = markings
@@ -216,16 +217,104 @@ class MungerHeadNotesIntegrationTests(unittest.TestCase):
         self.assertEqual(negated_child["lettering"], "")
 
         self.assertEqual(sans_child["inscription_txt"], "COLUMBIA/Ten")
-        self.assertEqual(sans_child["desc"], "sans serif letters")
-        self.assertEqual(sans_child["lettering"], "")
+        self.assertEqual(sans_child["desc"], "")
+        self.assertEqual(sans_child["lettering"], "Sans-serif")
 
         self.assertEqual(thick_mark["inscription_txt"], "CHICAGO/Ills.")
-        self.assertEqual(thick_mark["desc"], "thick letters")
+        self.assertEqual(thick_mark["desc"], "")
         self.assertEqual(thick_mark["lettering"], "Thick")
 
         self.assertEqual(thin_mark["inscription_txt"], "CHICAGO/Ills")
-        self.assertEqual(thin_mark["desc"], "thin letters")
+        self.assertEqual(thin_mark["desc"], "")
         self.assertEqual(thin_mark["lettering"], "Thin")
+
+    def test_inline_head_rates_emit_ratemarks(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            input_dir = write_munger_seeds(root)
+            catalog_rows_path = root / "catalog_rows.csv"
+            out_dir = root / "out"
+            base = {
+                "catalog_page": "0",
+                "image_count": "0",
+                "row_type": "LISTING",
+                "is_manuscript": "",
+                "default_shape": "",
+                "institutional_owner": "",
+            }
+            write_csv(
+                catalog_rows_path,
+                [
+                    "listing_text",
+                    "catalog_page",
+                    "chunk_number",
+                    "image_count",
+                    "row_type",
+                    "is_manuscript",
+                    "default_shape",
+                    "institutional_owner",
+                ],
+                [
+                    {
+                        **base,
+                        "chunk_number": "1",
+                        "listing_text": "CHICAGO/PAID 6(1852;C-30;Black) 25",
+                    },
+                    {
+                        **base,
+                        "chunk_number": "2",
+                        "listing_text": "CHICAGO/6 PAID(1853;C-30;Black) 25",
+                    },
+                    {
+                        **base,
+                        "chunk_number": "3",
+                        "listing_text": "CHICAGO/5(1854;C-30;Black) 25",
+                    },
+                    {
+                        **base,
+                        "chunk_number": "4",
+                        "listing_text": "CHICAGO.lll./PAID/3Cts(1855;C-30;Black) 25",
+                    },
+                ],
+            )
+
+            with contextlib.redirect_stdout(io.StringIO()):
+                ascc_data_munger.main(
+                    [
+                        "--input",
+                        str(catalog_rows_path),
+                        "--input-dir",
+                        str(input_dir),
+                        "--out-dir",
+                        str(out_dir),
+                        "--reference-work-code",
+                        "ASCC6",
+                        "--region-abbrev",
+                        "TN",
+                    ]
+                )
+            markings = read_csv(out_dir / "markings.csv")
+
+        townmarks = [row for row in markings if row["type"] == "TOWNMARK"]
+        ratemarks = [row for row in markings if row["type"] == "RATEMARK"]
+
+        self.assertEqual(
+            [row["inscription_txt"] for row in townmarks],
+            ["CHICAGO", "CHICAGO", "CHICAGO", "CHICAGO.lll."],
+        )
+        self.assertEqual(
+            [row["inscription_txt"] for row in ratemarks],
+            [
+                "CHICAGO PAID 6",
+                "CHICAGO 6 PAID",
+                "CHICAGO 5",
+                "CHICAGO.lll. PAID/3Cts",
+            ],
+        )
+        self.assertEqual(
+            [row["rate_val"] for row in ratemarks],
+            ["6.0", "6.0", "5.0", "3.0"],
+        )
 
 
 if __name__ == "__main__":

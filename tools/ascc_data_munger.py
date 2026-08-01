@@ -34,9 +34,15 @@ from munger.export import AUDIT_TAIL, AUDIT_USER_ID, INT_COLS, _by_listing, _cas
 from munger.fields import _split_ms_date_token, classify_all_fields, classify_paren_field, subparse_fields, triage_other_field
 from munger.fields.colors import parse_color_field
 from munger.fields.dates import is_approximate_date, parse_date_field
-from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
+from munger.fields.rates import (
+    RATE_BRACKET_RE,
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
 from munger.fields.sizes import parse_size_field
 from munger.head import (
+    head_note_desc_lines,
     head_note_has_lettering_note,
     head_note_lettering_name,
     parse_head,
@@ -819,7 +825,7 @@ def main(argv=None):
     listings['paren_annotations_desc'] = listings.apply(
         lambda row: merge_desc_lines(
             row.get('paren_annotations_desc'),
-            row.get('head_annotation_notes'),
+            head_note_desc_lines(row.get('head_annotation_notes')),
         ),
         axis=1,
     )
@@ -1243,6 +1249,26 @@ def main(argv=None):
         print(f'  [{idx}] {field!r}')
         print(f'    raw: {raw}')
         print()
+    inline_head_rate_groups = 0
+    inline_head_rate_tokens = 0
+    for idx, row in listings.iterrows():
+        head_name = row.get('head_name_body')
+        if not isinstance(head_name, str) or not head_name.strip():
+            continue
+        clean_head, rate_tokens = split_inline_rate_from_inscription(head_name)
+        if not rate_tokens:
+            continue
+        listings.at[idx, 'head_name_body'] = clean_head
+        parsed_rates = row.get('parsed_rates')
+        parsed_rates = list(parsed_rates) if isinstance(parsed_rates, list) else []
+        parsed_rates.append(rate_tokens)
+        listings.at[idx, 'parsed_rates'] = parsed_rates
+        inline_head_rate_groups += 1
+        inline_head_rate_tokens += len(rate_tokens)
+    print('Step 6.7: Inline head rate extraction')
+    print(f'  Listings split:      {inline_head_rate_groups}')
+    print(f'  Rate tokens added:   {inline_head_rate_tokens}')
+    print()
     all_dates = [d for dlist in listings['parsed_dates'] for d in dlist]
     if all_dates:
         gran_counts = pd.Series([d['date_granularity'] for d in all_dates]).value_counts()

@@ -59,6 +59,73 @@ IMPRESSION_BY_TOKEN = {
 
 ROMAN_RE = re.compile(r'^[IVXLDM]+$')
 
+INLINE_RATE_AMOUNT_TEXT_RE = (
+    r'(?:\d+(?:[/-]\d+(?:/\d+)?)?|[VX])'
+    r'(?:\s*(?:Cts?\.?|CENTS?))?'
+)
+INLINE_RATE_BRACKET_TEXT_RE = (
+    r'(?:\s*[\[\{\|][^\[\{\|\]\}]*[\[\{\|\]\}])?'
+)
+INLINE_RATE_KEYWORD_FIRST_RE = re.compile(
+    r'^(?:PAID|FREE|STEAM|DUE)\b'
+    r'(?:[\s/]*' + INLINE_RATE_AMOUNT_TEXT_RE + r')?'
+    + INLINE_RATE_BRACKET_TEXT_RE + r'\.?$',
+    re.IGNORECASE,
+)
+INLINE_RATE_AMOUNT_FIRST_RE = re.compile(
+    r'^' + INLINE_RATE_AMOUNT_TEXT_RE + r'\s*/?\s*'
+    r'(?:PAID|FREE|STEAM|DUE)\b'
+    + INLINE_RATE_BRACKET_TEXT_RE + r'\.?$',
+    re.IGNORECASE,
+)
+INLINE_RATE_BARE_AMOUNT_RE = re.compile(
+    r'^' + INLINE_RATE_AMOUNT_TEXT_RE + INLINE_RATE_BRACKET_TEXT_RE + r'\.?$',
+    re.IGNORECASE,
+)
+
+
+def _clean_inline_rate_tail(text):
+    return str(text or '').strip().rstrip('.').strip()
+
+
+def _inline_rate_tail(text, allow_bare_amount=False):
+    tail = _clean_inline_rate_tail(text)
+    if not tail:
+        return False
+    if INLINE_RATE_KEYWORD_FIRST_RE.match(tail):
+        return True
+    if INLINE_RATE_AMOUNT_FIRST_RE.match(tail):
+        return True
+    return allow_bare_amount and bool(INLINE_RATE_BARE_AMOUNT_RE.match(tail))
+
+
+def split_inline_rate_from_inscription(inscription):
+    """Split a trailing rate/auxmark token from townmark inscription text."""
+    value = re.sub(r'\s+', ' ', str(inscription or '').strip())
+    if not value:
+        return '', []
+
+    slash_matches = list(re.finditer(r'\s*/\s*', value))
+    for match in slash_matches:
+        head = value[:match.start()].strip()
+        tail = value[match.end():].strip()
+        if head and _inline_rate_tail(tail):
+            return head, [parse_rate_token(_clean_inline_rate_tail(tail))]
+
+    for match in reversed(slash_matches):
+        head = value[:match.start()].strip()
+        tail = value[match.end():].strip()
+        if head and _inline_rate_tail(tail, allow_bare_amount=True):
+            return head, [parse_rate_token(_clean_inline_rate_tail(tail))]
+
+    for match in re.finditer(r'\s+', value):
+        head = value[:match.start()].strip()
+        tail = value[match.end():].strip()
+        if head and _inline_rate_tail(tail):
+            return head, [parse_rate_token(_clean_inline_rate_tail(tail))]
+
+    return value, []
+
 def parse_rate_token(tok):
     """Parse a single rate token into structured components."""
     t = tok.strip()

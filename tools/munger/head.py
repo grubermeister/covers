@@ -108,13 +108,14 @@ HEAD_NUMERIC_ANNOTATION_RE = re.compile(r'^\s*\d+\s*$')
 HEAD_NOTE_KEYWORD_RE = re.compile(
     r'\b(?:'
     r'italic|italics|italicized|'
-    r'letter|letters|type|typeface|'
+    r'letter|letters|type|types|typeface|'
     r'backstamp|cds|fleuron|ornament|ornamental|'
     r'dot|dots|dash|dashes|period|comma|'
     r'without|with|above|below|between|around|'
     r'high|low|large|small|larger|smaller|tiny|'
     r'thick|thin|slanting|slanted|reversed|inverted|hollow|outline|'
-    r'serif|serifs|seriffed|gothic|bold|block'
+    r'serif|serifs|seriffed|gothic|bold|block|'
+    r'county|misspelled|now|partial|probably|removed|variation|variations'
     r')\b',
     re.IGNORECASE,
 )
@@ -124,8 +125,19 @@ HEAD_NOT_ITALIC_NOTE_RE = re.compile(
     r'\b(?:not|without)\s+(?:in\s+)?(?:italic|italics|italicized)\b',
     re.IGNORECASE,
 )
+HEAD_SANS_SERIF_NOTE_RE = re.compile(
+    r'\bsans[-\s]+serifs?\b',
+    re.IGNORECASE,
+)
+HEAD_SERIF_NOTE_RE = re.compile(r'\bserif(?:s|fed)?\b', re.IGNORECASE)
 HEAD_THICK_NOTE_RE = re.compile(r'\bthick\b', re.IGNORECASE)
 HEAD_THIN_NOTE_RE = re.compile(r'\bthin\b', re.IGNORECASE)
+HEAD_SMALL_NOTE_RE = re.compile(r'\b(?:small|smaller|tiny)\b', re.IGNORECASE)
+HEAD_LARGE_NOTE_RE = re.compile(r'\b(?:large|larger)\b', re.IGNORECASE)
+HEAD_OUTLINE_NOTE_RE = re.compile(r'\b(?:outline|hollow)\b', re.IGNORECASE)
+HEAD_BOLD_NOTE_RE = re.compile(r'\bbold\b', re.IGNORECASE)
+HEAD_BLOCK_NOTE_RE = re.compile(r'\bblock\b', re.IGNORECASE)
+HEAD_GOTHIC_NOTE_RE = re.compile(r'\bgothic\b', re.IGNORECASE)
 HEAD_LETTERING_NOTE_RE = re.compile(
     r'\b(?:'
     r'italic|italics|italicized|'
@@ -134,6 +146,19 @@ HEAD_LETTERING_NOTE_RE = re.compile(
     r'large|larger|small|smaller|tiny|thick|thin|bold|block|gothic|'
     r'hollow|outline'
     r')\b',
+    re.IGNORECASE,
+)
+HEAD_PURE_LETTERING_NOTE_RE = re.compile(
+    r'^\s*'
+    r'(?:letters?\s+)?'
+    r'(?:'
+    r'italic|italics|italicized|'
+    r'sans[-\s]+serifs?|serif|serifs|seriffed|'
+    r'small|smaller|tiny|large|larger|'
+    r'thick|thin|bold|block|gothic|outline|hollow'
+    r')'
+    r'(?:\s+(?:letters?|type|typeface))?'
+    r'\s*$',
     re.IGNORECASE,
 )
 
@@ -163,7 +188,12 @@ def _is_date_annotation(text):
     ))
 
 
-def _is_head_note_annotation(head, match, allow_leading_note=False):
+def _is_short_name_fragment(text):
+    return bool(re.fullmatch(r'[A-Za-z]{1,2}', str(text or '').strip()))
+
+
+def _is_head_note_annotation(head, match, allow_leading_note=False,
+                             include_attached_note=False):
     note = normalize_head_annotation_note(match.group(1))
     if not note:
         return False
@@ -179,9 +209,15 @@ def _is_head_note_annotation(head, match, allow_leading_note=False):
         return False
 
     prev = head[match.start() - 1] if match.start() > 0 else ''
+    after_pos = match.end()
+    next_ch = head[after_pos] if after_pos < len(head) else ''
     if prev.isspace() or not prev.isalnum():
         return True
-    return bool(HEAD_NOTE_KEYWORD_RE.search(note))
+    if HEAD_NOTE_KEYWORD_RE.search(note):
+        return True
+    if next_ch.isalnum():
+        return False
+    return include_attached_note and not _is_short_name_fragment(note)
 
 
 def head_note_lettering_name(notes):
@@ -191,6 +227,22 @@ def head_note_lettering_name(notes):
             continue
         if HEAD_ITALIC_NOTE_RE.search(text):
             return 'Italic'
+        if HEAD_SANS_SERIF_NOTE_RE.search(text):
+            return 'Sans-serif'
+        if HEAD_SERIF_NOTE_RE.search(text):
+            return 'Serif'
+        if HEAD_SMALL_NOTE_RE.search(text):
+            return 'Small'
+        if HEAD_LARGE_NOTE_RE.search(text):
+            return 'Large'
+        if HEAD_OUTLINE_NOTE_RE.search(text):
+            return 'Outline'
+        if HEAD_BOLD_NOTE_RE.search(text):
+            return 'Bold'
+        if HEAD_BLOCK_NOTE_RE.search(text):
+            return 'Block'
+        if HEAD_GOTHIC_NOTE_RE.search(text):
+            return 'Gothic'
         if HEAD_THICK_NOTE_RE.search(text):
             return 'Thick'
         if HEAD_THIN_NOTE_RE.search(text):
@@ -203,6 +255,67 @@ def head_note_has_lettering_note(notes):
         HEAD_LETTERING_NOTE_RE.search(str(note or ''))
         for note in notes or []
     )
+
+
+def head_note_desc_lines(notes):
+    """Return head notes that are not fully represented by Lettering."""
+    lines = []
+    for note in notes or []:
+        text = normalize_head_annotation_note(note)
+        if not text:
+            continue
+        if (
+            head_note_lettering_name([text])
+            and HEAD_PURE_LETTERING_NOTE_RE.fullmatch(text)
+        ):
+            continue
+        if text not in lines:
+            lines.append(text)
+    return lines
+
+
+def split_head_annotation_notes(text, allow_leading_note=False,
+                                require_keyword=False,
+                                include_attached_note=False):
+    """Return inscription text plus parenthesized town-head notes."""
+    if text is None or pd.isna(text):
+        return '', []
+    value = str(text)
+    out = []
+    notes = []
+    keep_start = 0
+    for match in PAREN_GROUP_RE.finditer(value):
+        note = normalize_head_annotation_note(match.group(1))
+        if not _is_head_note_annotation(
+            value,
+            match,
+            allow_leading_note=allow_leading_note,
+            include_attached_note=include_attached_note,
+        ):
+            continue
+        if require_keyword and not HEAD_NOTE_KEYWORD_RE.search(note):
+            continue
+        out.append(value[keep_start:match.start()])
+        notes.append(note)
+        keep_start = match.end()
+    if keep_start == 0:
+        return value, []
+    out.append(value[keep_start:])
+    return re.sub(r'\s+', ' ', ''.join(out)).strip(), notes
+
+
+def strip_head_annotation_notes(text, allow_leading_note=False,
+                                require_keyword=False,
+                                include_attached_note=False):
+    """Remove parenthesized town-head notes from inscription text."""
+    cleaned, _notes = split_head_annotation_notes(
+        text,
+        allow_leading_note=allow_leading_note,
+        require_keyword=require_keyword,
+        include_attached_note=include_attached_note,
+    )
+    return cleaned
+
 
 def parse_head(row):
     """Extract structured components from seg_head."""
@@ -233,11 +346,11 @@ def parse_head(row):
     # raw annotation list for diagnostics.
     annotation_matches = list(PAREN_GROUP_RE.finditer(head))
     annotations = [m.group(1) for m in annotation_matches]
-    head_annotation_notes = [
-        normalize_head_annotation_note(m.group(1))
-        for m in annotation_matches
-        if _is_head_note_annotation(head, m, rel_type is not None)
-    ]
+    _head_without_notes, head_annotation_notes = split_head_annotation_notes(
+        head,
+        allow_leading_note=rel_type is not None,
+        include_attached_note=rel_type is None,
+    )
 
     # 5. Name body: head text with annotation parens removed, stripped
     name_body = PAREN_GROUP_RE.sub('', head).strip()
