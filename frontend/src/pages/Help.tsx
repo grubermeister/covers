@@ -12,7 +12,7 @@ type HelpDoc = {
   markdown: string;
 };
 
-type DocCategory = "glossary" | "faq" | "other";
+type DocCategory = "guide" | "glossary" | "faq" | "other";
 
 const getDocNavLabel = (doc: HelpDoc): string => {
   if (doc.sourceFile) {
@@ -31,12 +31,16 @@ const getDocCategory = (doc: HelpDoc): DocCategory => {
   const title = `${doc.title}`.toLowerCase();
   const text = `${source} ${slug} ${title}`;
 
+  // Matched on slug/filename rather than title text, so a doc that merely
+  // mentions "guide" in its heading doesn't displace the onboarding guide.
+  if (source.includes("getting-started") || slug === "getting-started") return "guide";
   if (text.includes("glossary")) return "glossary";
   if (text.includes("faq") || text.includes("frequently asked")) return "faq";
   return "other";
 };
 
 const categoryLabel: Record<DocCategory, string> = {
+  guide: "Getting Started",
   glossary: "Glossary",
   faq: "FAQ",
   other: "More Docs",
@@ -104,7 +108,9 @@ const Help = ({ singleDocSlug }: { singleDocSlug?: string }) => {
   }, [query, renderedDocs]);
 
   const orderedDocs = useMemo(() => {
-    const priority: Record<DocCategory, number> = { glossary: 0, faq: 1, other: 2 };
+    // The onboarding guide sorts first, which also makes it the doc a bare
+    // /help lands on (see the effectiveSlug fallback to orderedDocs[0]).
+    const priority: Record<DocCategory, number> = { guide: 0, glossary: 1, faq: 2, other: 3 };
     return [...filteredDocs].sort((a, b) => {
       const categoryDiff = priority[a.category] - priority[b.category];
       if (categoryDiff !== 0) return categoryDiff;
@@ -177,7 +183,7 @@ const Help = ({ singleDocSlug }: { singleDocSlug?: string }) => {
                     Documents
                   </h2>
                   <div className="mb-3 flex flex-wrap gap-2">
-                    {(["glossary", "faq"] as DocCategory[]).map((category) => {
+                    {(["guide", "glossary", "faq"] as DocCategory[]).map((category) => {
                       const doc = orderedDocs.find((item) => item.category === category);
                       if (!doc) return null;
                       const active = selectedSlug === doc.slug;
