@@ -50,6 +50,7 @@ import {
   validateMmPair,
   submittedDataToWidthHeightStrings,
 } from "@/lib/dimensionsMm";
+import { isTrueCircleShapeName, shapeCodeFromName } from "@/lib/shapeDisplay";
 
 const SUBMISSION_IMAGES_BUCKET = "submission-images";
 const MAX_IMAGE_SIZE_MB = 100;
@@ -545,19 +546,19 @@ const Contribute = () => {
 
   /**
    * Default Shape rule: when Ratemark or Auxmark is selected and Manuscript
-   * is False (non-handstamped), the catalog convention is that the marking is
-   * a straight-line strike unless the contributor specifies otherwise. We
-   * therefore prefill Shape with the SL ("Straight Line") option whenever:
+   * is False, the catalog convention is that the marking is a circle unless
+   * the contributor specifies otherwise. We therefore prefill Shape with the
+   * C ("Circle") option whenever:
    *
    *   - the type is RATEMARK or AUXMARK,
    *   - manuscript is "No",
    *   - the user hasn't already chosen a shape (we never override an explicit
    *     selection),
-   *   - the shape options have finished loading (otherwise the SL row isn't
+   *   - the shape options have finished loading (otherwise the C row isn't
    *     in the dropdown yet and the prefill silently no-ops).
    *
    * Townmark intentionally does NOT trigger this default -- Townmarks have a
-   * far wider variety of shapes and forcing SL would be misleading.
+   * far wider variety of shapes and forcing Circle would be misleading.
    */
   useEffect(() => {
     if (loadingShapes || shapeOptions.length === 0) return;
@@ -565,17 +566,14 @@ const Contribute = () => {
     if (shape.trim()) return;
     const t = normalizeMarkingTypeValue(markingType);
     if (t !== "RATEMARK" && t !== "AUXMARK") return;
-    const slOption =
+    const circleOption =
       shapeOptions.find(
-        (opt) => String(opt.name).trim().toUpperCase() === "SL",
+        (opt) => shapeCodeFromName(opt.name) === "C",
       ) ??
       shapeOptions.find((opt) =>
-        String(opt.name).trim().toUpperCase().startsWith("SL"),
-      ) ??
-      shapeOptions.find((opt) =>
-        String(opt.name).trim().toLowerCase().includes("straight line"),
+        String(opt.name).trim().toUpperCase() === "CIRCLE",
       );
-    if (slOption) setShape(slOption.name);
+    if (circleOption) setShape(circleOption.name);
   }, [markingType, isManuscript, shape, shapeOptions, loadingShapes]);
 
   useEffect(() => {
@@ -1216,16 +1214,7 @@ const Contribute = () => {
     return `${town.trim()}, ${stateLabel} ${shape}`.trim();
   };
 
-  const isCircularType = (raw: string) => {
-    const s = (raw || "").toLowerCase();
-    return (
-      s.includes("circle") ||
-      s.includes("circular") ||
-      s.includes("cds") ||
-      s.includes("double circle") ||
-      s.includes("single circle")
-    );
-  };
+  const isCircularType = (raw: string) => isTrueCircleShapeName(raw);
 
   const handleSubmit = async (
     e: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement>,

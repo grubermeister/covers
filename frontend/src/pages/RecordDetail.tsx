@@ -20,6 +20,7 @@ import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
 import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { buildMarkingFields } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
 import {
   getMarkingById,
@@ -92,23 +93,16 @@ type GalleryImage = {
 
 const EMPTY = "-";
 
-function isCircleShapeName(shapeName: string | null | undefined): boolean {
-  const s = String(shapeName ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  return s.includes("circle");
-}
-
 function dimensionsDisplay(record: MarkingRecord): string {
   const w = record.width?.trim() ?? "";
   const h = record.height?.trim() ?? "";
 
-  // Circle / Oval -> display the diameter, not WxH. Must run BEFORE the
+  // True circle-family shapes display as diameter, not WxH. Must run BEFORE the
   // sizeDisplay branch because the API serializer always populates
   // size_display as "WxH" (see common/api/v2/serializers.py
   // get_size_display); deferring this check would surface "28x28 mm" for
   // circles instead of "28 mm diameter" and disagree with the Search card.
-  if (!record.isManuscript && isCircleShapeName(record.shapeName)) {
+  if (!record.isManuscript && isTrueCircleShapeName(record.shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";

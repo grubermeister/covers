@@ -347,6 +347,21 @@ def rate_tokens(row: dict[str, str]) -> list[str]:
     return tokens
 
 
+def _rate_note_is_size_echo(value: str, row: dict[str, str]) -> bool:
+    raw_size = useful_text(row.get("txtSizes"))
+    if not raw_size:
+        return False
+    note_text = clean(value).strip("()[]{} ")
+    if clean(raw_size).upper() != note_text.upper():
+        return False
+    parsed = parse_size_field(raw_size)
+    return (
+        not parsed.get("size_error")
+        and parsed.get("size_dim1") is not None
+        and not parsed.get("size_shape_code")
+    )
+
+
 def rate_note_tokens(row: dict[str, str]) -> list[str]:
     """Return rate-column values that should be preserved as notes.
 
@@ -358,6 +373,8 @@ def rate_note_tokens(row: dict[str, str]) -> list[str]:
     for column in RATE_TEXT_COLUMNS:
         value = _normalize_rate_text(row.get(column))
         if not value or _is_v1_color_field(value) or _is_date_format_text(value):
+            continue
+        if _rate_note_is_size_echo(value, row):
             continue
         parseable = any(_is_rate_token(_normalize_rate_text(token)) for token in split_rate_tokens(value))
         key = value.upper()

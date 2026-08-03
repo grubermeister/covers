@@ -10,6 +10,7 @@
 
 import type { MarkingFieldInput } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import type { MarkingTypeValue } from "@/services/markings";
 
 export interface ContributionLookups {
@@ -139,17 +140,10 @@ function readEarliestLatest(sd: Record<string, unknown>): { earliest: string; la
   return { earliest: e, latest: l };
 }
 
-function isCircleShape(name: string): boolean {
-  const s = name.toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  return s.includes("circle");
-}
-
 function formatDimensions(sd: Record<string, unknown>, shapeName: string, isManuscript: boolean): string {
   const w = toStr(sd.width_mm ?? sd.widthMm);
   const h = toStr(sd.height_mm ?? sd.heightMm);
-  if (!isManuscript && isCircleShape(shapeName)) {
+  if (!isManuscript && isTrueCircleShapeName(shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";

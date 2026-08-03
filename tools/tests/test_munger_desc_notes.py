@@ -16,6 +16,7 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from ascc_data_munger import extract_and_strip_see_clause, listing_desc_lines
+from munger.fields import classify_all_fields, subparse_fields
 
 
 class ListingDescLinesTests(unittest.TestCase):
@@ -81,6 +82,26 @@ class ListingDescLinesTests(unittest.TestCase):
         self.assertEqual(
             listing_desc_lines([], None, [], [], sizes),
             ['NOR'],
+        )
+
+    def test_best_effort_size_descriptor_is_desc_note(self):
+        sizes = [{'size_desc_note': 'framed arc'}]
+        self.assertEqual(
+            listing_desc_lines([], None, [], [], sizes),
+            ['framed arc'],
+        )
+
+    def test_parsed_color_is_not_desc_note(self):
+        fields = ['1802-04', '28', 'FREE,PAID', 'Red brown']
+        parsed = subparse_fields({
+            'paren_fields': fields,
+            'paren_field_types': classify_all_fields(fields),
+            'Manuscript': '',
+        })
+        self.assertEqual(parsed['other_fields'], [])
+        self.assertEqual(
+            listing_desc_lines([], None, [], parsed['other_fields'], []),
+            [],
         )
 
     def test_arc_decade_listing_preserves_date_text_and_nor(self):

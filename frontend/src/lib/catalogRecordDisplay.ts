@@ -1,6 +1,7 @@
 import type { MarkingRecord } from "@/services/markings";
 import { getMarkingListImageUrl, normalizeImageUrl } from "@/services/markings";
 import { formatRateValue } from "@/lib/rateDisplay";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 
 /** Shown when a catalog field has no value (Catalog Search / Record Detail contract). */
 export const CATALOG_FIELD_EMPTY = "-";
@@ -146,20 +147,12 @@ export type CatalogFieldValues = {
   latestSeen: string;
 };
 
-function isCircleShapeName(shapeName: string | null | undefined): boolean {
-  const s = String(shapeName ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  // Defensive: allow "circle" variants if data differs.
-  return s.includes("circle");
-}
-
 function dimensionsField(record: MarkingRecord): string {
   const w = record.width?.trim() ?? "";
   const h = record.height?.trim() ?? "";
 
   // Circle: display as diameter (Search + Record Detail requirement parity).
-  if (!record.isManuscript && isCircleShapeName(record.shapeName)) {
+  if (!record.isManuscript && isTrueCircleShapeName(record.shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";

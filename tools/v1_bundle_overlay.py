@@ -565,6 +565,39 @@ def parsed_dimensions(row: dict[str, str]) -> tuple[str, str]:
     return "", ""
 
 
+def v1_size_is_bare_diameter(row: dict[str, str]) -> bool:
+    raw_sizes = clean(row.get("txtSizes"))
+    if not raw_sizes:
+        return False
+    tokens = [token.strip() for token in re.split(r"[;|]+", raw_sizes) if token.strip()]
+    if len(tokens) != 1:
+        return False
+    parsed = parse_size_field(tokens[0])
+    if parsed.get("size_error"):
+        return False
+    return (
+        parsed.get("size_dim1") is not None
+        and parsed.get("size_dim2") is None
+        and not parsed.get("size_shape_code")
+    )
+
+
+def should_keep_munger_circle_shape(
+    raw_row: dict[str, str],
+    townmark_rows: list[dict[str, str]],
+    shape_code: str,
+) -> bool:
+    if shape_code != "SL":
+        return False
+    if not v1_size_is_bare_diameter(raw_row):
+        return False
+    return any(
+        not truthy(row.get("is_manuscript"))
+        and normalized_shape_code(row.get("shape")) == "C"
+        for row in townmark_rows
+    )
+
+
 def split_date_tokens(value: object) -> list[str]:
     tokens = []
     for part in re.split(r"[;|]+", clean(value)):
@@ -912,13 +945,21 @@ def apply_row_fields(
                 row["height"] = height
     shape_code = normalized_shape_code(raw_row.get("txtTownmarkShape"))
     if shape_code:
-        shape_id = lookups["shapes"].get(shape_code)
-        if shape_id:
-            for row in townmark_rows:
-                if not truthy(row.get("is_manuscript")):
-                    row["shape"] = shape_id
+        if should_keep_munger_circle_shape(raw_row, townmark_rows, shape_code):
+            add_warning(
+                warnings,
+                raw_id,
+                "legacy_sl_shape_ignored",
+                "txtTownmarkShape is Straight line but txtSizes is a bare diameter",
+            )
         else:
-            add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
+            shape_id = lookups["shapes"].get(shape_code)
+            if shape_id:
+                for row in townmark_rows:
+                    if not truthy(row.get("is_manuscript")):
+                        row["shape"] = shape_id
+            else:
+                add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
     lettering_key = clean(raw_row.get("txtTownmarkLettering")).upper()
     if not lettering_key:
         lettering_key = clean(inscription_lettering_name(raw_row)).upper()

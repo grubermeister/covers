@@ -5,6 +5,7 @@ import pandas as pd
 from .dates import parse_date_field, MONTHS_PAT, DATE_FIELD_RE
 from .sizes import (
     SIZE_IMPRESSION_PREFIX_RE,
+    is_comma_diameter_list,
     parse_size_field,
     SHAPE_CODE_SET,
     SHAPE_CODE_PAT,
@@ -33,13 +34,26 @@ KNOWN_COLORS = {
     'black', 'red', 'blue', 'green', 'brown', 'orange', 'purple',
     'magenta', 'yellow', 'olive', 'violet', 'carmine', 'vermilion',
     'pink', 'gray', 'grey', 'buff', 'salmon', 'rose', 'maroon',
-    'crimson', 'indigo', 'lilac', 'scarlet', 'amber',
+    'crimson', 'indigo', 'lilac', 'scarlet', 'amber', 'brownish',
+    'purplish',
 }
+COLOR_CONNECTOR_WORDS = {'and', 'to'}
+COLOR_MODIFIER_WORDS = {'bright', 'dark', 'deep', 'light', 'pale'}
 
 def is_color_token(tok):
-    """Check a single token (possibly hyphen-compound) against color vocabulary."""
-    parts = tok.strip().lower().split('-')
-    return all(p in KNOWN_COLORS for p in parts if p)
+    """Check a single token, including compound color phrases."""
+    words = [w.lower() for w in re.split(r'[\s\-]+', tok.strip()) if w]
+    if not words:
+        return False
+    has_color_word = False
+    for word in words:
+        if word in COLOR_CONNECTOR_WORDS or word in COLOR_MODIFIER_WORDS:
+            continue
+        if word in KNOWN_COLORS:
+            has_color_word = True
+            continue
+        return False
+    return has_color_word
 
 def is_color_field(field):
     """True if all comma-separated tokens in the field are known colors."""
@@ -111,6 +125,8 @@ def classify_paren_field(field_text):
 
     # 4. Size/shape/dateformat composite
     if f.upper() in SHAPE_CODE_SET:
+        return 'size'
+    if is_comma_diameter_list(f):
         return 'size'
     if SIZE_FIELD_RE.search(f):
         return 'size'
@@ -221,7 +237,8 @@ def triage_other_field(text):
             'size_shape_code': shape,
             'size_dim1': None, 'size_dim2': None,
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_raw': t, 'size_error': None,
+            'size_qualifier': None, 'size_desc_note': None,
+            'size_raw': t, 'size_error': None,
         }
 
     # Irregular size: "irregular 34"
@@ -236,7 +253,8 @@ def triage_other_field(text):
             'size_dim1': float(dims[0].strip()),
             'size_dim2': float(dims[1].strip()),
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_raw': t, 'size_error': None,
+            'size_qualifier': None, 'size_desc_note': None,
+            'size_raw': t, 'size_error': None,
         }
 
     # Bare rate amounts or roman+amount combos: "5,10", "12-1/2", "V,X", "Double 50"

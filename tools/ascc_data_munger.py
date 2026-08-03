@@ -103,13 +103,16 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
     frank privilege notes, approximate dates
     ("Date(s) seen: 1850s", "Date(s) seen: c1850"),
     any unresolved 'other' paren fields recorded verbatim as errata notes
-    (e.g. APALACHICOLA "fancy lined X"), then NOR or bracketed size-field
-    annotations, with bracket delimiters stripped
+    (e.g. APALACHICOLA "fancy lined X"), best-effort size descriptor notes
+    (e.g. "framed arc-32x19" -> "framed arc"), then NOR or bracketed
+    size-field annotations, with bracket delimiters stripped
     ("SL-42x5,MDD[separate hdstp]" -> "separate hdstp").
     Unbracketed size qualifiers like the positional "below" in
     "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
-    are dropped, first occurrence wins. Returns a list of str lines
-    (possibly empty).
+    are dropped, first occurrence wins. The desc field is intentionally the
+    dumping ground for weird catalog side cases when structured parsing can
+    only be best effort, not exhaustive. Returns a list of str lines (possibly
+    empty).
     """
     lines = list(paren_annotations_desc or [])
     if see_clause and isinstance(see_clause, str) and see_clause.strip():
@@ -132,6 +135,9 @@ def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
         if line and line not in lines:
             lines.append(line)
     for s in (parsed_sizes or []):
+        note = str(s.get('size_desc_note') or '').strip()
+        if note and note not in lines:
+            lines.append(note)
         q = str(s.get('size_qualifier') or '').strip()
         if not q:
             continue
@@ -1106,6 +1112,11 @@ def main(argv=None):
     assert r['size_shape_code'] == 'ARC'
     r = parse_size_field('arc-46x26')
     assert r['size_shape_code'] == 'ARC'
+    r = parse_size_field('framed arc-32x19')
+    assert r['size_shape_code'] == 'ARC'
+    assert r['size_dim1'] == 32.0
+    assert r['size_dim2'] == 19.0
+    assert r['size_desc_note'] == 'framed arc'
     r = parse_size_field('stencil C-31')
     assert r['size_shape_code'] == 'C'
     assert r['size_dim1'] == 31.0
@@ -3243,8 +3254,10 @@ def main(argv=None):
     # Per-listing desc text, looked up at townmark emission time. Combines
     # the parenthetical annotation lines (Backstamp, No town cds, ...), the
     # See-clause for cross-reference rows, desc-only frank shorthands,
-    # approximate dates, and unresolved 'other' paren fields kept verbatim as
-    # errata notes.
+    # approximate dates, unresolved 'other' paren fields kept verbatim as
+    # errata notes, and best-effort size descriptor notes. This is the
+    # intentional desc dumping ground for catalog side cases that should not
+    # block structured parsing.
     desc_by_listing = {}
     for _lidx, _lrow in listings.iterrows():
         _lines = listing_desc_lines(

@@ -326,6 +326,103 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(markings_by_id["M1"]["lettering"], "Sans-serif")
         self.assertEqual(markings_by_id["M1"]["desc"], "Existing")
 
+    def test_v1_overlay_keeps_munger_circle_for_legacy_sl_bare_diameter(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-DC-M1335",
+                "type": "TOWNMARK",
+                "inscription_txt": "G P.OFFICE/.DEAD LETTER",
+                "desc": "",
+                "post_office": "USA-DC1-52",
+                "is_manuscript": "False",
+                "shape": "C - Circle",
+                "width": "30",
+                "height": "30",
+            },
+        }
+        raw_row = {
+            "txtRawStateData": "G P.OFFICE/.DEAD LETTER(1818-36;30;Red) 100",
+            "txtTownPostmark": "G P.OFFICE/.DEAD LETTER",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtSizes": "30",
+            "nWidth": "30.0",
+            "nHeight": "",
+            "txtTownmarkShape": "Straight line",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+        warnings = []
+
+        v1_bundle_overlay.apply_row_fields(
+            "11904",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {
+                "shapes": {"C": "C - Circle", "SL": "SL - Straight Line"},
+                "letterings": {},
+            },
+            {},
+            warnings,
+        )
+
+        self.assertEqual(markings_by_id["M1"]["shape"], "C - Circle")
+        self.assertEqual(markings_by_id["M1"]["width"], "30")
+        self.assertEqual(markings_by_id["M1"]["height"], "30")
+        self.assertEqual(
+            {row["issue"] for row in warnings},
+            {"legacy_sl_shape_ignored"},
+        )
+
+    def test_v1_overlay_still_applies_explicit_sl_size_shape(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-DC-M1999",
+                "type": "TOWNMARK",
+                "inscription_txt": "WASHINGTON",
+                "desc": "",
+                "post_office": "USA-DC1-52",
+                "is_manuscript": "False",
+                "shape": "C - Circle",
+                "width": "30",
+                "height": "30",
+            },
+        }
+        raw_row = {
+            "txtRawStateData": "WASHINGTON(1818-36;SL-30;Red) 100",
+            "txtTownPostmark": "WASHINGTON",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtSizes": "SL-30",
+            "nWidth": "30.0",
+            "nHeight": "",
+            "txtTownmarkShape": "Straight line",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+        warnings = []
+
+        v1_bundle_overlay.apply_row_fields(
+            "11905",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {
+                "shapes": {"C": "C - Circle", "SL": "SL - Straight Line"},
+                "letterings": {},
+            },
+            {},
+            warnings,
+        )
+
+        self.assertEqual(markings_by_id["M1"]["shape"], "SL - Straight Line")
+        self.assertEqual(warnings, [])
+
     def test_v1_overlay_applies_rate_note_to_split_ratemark_desc(self):
         markings_by_id = {
             "TM1": {
@@ -1100,6 +1197,18 @@ class V1PipelineTests(unittest.TestCase):
 
         self.assertEqual(color_tokens(row), ["BLUE", "BLACK"])
         self.assertEqual(synthetic_desc_lines(row), [])
+
+    def test_size_echo_in_rate_column_is_not_rate_note(self):
+        row = {
+            "txtSizes": "31,32",
+            "txtRates": "(31,32)",
+        }
+
+        self.assertEqual(synthetic_desc_lines(row), [])
+        self.assertEqual(
+            v1_bundle_overlay.parsed_dimensions(row),
+            ("31", "31"),
+        )
 
     def test_non_color_rate_note_still_preserved_as_desc(self):
         row = {
