@@ -387,6 +387,10 @@ export interface MarkingRecord {
   canRemove: boolean;
   // Whether a state editor has personally vetted this record (Issue #22).
   isReviewed: boolean;
+  /** Submitter opted in to show their name on the public marking detail page. */
+  displaySubmitterName: boolean;
+  /** Submitter display name; null unless they opted in (server-gated). */
+  submitterName: string | null;
   // Contributor's "comment for editor" and the editor's review feedback, sourced
   // from the marking's approved Contribution. The backend returns "" to anyone
   // who is not that contributor or an editor, so a non-empty value is safe to show.
@@ -664,6 +668,11 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
     isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    submitterName:
+      typeof o.submitter_name === "string" && o.submitter_name
+        ? o.submitter_name
+        : null,
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
   };

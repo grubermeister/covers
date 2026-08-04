@@ -888,6 +888,7 @@ class MarkingMarkingResource(PortableTimestampedResource):
             "rate_val",
             "post_office_key",
             "is_reviewed",
+            "display_submitter_name",
             "created_date",
             "modified_date",
             "created_by",

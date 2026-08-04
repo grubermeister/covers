@@ -424,8 +424,9 @@ class MarkingBackupRestoreCommandTests(TestCase):
         )
         self.assertEqual(restored.submitted_data["marking_id"], str(self.marking.pk))
 
-    def test_backup_restore_round_trips_review_flag_and_cover_display_fields(self):
+    def test_backup_restore_round_trips_review_flag_and_display_fields(self):
         self.marking.is_reviewed = True
+        self.marking.display_submitter_name = True
         self.marking.save()
         self.cover.display_submitter_name = True
         self.cover.description = "Folded cover with red grid marking."
@@ -434,7 +435,10 @@ class MarkingBackupRestoreCommandTests(TestCase):
         backup_path = self._backup()
 
         # Simulate a drop/re-import cycle that reset the user-editable fields.
-        Marking.all_objects.filter(pk=self.marking.pk).update(is_reviewed=False)
+        Marking.all_objects.filter(pk=self.marking.pk).update(
+            is_reviewed=False,
+            display_submitter_name=False,
+        )
         Cover.all_objects.filter(pk=self.cover.pk).update(
             display_submitter_name=False,
             description="",
@@ -445,6 +449,7 @@ class MarkingBackupRestoreCommandTests(TestCase):
         self.marking.refresh_from_db()
         self.cover.refresh_from_db()
         self.assertTrue(self.marking.is_reviewed)
+        self.assertTrue(self.marking.display_submitter_name)
         self.assertTrue(self.cover.display_submitter_name)
         self.assertEqual(
             self.cover.description,

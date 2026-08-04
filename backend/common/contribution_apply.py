@@ -135,6 +135,7 @@ def apply_contribution_to_catalog(contrib):
         desc_raw = desc_raw.strip()
     else:
         desc_raw = str(desc_raw).strip()
+    display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
 
     date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
     if isinstance(date_fmt, str):
@@ -159,6 +160,7 @@ def apply_contribution_to_catalog(contrib):
         impression=impression,
         rate_val=_parse_decimal(payload.get("rate_val")),
         post_office=post_office,
+        display_submitter_name=bool(display_submitter_name),
         created_by=actor,
         modified_by=actor,
     )
@@ -260,6 +262,12 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
     # Omitted color means "no change"; explicit blank/null means "clear".
     if _payload_mentions_fk(payload, "color_id", "color"):
         marking.color = color
+    if "display_submitter_name" in payload:
+        marking.display_submitter_name = bool(
+            _coerce_optional_bool(
+                payload, "display_submitter_name", marking.display_submitter_name
+            )
+        )
     marking.modified_by = actor
     marking.full_clean()
     marking.save()

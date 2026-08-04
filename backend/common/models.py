@@ -206,6 +206,7 @@ class Marking(TimestampedModel):
     rate_val = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Non-negative rate amount; most common on RATEMARK and integrated-rate TOWNMARK rows')
     post_office = models.ForeignKey('PostOffice', on_delete=models.PROTECT, related_name='markings')
     is_reviewed = models.BooleanField(default=False, help_text='A state editor has personally vetted this record (Issue #22).')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public marking detail page")
 
     # objects: default manager, EXCLUDES recycle-binned markings.
     # all_objects: unfiltered, INCLUDES recycle-binned markings.

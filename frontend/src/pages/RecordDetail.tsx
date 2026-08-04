@@ -553,6 +553,7 @@ const RecordDetail = () => {
   // contributor or an editor, so a non-empty string is already authorized to show.
   const commentForEditor = record.commentForEditor?.trim() ?? "";
   const editorFeedback = record.editorFeedback?.trim() ?? "";
+  const submitterName = record.submitterName?.trim() ?? "";
   const galleryImages = buildGalleryImages(record);
   const typeLabel = markingTypeLabel(record.type) || "Townmark";
 
@@ -1349,6 +1350,15 @@ const RecordDetail = () => {
                   <CardHeader><CardTitle className="font-heading text-lg">Description</CardTitle></CardHeader>
                   <CardContent>
                     <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{record.desc}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {submitterName && (
+                <Card className="shadow-archival-md">
+                  <CardHeader><CardTitle className="font-heading text-lg">Submitted by</CardTitle></CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">{submitterName}</p>
                   </CardContent>
                 </Card>
               )}

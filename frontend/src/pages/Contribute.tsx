@@ -572,6 +572,7 @@ const Contribute = () => {
   const [markingType, setMarkingType] = useState("");
   const [rateValue, setRateValue] = useState("");
   const [description, setDescription] = useState("");
+  const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [contributorComment, setContributorComment] = useState("");
   // One entry in the combined image gallery: "existing" wraps an already-saved
   // image (edit-marking or draft-resume); "new" wraps a freshly-picked file.
@@ -920,6 +921,9 @@ const Contribute = () => {
           setCatalogCodeTouched(true);
         }
         if (typeVal) setMarkingType(typeVal);
+        setDisplaySubmitterName(
+          String(submittedValue(sd, "display_submitter_name", "displaySubmitterName")) === "true",
+        );
         setContributorComment(
           getStr(submittedValue(sd, "contributor_comment", "contributorComment")),
         );
@@ -1171,6 +1175,7 @@ const Contribute = () => {
         setImpression(normalizedImpression ?? "Normal");
         setInscriptionText(typeof data.inscription_txt === "string" ? data.inscription_txt : "");
         setDescription(typeof data.desc === "string" ? data.desc : "");
+        setDisplaySubmitterName(Boolean(data.display_submitter_name));
         setRateValue(String(data.rate_val ?? "").trim());
 
         setLetteringId(data.lettering != null ? String(data.lettering) : "");
@@ -1697,6 +1702,7 @@ const Contribute = () => {
         if (description.trim()) {
           form.append("desc", description.trim());
         }
+        form.append("display_submitter_name", String(displaySubmitterName));
         if (canEditCatalogCode && catalogCodeToSend) {
           form.append("catalog_code", catalogCodeToSend);
         }
@@ -1764,6 +1770,7 @@ const Contribute = () => {
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
           rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
+          display_submitter_name: displaySubmitterName,
           ...(canEditCatalogCode && catalogCodeToSend
             ? { catalog_code: catalogCodeToSend }
             : {}),
@@ -2979,6 +2986,15 @@ const Contribute = () => {
                       `PNG, JPG, or TIFF up to ${MAX_IMAGE_SIZE_MB}MB each`,
                       true,
                     )}
+
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={displaySubmitterName}
+                        onCheckedChange={(v) => setDisplaySubmitterName(v === true)}
+                        disabled={submitting}
+                      />
+                      Would you like your name to display as the submitter?
+                    </label>
 
                     <div className="space-y-2">
                       <Label htmlFor="contributor-comment">Comment for editor</Label>

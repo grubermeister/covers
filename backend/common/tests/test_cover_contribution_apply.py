@@ -948,6 +948,50 @@ class CoverSubmitterNameSerializerTests(TestCase):
         self.assertEqual(data["submitter_name"], "nameless")
 
 
+class MarkingSubmitterNameSerializerTests(TestCase):
+    """MarkingSerializer exposes the submitter name ONLY when opted in."""
+
+    def _marking(self, user, display):
+        collection = _make_collection(user)
+        marking = _make_parent_marking(user, collection.region)
+        marking.display_submitter_name = display
+        marking.save(update_fields=["display_submitter_name"])
+        return marking
+
+    def test_name_returned_when_opted_in(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(
+            username="jsmith-marking",
+            password="pw",
+            first_name="Jane",
+            last_name="Smith",
+        )
+        data = MarkingSerializer(self._marking(user, True)).data
+        self.assertTrue(data["display_submitter_name"])
+        self.assertEqual(data["submitter_name"], "Jane Smith")
+
+    def test_name_hidden_when_opted_out(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(
+            username="hidden-marking",
+            password="pw",
+            first_name="Jane",
+            last_name="Smith",
+        )
+        data = MarkingSerializer(self._marking(user, False)).data
+        self.assertFalse(data["display_submitter_name"])
+        self.assertIsNone(data["submitter_name"])
+
+    def test_falls_back_to_username_without_full_name(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(username="nameless-marking", password="pw")
+        data = MarkingSerializer(self._marking(user, True)).data
+        self.assertEqual(data["submitter_name"], "nameless-marking")
+
+
 class MarkingErdLrdApplyTests(TestCase):
     """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking.
 
@@ -1000,6 +1044,18 @@ class MarkingErdLrdApplyTests(TestCase):
         annotated = Marking.objects.with_date_range().get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 1, 1))
         self.assertEqual(annotated.latest_seen, date(1851, 1, 1))
+
+    def test_display_submitter_name_opt_in_flows_to_marking(self):
+        sd = self._marking_sd(display_submitter_name="true")
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+        self.assertTrue(marking.display_submitter_name)
+
+    def test_display_submitter_name_defaults_false_when_absent(self):
+        sd = self._marking_sd()
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+        self.assertFalse(marking.display_submitter_name)
 
     def test_new_marking_records_partial_erd_and_lrd_components(self):
         sd = self._marking_sd(

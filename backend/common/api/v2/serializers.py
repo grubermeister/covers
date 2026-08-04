@@ -552,14 +552,7 @@ class CoverSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError(str(exc))
 
     def get_submitter_name(self, obj):
-        # Opt-out (the default) must never leak the name.
-        if not obj.display_submitter_name:
-            return None
-        user = obj.created_by
-        if user is None:
-            return None
-        full = (user.get_full_name() or "").strip()
-        return full or user.get_username()
+        return _submitter_name_for_opted_in_record(obj)
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(
@@ -711,6 +704,16 @@ def _comment_for_editor_from(submitted_data) -> str:
     return ""
 
 
+def _submitter_name_for_opted_in_record(obj):
+    if not getattr(obj, "display_submitter_name", False):
+        return None
+    user = getattr(obj, "created_by", None)
+    if user is None:
+        return None
+    full = (user.get_full_name() or "").strip()
+    return full or user.get_username()
+
+
 class MarkingListSerializer(serializers.ModelSerializer):
     """
     Lightweight Marking row used by /api/v2/markings/ list/search.
@@ -855,6 +858,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     can_remove = serializers.SerializerMethodField()
     comment_for_editor = serializers.SerializerMethodField()
     editor_feedback = serializers.SerializerMethodField()
+    submitter_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Marking
@@ -902,6 +906,8 @@ class MarkingSerializer(serializers.ModelSerializer):
             "can_remove",
             "comment_for_editor",
             "editor_feedback",
+            "display_submitter_name",
+            "submitter_name",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
 
@@ -931,6 +937,9 @@ class MarkingSerializer(serializers.ModelSerializer):
         if user is None:
             return False
         return _user_is_responsible_for_marking(user, obj)
+
+    def get_submitter_name(self, obj):
+        return _submitter_name_for_opted_in_record(obj)
 
     def get_editor_feedback(self, obj):
         request = self.context.get("request")
