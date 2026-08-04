@@ -1419,12 +1419,22 @@ class MarkingDateSeenResource(PolymorphicPortableResource):
             "subject_id",
             "date",
             "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
             "created_date",
             "modified_date",
             "created_by",
             "modified_by",
         )
-        import_id_fields = ("subject_type", "subject_id", "date", "granularity")
+        import_id_fields = (
+            "subject_type",
+            "subject_id",
+            "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
+        )
 
 
 class MarkingImageResource(PolymorphicPortableResource):

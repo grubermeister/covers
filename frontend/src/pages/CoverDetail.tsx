@@ -99,7 +99,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: CoverDateSeenItem): string {
-  return formatDateSeen(d.date, d.granularity) || d.date || "";
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 

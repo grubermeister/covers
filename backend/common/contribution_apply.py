@@ -46,6 +46,7 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
@@ -1043,15 +1044,40 @@ def _sync_citations(subject_type: str, subject_id, payload: dict, actor) -> None
 
 def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
     """
-    Reconcile the cover's DateSeen to zero-or-one row from cover_date +
-    cover_granularity: delete the existing DateSeen(COVER, cover_id), then
-    recreate from the payload. On a freshly created cover the delete is a no-op.
-    A missing cover_date clears the date (so a contributor who clears the date
-    on edit removes it); a present-but-unparseable date is an error.
+    Reconcile the cover's DateSeen to zero-or-one row.
+
+    New submissions may send component keys:
+    cover_date_year / cover_date_month / cover_date_day, or
+    cover_date_unknown=true. Legacy cover_date + cover_granularity payloads
+    continue to work.
     """
     DateSeen.objects.filter(
         subject_type=DateSeen.SUBJECT_COVER, subject_id=cover_id
     ).delete()
+    if _coerce_optional_bool(payload, "cover_date_unknown", False):
+        return
+
+    has_component = any(
+        payload.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    if has_component:
+        row = DateSeen(
+            subject_type=DateSeen.SUBJECT_COVER,
+            subject_id=cover_id,
+            date_year=_parse_int(payload.get("cover_date_year")),
+            date_month=_parse_int(payload.get("cover_date_month")),
+            date_day=_parse_int(payload.get("cover_date_day")),
+            created_by=actor,
+            modified_by=actor,
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            raise ContributionApplyError("Invalid cover date components: {}".format(exc))
+        row.save()
+        return
+
     raw = payload.get("cover_date") or payload.get("coverDate")
     if raw in (None, ""):
         return
@@ -1081,8 +1107,16 @@ def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
 MARKING_DATE_SUBMIT_KEYS = frozenset({
     "marking_erd",
     "marking_erd_granularity",
+    "marking_erd_unknown",
+    "marking_erd_date_year",
+    "marking_erd_date_month",
+    "marking_erd_date_day",
     "marking_lrd",
     "marking_lrd_granularity",
+    "marking_lrd_unknown",
+    "marking_lrd_date_year",
+    "marking_lrd_date_month",
+    "marking_lrd_date_day",
 })
 
 
@@ -1109,10 +1143,60 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
     changed, so a no-touch edit is a no-op (narrowing a range is an admin/data
     operation, intentionally not exposed through this form).
     """
-    for date_key, gran_key in (
-        ("marking_erd", "marking_erd_granularity"),
-        ("marking_lrd", "marking_lrd_granularity"),
+    for date_key, gran_key, unknown_key, year_key, month_key, day_key in (
+        (
+            "marking_erd",
+            "marking_erd_granularity",
+            "marking_erd_unknown",
+            "marking_erd_date_year",
+            "marking_erd_date_month",
+            "marking_erd_date_day",
+        ),
+        (
+            "marking_lrd",
+            "marking_lrd_granularity",
+            "marking_lrd_unknown",
+            "marking_lrd_date_year",
+            "marking_lrd_date_month",
+            "marking_lrd_date_day",
+        ),
     ):
+        if _coerce_optional_bool(payload, unknown_key, False):
+            continue
+        has_component = any(
+            payload.get(key) not in (None, "")
+            for key in (year_key, month_key, day_key)
+        )
+        if has_component:
+            row = DateSeen(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking_id,
+                date_year=_parse_int(payload.get(year_key)),
+                date_month=_parse_int(payload.get(month_key)),
+                date_day=_parse_int(payload.get(day_key)),
+                created_by=actor,
+                modified_by=actor,
+            )
+            try:
+                row.normalize_date_parts()
+            except DjangoValidationError as exc:
+                raise ContributionApplyError("Invalid {} components: {}".format(date_key, exc))
+            DateSeen.objects.get_or_create(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking_id,
+                granularity=row.granularity,
+                date_year=row.date_year,
+                date_month=row.date_month,
+                date_day=row.date_day,
+                defaults={
+                    "date": row.date,
+                    "date_key": row.date_key,
+                    "created_by": actor,
+                    "modified_by": actor,
+                },
+            )
+            continue
+
         raw = payload.get(date_key)
         if raw in (None, ""):
             continue
@@ -1126,12 +1210,28 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
             raise ContributionApplyError(
                 "Invalid {}: {!r}".format(gran_key, granularity)
             )
-        DateSeen.objects.get_or_create(
+        row = DateSeen(
             subject_type=DateSeen.SUBJECT_MARKING,
             subject_id=marking_id,
             date=parsed,
+            granularity=granularity,
+            created_by=actor,
+            modified_by=actor,
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            raise ContributionApplyError("Invalid {}: {}".format(date_key, exc))
+        DateSeen.objects.get_or_create(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking_id,
+            granularity=row.granularity,
+            date_year=row.date_year,
+            date_month=row.date_month,
+            date_day=row.date_day,
             defaults={
-                "granularity": granularity,
+                "date": row.date,
+                "date_key": row.date_key,
                 "created_by": actor,
                 "modified_by": actor,
             },

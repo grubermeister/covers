@@ -356,8 +356,12 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "inscription_txt": "RICHMOND VA",
                 "marking_erd": "1845-01-01",
                 "marking_erd_granularity": "DAY",
+                "marking_erd_date_month": "12",
+                "marking_erd_date_day": "1",
                 "marking_lrd": "1850-12-31",
                 "marking_lrd_granularity": "DAY",
+                "marking_lrd_date_year": "1850",
+                "marking_lrd_date_month": "12",
             },
             format="json",
         )
@@ -366,8 +370,12 @@ class ContributionSubmitMarkingEditTests(TestCase):
         contribution = Contribution.objects.get(pk=response.data["id"])
         self.assertNotIn("marking_erd", contribution.submitted_data)
         self.assertNotIn("marking_erd_granularity", contribution.submitted_data)
+        self.assertNotIn("marking_erd_date_month", contribution.submitted_data)
+        self.assertNotIn("marking_erd_date_day", contribution.submitted_data)
         self.assertNotIn("marking_lrd", contribution.submitted_data)
         self.assertNotIn("marking_lrd_granularity", contribution.submitted_data)
+        self.assertNotIn("marking_lrd_date_year", contribution.submitted_data)
+        self.assertNotIn("marking_lrd_date_month", contribution.submitted_data)
 
     def test_editor_submitted_marking_dates_are_preserved(self):
         editor = self._editor("submit-date-editor")
@@ -385,8 +393,12 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "inscription_txt": "RICHMOND VA",
                 "marking_erd": "1845-01-01",
                 "marking_erd_granularity": "DAY",
+                "marking_erd_date_month": "12",
+                "marking_erd_date_day": "1",
                 "marking_lrd": "1850-12-31",
                 "marking_lrd_granularity": "DAY",
+                "marking_lrd_date_year": "1850",
+                "marking_lrd_date_month": "12",
             },
             format="json",
         )
@@ -395,6 +407,10 @@ class ContributionSubmitMarkingEditTests(TestCase):
         contribution = Contribution.objects.get(pk=response.data["id"])
         self.assertEqual(contribution.submitted_data["marking_erd"], "1845-01-01")
         self.assertEqual(contribution.submitted_data["marking_lrd"], "1850-12-31")
+        self.assertEqual(contribution.submitted_data["marking_erd_date_month"], "12")
+        self.assertEqual(contribution.submitted_data["marking_erd_date_day"], "1")
+        self.assertEqual(contribution.submitted_data["marking_lrd_date_year"], "1850")
+        self.assertEqual(contribution.submitted_data["marking_lrd_date_month"], "12")
 
     def test_direct_marking_suggestion_uses_apmc_without_reference(self):
         editor = User.objects.create_superuser(

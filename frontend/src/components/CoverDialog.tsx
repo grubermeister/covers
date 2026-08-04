@@ -129,8 +129,11 @@ function normalizeFormDate(
 function toFormDate(d: AssociatedDateSeen): FormDate {
   return {
     existingId: d.id,
-    date: d.date.slice(0, 10),
-    granularity: d.granularity,
+    date: d.date ? d.date.slice(0, 10) : "",
+    granularity:
+      d.granularity === "YEAR" || d.granularity === "MONTH" || d.granularity === "DAY"
+        ? d.granularity
+        : "DAY",
   };
 }
 

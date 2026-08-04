@@ -37,7 +37,12 @@ import {
   markingImagesFromContributionMetas,
 } from "@/lib/contributionImages";
 
-import { deriveGranularityFromIso } from "@/lib/dateGranularity";
+import {
+  partialDateInputFromDateSeen,
+  partialDateInputFromSubmittedData,
+  validatePartialDate,
+  type PartialDateInput,
+} from "@/lib/partialDate";
 import { listCitationsForSubject } from "@/services/citations";
 import {
   getImagesForSubject,
@@ -53,11 +58,6 @@ import {
 import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 
 type Mode = "create" | "edit";
-
-type CoverDateField = {
-  existingId?: number;
-  date: string;
-};
 
 type PendingUpload = {
   key: string;
@@ -87,8 +87,23 @@ const COVER_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "FC", label: "FC - Folded Cover" },
   { value: "FL", label: "FL - Folded Letter" },
 ];
+const COVER_MONTH_OPTIONS = [
+  { value: "1", label: "JAN" },
+  { value: "2", label: "FEB" },
+  { value: "3", label: "MAR" },
+  { value: "4", label: "APR" },
+  { value: "5", label: "MAY" },
+  { value: "6", label: "JUN" },
+  { value: "7", label: "JUL" },
+  { value: "8", label: "AUG" },
+  { value: "9", label: "SEP" },
+  { value: "10", label: "OCT" },
+  { value: "11", label: "NOV" },
+  { value: "12", label: "DEC" },
+];
 
 const DEFAULT_COVER_TYPE = "FL";
+const EMPTY_COVER_DATE: PartialDateInput = { unknown: false, year: "", month: "", day: "" };
 
 const MAX_IMAGE_SIZE_MB = 100;
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/tiff"];
@@ -113,10 +128,10 @@ function normalizeCoverType(raw: string | null | undefined): string {
 function buildEditState(cover: AssociatedCover | null | undefined) {
   const c = cover?.coverDetails ?? null;
   const seen = c?.datesSeen ?? [];
-  const sorted = [...seen].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...seen].sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")));
   const primary = sorted[0];
-  const coverDate: CoverDateField =
-    primary != null ? { existingId: primary.id, date: primary.date.slice(0, 10) } : { date: "" };
+  const coverDate: PartialDateInput =
+    primary != null ? partialDateInputFromDateSeen(primary) : { ...EMPTY_COVER_DATE };
 
   return {
     type: normalizeCoverType(c?.type ?? null),
@@ -160,17 +175,57 @@ const COVER_FIELD_SCROLL_ORDER: Array<{ key: keyof FieldErrorsShape; id: string 
   { key: "contributorComment", id: "contributor-comment" },
 ];
 
-function scrollToFirstFieldError(errors: FieldErrorsShape) {
+function getFocusableTarget(el: HTMLElement): HTMLElement {
+  const primarySelector =
+    "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role='combobox']:not([disabled])";
+  if (el.matches(primarySelector)) {
+    return el;
+  }
+
+  const primary = el.querySelector<HTMLElement>(primarySelector);
+  if (primary) return primary;
+
+  return el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? el;
+}
+
+function scrollAndFocusElement(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const focusable = getFocusableTarget(el);
+  if (typeof focusable.focus === "function") {
+    window.setTimeout(() => focusable.focus(), 300);
+  }
+  return true;
+}
+
+function scrollToFirstReferenceDetailError(
+  selectedReferenceWorks: ReferenceWorkRecord[],
+  errors: Record<number, ReferenceDetailFieldErrors>,
+): boolean {
+  for (const work of selectedReferenceWorks) {
+    const rowErrors = errors[work.id];
+    if (!rowErrors) continue;
+    const id = rowErrors.pageNumber ? `cover-reference-page-${work.id}` : `cover-reference-url-${work.id}`;
+    if (scrollAndFocusElement(document.getElementById(id))) return true;
+  }
+  return false;
+}
+
+function scrollToFirstFieldError(
+  errors: FieldErrorsShape,
+  referenceDetailErrors: Record<number, ReferenceDetailFieldErrors>,
+  selectedReferenceWorks: ReferenceWorkRecord[],
+) {
   for (const { key, id } of COVER_FIELD_SCROLL_ORDER) {
     if (!errors[key]) continue;
-    const el = document.getElementById(id);
-    if (!el) continue;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    const focusable = el as HTMLElement & { focus?: () => void };
-    if (typeof focusable.focus === "function") {
-      window.setTimeout(() => focusable.focus?.(), 300);
+    if (
+      key === "referenceWorks" &&
+      scrollToFirstReferenceDetailError(selectedReferenceWorks, referenceDetailErrors)
+    ) {
+      return;
     }
-    return;
+    const el = document.getElementById(id);
+    if (scrollAndFocusElement(el)) return;
   }
 }
 
@@ -208,7 +263,7 @@ export default function CoverEdit() {
   const [isBackstamp, setIsBackstamp] = useState(false);
   const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [description, setDescription] = useState("");
-  const [coverDate, setCoverDate] = useState<CoverDateField>({ date: "" });
+  const [coverDate, setCoverDate] = useState<PartialDateInput>({ ...EMPTY_COVER_DATE });
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrorsShape>({});
   const [referenceDetailErrorsById, setReferenceDetailErrorsById] = useState<
@@ -269,8 +324,10 @@ export default function CoverEdit() {
         }
         const typeVal = String(sd.type ?? "").trim().toUpperCase();
         if (typeVal === "FC" || typeVal === "FL") setType(typeVal);
-        const rawDate = String(sd.cover_date ?? sd.coverDate ?? "").trim();
-        if (rawDate) setCoverDate({ date: rawDate.slice(0, 10) });
+        const draftDate = partialDateInputFromSubmittedData(sd);
+        if (draftDate.unknown || draftDate.year || draftDate.month || draftDate.day) {
+          setCoverDate(draftDate);
+        }
         setIsInstitutional(String(sd.is_institutional ?? sd.isInstitutional) === "true");
         setIsBackstamp(String(sd.is_backstamp ?? sd.isBackstamp) === "true");
         setDisplaySubmitterName(String(sd.display_submitter_name ?? sd.displaySubmitterName) === "true");
@@ -575,11 +632,9 @@ export default function CoverEdit() {
     if (!type.trim()) {
       errors.type = "Cover type is required.";
     }
-    const trimmedDate = (coverDate.date ?? "").trim();
-    if (!trimmedDate) {
-      errors.date = "Date is required.";
-    } else if (!deriveGranularityFromIso(trimmedDate)) {
-      errors.date = "Enter a complete calendar date.";
+    const dateResult = validatePartialDate(coverDate);
+    if (dateResult.ok === false) {
+      errors.date = dateResult.error;
     }
     const imageCount = gallery.length;
     if (imageCount < 1) {
@@ -626,7 +681,7 @@ export default function CoverEdit() {
 
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
-      scrollToFirstFieldError(errors);
+      scrollToFirstFieldError(errors, referenceDetailErrors, selectedReferenceWorks);
       return false;
     }
     return true;
@@ -697,11 +752,20 @@ export default function CoverEdit() {
       form.append("parent_marking_id", String(markingId));
       form.append("marking_id", String(markingId));
       if (type.trim()) form.append("type", type.trim().toUpperCase());
-      const trimmedDate = coverDate.date.trim();
-      const derived = deriveGranularityFromIso(trimmedDate);
-      if (derived) {
-        form.append("cover_date", derived.normalizedDate);
-        form.append("cover_granularity", derived.granularity);
+      if (coverDate.unknown) {
+        form.append("cover_date_unknown", "true");
+      } else {
+        const rawYear = coverDate.year.trim();
+        const rawMonth = coverDate.month.trim();
+        const rawDay = coverDate.day.trim();
+        if (rawYear) form.append("cover_date_year", rawYear);
+        if (rawMonth) form.append("cover_date_month", rawMonth);
+        if (rawDay) form.append("cover_date_day", rawDay);
+        const parsedDate = validatePartialDate(coverDate);
+        if (parsedDate.ok && parsedDate.value.legacyDate && parsedDate.value.legacyGranularity) {
+          form.append("cover_date", parsedDate.value.legacyDate);
+          form.append("cover_granularity", parsedDate.value.legacyGranularity);
+        }
       }
       form.append("is_institutional", String(isInstitutional));
       form.append("is_backstamp", String(isBackstamp));
@@ -919,21 +983,100 @@ export default function CoverEdit() {
                       {fieldErrors.type && <p className="text-sm text-destructive">{fieldErrors.type}</p>}
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="cover-date">
+                    <div className="space-y-3" id="cover-date">
+                      <Label>
                         Date <span className="text-destructive" aria-hidden="true">*</span>
                       </Label>
-                      <Input
-                        id="cover-date"
-                        type="date"
-                        value={coverDate.date}
-                        onChange={(e) => {
-                          setCoverDate((prev) => ({ ...prev, date: e.target.value }));
-                          setFieldErrors((prev) => ({ ...prev, date: undefined }));
-                        }}
-                        disabled={submitting}
-                        className={cn(fieldErrors.date && "border-destructive")}
-                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={coverDate.unknown}
+                          onCheckedChange={(v) => {
+                            setCoverDate(
+                              v === true
+                                ? { unknown: true, year: "", month: "", day: "" }
+                                : { ...EMPTY_COVER_DATE },
+                            );
+                            setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                          }}
+                          disabled={submitting}
+                        />
+                        Date unknown
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-year" className="text-xs text-muted-foreground">
+                            Year
+                          </Label>
+                          <Input
+                            id="cover-date-year"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="YYYY"
+                            value={coverDate.year}
+                            onChange={(e) => {
+                              setCoverDate((prev) => ({
+                                ...prev,
+                                unknown: false,
+                                year: e.target.value.replace(/\D/g, "").slice(0, 4),
+                              }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                            className={cn(fieldErrors.date && "border-destructive")}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-month" className="text-xs text-muted-foreground">
+                            Month
+                          </Label>
+                          <Select
+                            value={coverDate.month || "__none__"}
+                            onValueChange={(v) => {
+                              setCoverDate((prev) => ({
+                                ...prev,
+                                unknown: false,
+                                month: v === "__none__" ? "" : v,
+                              }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                          >
+                            <SelectTrigger
+                              id="cover-date-month"
+                              className={cn(fieldErrors.date && "border-destructive")}
+                            >
+                              <SelectValue placeholder="Unknown" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">Unknown</SelectItem>
+                              {COVER_MONTH_OPTIONS.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-day" className="text-xs text-muted-foreground">
+                            Day
+                          </Label>
+                          <Input
+                            id="cover-date-day"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="DD"
+                            value={coverDate.day}
+                            onChange={(e) => {
+                              const raw = e.target.value.replace(/\D/g, "").slice(0, 2);
+                              setCoverDate((prev) => ({ ...prev, unknown: false, day: raw }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                            className={cn(fieldErrors.date && "border-destructive")}
+                          />
+                        </div>
+                      </div>
                       {fieldErrors.date && <p className="text-sm text-destructive">{fieldErrors.date}</p>}
                     </div>
 
@@ -1205,8 +1348,14 @@ export default function CoverEdit() {
                               <p className="text-sm font-medium truncate">{formatReferenceWorkLabel(work, "Untitled")}</p>
                               <div className="grid gap-3 sm:grid-cols-2">
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">Page number</Label>
+                                  <Label
+                                    htmlFor={`cover-reference-page-${work.id}`}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Page number
+                                  </Label>
                                   <Input
+                                    id={`cover-reference-page-${work.id}`}
                                     value={referenceDetailsById[work.id]?.pageNumber ?? ""}
                                     className={referenceDetailErrorsById[work.id]?.pageNumber ? "border-destructive" : ""}
                                     onChange={(e) => {
@@ -1229,8 +1378,14 @@ export default function CoverEdit() {
                                   )}
                                 </div>
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">Citation URL</Label>
+                                  <Label
+                                    htmlFor={`cover-reference-url-${work.id}`}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Citation URL
+                                  </Label>
                                   <Input
+                                    id={`cover-reference-url-${work.id}`}
                                     value={referenceDetailsById[work.id]?.citationUrl ?? ""}
                                     className={referenceDetailErrorsById[work.id]?.citationUrl ? "border-destructive" : ""}
                                     onChange={(e) => {

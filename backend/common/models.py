@@ -1,11 +1,13 @@
 import hashlib
 import uuid
+from datetime import date as date_cls
 from django.db import models
 from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField
 from django.db.models.functions import Coalesce, Least, Greatest
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
+from django.utils.dateparse import parse_date
 from colorfield.fields import ColorField
 
 class TimestampedModel(models.Model):
@@ -69,6 +71,7 @@ class MarkingQuerySet(models.QuerySet):
         direct_qs = DateSeen.objects.filter(
             subject_type='MARKING',
             subject_id=OuterRef('pk'),
+            date__isnull=False,
         )
         # The CoverMarking lookup sits TWO subqueries deep: the outermost
         # query is Marking, the cover_qs Subquery (DateSeen) is one level in,
@@ -84,6 +87,7 @@ class MarkingQuerySet(models.QuerySet):
             subject_id__in=CoverMarking.objects.filter(
                 marking_id=OuterRef(OuterRef('pk')),
             ).values('cover_id'),
+            date__isnull=False,
         )
         return self.annotate(
             earliest_seen_direct=Subquery(direct_qs.order_by('date', 'pk').values('date')[:1]),
@@ -1018,12 +1022,33 @@ class DateSeen(TimestampedModel):
     SUBJECT_MARKING = 'MARKING'
     SUBJECT_TYPE_CHOICES = [(SUBJECT_COVER, 'Cover'), (SUBJECT_MARKING, 'Marking')]
 
-    GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
+    GRANULARITY_YEAR = 'YEAR'
+    GRANULARITY_MONTH = 'MONTH'
+    GRANULARITY_DAY = 'DAY'
+    GRANULARITY_MONTH_ONLY = 'MONTH_ONLY'
+    GRANULARITY_DAY_ONLY = 'DAY_ONLY'
+    GRANULARITY_YEAR_DAY = 'YEAR_DAY'
+    GRANULARITY_MONTH_DAY = 'MONTH_DAY'
+
+    GRANULARITY_CHOICES = [
+        (GRANULARITY_DAY, 'Day'),
+        (GRANULARITY_MONTH, 'Month'),
+        (GRANULARITY_YEAR, 'Year'),
+        (GRANULARITY_MONTH_ONLY, 'Month only'),
+        (GRANULARITY_DAY_ONLY, 'Day only'),
+        (GRANULARITY_YEAR_DAY, 'Year and day'),
+        (GRANULARITY_MONTH_DAY, 'Month and day'),
+    ]
+    GRANULARITY_VALUES = {value for value, _label in GRANULARITY_CHOICES}
 
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField(help_text='PK of the dated Cover or Marking')
-    date = models.DateField(help_text='Calendar date of the observed use')
-    granularity = models.CharField(max_length=5, choices=GRANULARITY_CHOICES)
+    date = models.DateField(null=True, blank=True, help_text='Sortable calendar date when known date parts form one')
+    granularity = models.CharField(max_length=10, choices=GRANULARITY_CHOICES)
+    date_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_key = models.CharField(max_length=20, editable=False)
 
     class Meta:
         db_table = 'dates_seen'
@@ -1039,10 +1064,142 @@ class DateSeen(TimestampedModel):
                 name='dates_seen_subject_type_valid',
             ),
             models.UniqueConstraint(
-                fields=['subject_type', 'subject_id', 'date', 'granularity'],
-                name='dates_seen_subject_date_granularity_unique',
+                fields=['subject_type', 'subject_id', 'granularity', 'date_key'],
+                name='dates_seen_subject_parts_unique',
             ),
         ]
+
+    @staticmethod
+    def _int_or_none(value):
+        if value in (None, ''):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError('Date components must be integers.')
+        return parsed
+
+    @staticmethod
+    def _legacy_date(value):
+        if value in (None, ''):
+            return None
+        if isinstance(value, date_cls):
+            return value
+        parsed = parse_date(str(value)[:10])
+        if parsed is None:
+            raise ValidationError('date must be a valid ISO date.')
+        return parsed
+
+    @staticmethod
+    def _max_day(year, month):
+        if month in (1, 3, 5, 7, 8, 10, 12):
+            return 31
+        if month in (4, 6, 9, 11):
+            return 30
+        if month == 2:
+            if year is None:
+                return 29
+            if year % 400 == 0 or (year % 4 == 0 and year % 100 != 0):
+                return 29
+            return 28
+        return 31
+
+    @classmethod
+    def granularity_for_parts(cls, year, month, day):
+        has_year = year is not None
+        has_month = month is not None
+        has_day = day is not None
+        if has_year and has_month and has_day:
+            return cls.GRANULARITY_DAY
+        if has_year and has_month:
+            return cls.GRANULARITY_MONTH
+        if has_year and has_day:
+            return cls.GRANULARITY_YEAR_DAY
+        if has_month and has_day:
+            return cls.GRANULARITY_MONTH_DAY
+        if has_year:
+            return cls.GRANULARITY_YEAR
+        if has_month:
+            return cls.GRANULARITY_MONTH_ONLY
+        if has_day:
+            return cls.GRANULARITY_DAY_ONLY
+        raise ValidationError('At least one date component is required.')
+
+    @classmethod
+    def generated_date_for_parts(cls, year, month, day, granularity):
+        if granularity == cls.GRANULARITY_YEAR:
+            return date_cls(year, 1, 1)
+        if granularity == cls.GRANULARITY_MONTH:
+            return date_cls(year, month, 1)
+        if granularity == cls.GRANULARITY_DAY:
+            return date_cls(year, month, day)
+        return None
+
+    @staticmethod
+    def key_for_parts(year, month, day):
+        parts = []
+        if year is not None:
+            parts.append('Y{:04d}'.format(year))
+        if month is not None:
+            parts.append('M{:02d}'.format(month))
+        if day is not None:
+            parts.append('D{:02d}'.format(day))
+        return '-'.join(parts)
+
+    def normalize_date_parts(self):
+        self.date_year = self._int_or_none(self.date_year)
+        self.date_month = self._int_or_none(self.date_month)
+        self.date_day = self._int_or_none(self.date_day)
+
+        legacy = self._legacy_date(self.date)
+        if self.date_year is None and self.date_month is None and self.date_day is None:
+            if legacy is not None:
+                granularity = (self.granularity or self.GRANULARITY_DAY).strip().upper()
+                if granularity == self.GRANULARITY_YEAR:
+                    self.date_year = legacy.year
+                elif granularity == self.GRANULARITY_MONTH:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                elif granularity == self.GRANULARITY_DAY:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                    self.date_day = legacy.day
+                else:
+                    raise ValidationError('Partial date granularities require component fields.')
+
+        if self.date_year is not None and not (1 <= self.date_year <= 9999):
+            raise ValidationError({'date_year': 'Year must be between 1 and 9999.'})
+        if self.date_month is not None and not (1 <= self.date_month <= 12):
+            raise ValidationError({'date_month': 'Month must be between 1 and 12.'})
+        if self.date_day is not None and not (1 <= self.date_day <= 31):
+            raise ValidationError({'date_day': 'Day must be between 1 and 31.'})
+        if self.date_month is not None and self.date_day is not None:
+            max_day = self._max_day(self.date_year, self.date_month)
+            if self.date_day > max_day:
+                raise ValidationError({'date_day': 'Day is not valid for the selected month.'})
+
+        expected = self.granularity_for_parts(self.date_year, self.date_month, self.date_day)
+        supplied = (self.granularity or expected).strip().upper()
+        if supplied not in self.GRANULARITY_VALUES:
+            raise ValidationError({'granularity': 'Invalid date granularity.'})
+        if supplied != expected:
+            raise ValidationError({'granularity': 'Granularity does not match known date components.'})
+        self.granularity = expected
+        self.date = self.generated_date_for_parts(
+            self.date_year,
+            self.date_month,
+            self.date_day,
+            self.granularity,
+        )
+        self.date_key = self.key_for_parts(self.date_year, self.date_month, self.date_day)
+
+    def clean(self):
+        super().clean()
+        self.normalize_date_parts()
+
+    def save(self, *args, **kwargs):
+        self.normalize_date_parts()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.subject_type} #{self.subject_id} -- {self.date} ({self.granularity})'

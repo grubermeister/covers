@@ -867,8 +867,8 @@ class DateSeenViewSet(viewsets.ModelViewSet):
     permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "granularity"]
-    ordering_fields = ["date", "created_date"]
-    ordering = ["subject_type", "subject_id", "date"]
+    ordering_fields = ["date", "date_year", "date_month", "date_day", "created_date"]
+    ordering = ["subject_type", "subject_id", "date", "date_year", "date_month", "date_day"]
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, modified_by=self.request.user)
@@ -1696,7 +1696,7 @@ class MarkingDateRangeView(APIView):
         qs = DateSeen.objects.filter(
             Q(subject_type=DateSeen.SUBJECT_MARKING, subject_id__in=approved_marking_ids)
             | Q(subject_type=DateSeen.SUBJECT_COVER, subject_id__in=approved_cover_ids)
-        )
+        ).filter(date__isnull=False)
 
         agg = qs.aggregate(
             earliest_year=Min(ExtractYear("date")),
@@ -2206,6 +2206,13 @@ def _is_cover_submission_data(data) -> bool:
     parent_raw = data.get("parent_marking_id") or data.get("marking_id")
     has_parent = parent_raw not in (None, "")
     has_cover_date = bool(str(data.get("cover_date") or data.get("coverDate") or "").strip())
+    has_cover_date = has_cover_date or any(
+        data.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    has_cover_date = has_cover_date or str(
+        data.get("cover_date_unknown") or ""
+    ).strip().lower() in {"true", "1", "yes", "on"}
     if has_parent and (has_cover_type or has_cover_date) and not has_town and not has_marking_type:
         return True
     return False

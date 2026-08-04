@@ -8,6 +8,7 @@
 ## Image is polymorphic over (subject_type, subject_id).
 ###################################################################################################
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from rest_framework import serializers
 
@@ -429,15 +430,67 @@ class DateSeenSerializer(serializers.ModelSerializer):
             "subject_id",
             "date",
             "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
             "created_date",
             "modified_date",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
+        extra_kwargs = {
+            "date": {"required": False, "allow_null": True},
+            "granularity": {"required": False},
+            "date_year": {"required": False, "allow_null": True},
+            "date_month": {"required": False, "allow_null": True},
+            "date_day": {"required": False, "allow_null": True},
+        }
 
     def validate_subject_type(self, value):
         if value not in {DateSeen.SUBJECT_COVER, DateSeen.SUBJECT_MARKING}:
             raise serializers.ValidationError("subject_type must be COVER or MARKING.")
         return value
+
+    def validate(self, attrs):
+        component_keys = {"date_year", "date_month", "date_day"}
+        has_component_input = any(key in attrs for key in component_keys)
+        has_legacy_date_input = "date" in attrs
+
+        values = {}
+        for key in (
+            "subject_type",
+            "subject_id",
+            "date",
+            "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
+        ):
+            if self.instance is not None:
+                values[key] = getattr(self.instance, key)
+            else:
+                values[key] = None
+            if key in attrs:
+                values[key] = attrs[key]
+
+        if has_legacy_date_input and not has_component_input:
+            values["date_year"] = None
+            values["date_month"] = None
+            values["date_day"] = None
+
+        row = DateSeen(**values)
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                raise serializers.ValidationError(exc.message_dict)
+            raise serializers.ValidationError(exc.messages)
+
+        attrs["date"] = row.date
+        attrs["granularity"] = row.granularity
+        attrs["date_year"] = row.date_year
+        attrs["date_month"] = row.date_month
+        attrs["date_day"] = row.date_day
+        return attrs
 
 
 class CoverSerializer(serializers.ModelSerializer):
@@ -512,7 +565,7 @@ class CoverSerializer(serializers.ModelSerializer):
         qs = DateSeen.objects.filter(
             subject_type=DateSeen.SUBJECT_COVER,
             subject_id=obj.pk,
-        ).order_by("date")
+        ).order_by("date", "date_year", "date_month", "date_day", "pk")
         return DateSeenSerializer(qs, many=True).data
 
     def get_is_removed(self, obj):
@@ -911,7 +964,7 @@ class MarkingSerializer(serializers.ModelSerializer):
         qs = DateSeen.objects.filter(
             subject_type=DateSeen.SUBJECT_MARKING,
             subject_id=obj.pk,
-        ).order_by("date")
+        ).order_by("date", "date_year", "date_month", "date_day", "pk")
         return DateSeenSerializer(qs, many=True).data
 
     def get_images(self, obj):
@@ -959,8 +1012,68 @@ def _contribution_submitted_data_is_cover(sd) -> bool:
     has_town = bool(str(sd.get("town") or "").strip())
     parent_raw = sd.get("parent_marking_id") or sd.get("marking_id")
     has_parent = parent_raw not in (None, "")
-    has_cover_date = bool(str(sd.get("cover_date") or sd.get("coverDate") or "").strip())
+    has_cover_date = _submitted_cover_date_label(sd) != ""
     return bool(has_parent and (has_cover_type or has_cover_date) and not has_town and not has_marking_type)
+
+
+_MONTH_LABELS = {
+    1: "JAN",
+    2: "FEB",
+    3: "MAR",
+    4: "APR",
+    5: "MAY",
+    6: "JUN",
+    7: "JUL",
+    8: "AUG",
+    9: "SEP",
+    10: "OCT",
+    11: "NOV",
+    12: "DEC",
+}
+
+
+def _submitted_cover_date_component(sd, key):
+    raw = sd.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _submitted_cover_date_label(sd) -> str:
+    if str(sd.get("cover_date_unknown") or "").strip().lower() in {"true", "1", "yes", "on"}:
+        return "Date unknown"
+    legacy = str(sd.get("cover_date") or sd.get("coverDate") or "").strip()
+    if legacy:
+        granularity = str(sd.get("cover_granularity") or sd.get("coverGranularity") or "DAY").strip().upper()
+        parts = legacy.split("-")
+        if len(parts) >= 1 and granularity == "YEAR":
+            return parts[0]
+        if len(parts) >= 2 and granularity == "MONTH":
+            month = _MONTH_LABELS.get(_submitted_cover_date_component({"m": parts[1]}, "m"))
+            return "{}, {}".format(month, parts[0]) if month else legacy
+        return legacy
+    year = _submitted_cover_date_component(sd, "cover_date_year")
+    month = _submitted_cover_date_component(sd, "cover_date_month")
+    day = _submitted_cover_date_component(sd, "cover_date_day")
+    month_label = _MONTH_LABELS.get(month)
+    if year is not None and month_label and day is not None:
+        return "{:02d}/{:02d}/{}".format(month, day, year)
+    if year is not None and month_label:
+        return "{}, {}".format(month_label, year)
+    if year is not None and day is not None:
+        return "Day {}, {} (month unknown)".format(day, year)
+    if month_label and day is not None:
+        return "{} {} (year unknown)".format(month_label, day)
+    if year is not None:
+        return str(year)
+    if month_label:
+        return "{} (year unknown)".format(month_label)
+    if day is not None:
+        return "Day {} (month/year unknown)".format(day)
+    return ""
 
 
 def _contribution_target_marking_id(obj):
@@ -1059,7 +1172,7 @@ class ContributionListSerializer(serializers.ModelSerializer):
             cover_types = {"FC": "Folded Cover", "FL": "Folded Letter"}
             type_code = str(sd.get("type") or "").strip().upper()
             type_label = cover_types.get(type_code, type_code or "Cover")
-            date = str(sd.get("cover_date") or sd.get("coverDate") or "").strip()
+            date = _submitted_cover_date_label(sd)
             parent = sd.get("parent_marking_id") or sd.get("marking_id")
             parts = ["Cover draft", type_label]
             if date:

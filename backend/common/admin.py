@@ -330,7 +330,7 @@ class CoverResource(TimestampedModelResource):
 class DateSeenResource(PolymorphicSubjectResourceMixin, TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = DateSeen
-        import_id_fields = ['subject_type', 'subject_id', 'date', 'granularity']
+        import_id_fields = ['subject_type', 'subject_id', 'granularity', 'date_year', 'date_month', 'date_day']
 
 
 class CoverValuationResource(TimestampedModelResource):
@@ -604,10 +604,10 @@ class CoverAdmin(TimestampedModelAdmin):
 @admin.register(DateSeen)
 class DateSeenAdmin(TimestampedModelAdmin):
     resource_class = DateSeenResource
-    list_display = ['subject_type', 'subject_id', 'date', 'granularity']
+    list_display = ['subject_type', 'subject_id', 'date', 'granularity', 'date_year', 'date_month', 'date_day']
     list_filter = ['granularity', 'subject_type']
     search_fields = ['subject_id']
-    ordering = ['subject_type', 'subject_id', 'date']
+    ordering = ['subject_type', 'subject_id', 'date', 'date_year', 'date_month', 'date_day']
 
 
 @admin.register(CoverValuation)

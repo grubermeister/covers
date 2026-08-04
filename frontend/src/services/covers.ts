@@ -4,6 +4,7 @@
  * add/edit dialog on the Record Detail page.
  */
 import apiClient, { ensureCsrfToken } from "@/lib/api";
+import type { DateSeenGranularity as PartialDateSeenGranularity } from "@/lib/partialDate";
 
 /** One item from GET /covers/ (DRF snake_case) */
 export interface CoverApiResultItem {
@@ -169,7 +170,7 @@ export async function updateCoverMarking(
 }
 
 /** Granularity matches DateSeen.GRANULARITY_CHOICES on the backend. */
-export type CoverDateGranularity = "DAY" | "MONTH" | "YEAR";
+export type CoverDateGranularity = PartialDateSeenGranularity;
 
 /** Body for creating a cover-scoped date via POST /dates-seen/. */
 export interface CoverDateWritePayload {
@@ -191,8 +192,11 @@ type DateSeenApiRow = {
   id: number;
   subject_type?: string;
   subject_id?: number;
-  date: string;
+  date: string | null;
   granularity: CoverDateGranularity;
+  date_year?: number | null;
+  date_month?: number | null;
+  date_day?: number | null;
 };
 
 function mapDateSeenToCoverDate(row: DateSeenApiRow): CoverDateWriteResult {
@@ -200,7 +204,7 @@ function mapDateSeenToCoverDate(row: DateSeenApiRow): CoverDateWriteResult {
   return {
     id: row.id,
     cover: typeof subjectId === "number" ? subjectId : 0,
-    date: row.date,
+    date: row.date ?? "",
     granularity: row.granularity,
   };
 }
@@ -258,8 +262,11 @@ export const deleteDateSeen = deleteCoverDate;
 
 export interface CoverDateSeenItem {
   id: number;
-  date: string;
-  granularity: "DAY" | "MONTH" | "YEAR";
+  date: string | null;
+  granularity: PartialDateSeenGranularity;
+  dateYear: number | null;
+  dateMonth: number | null;
+  dateDay: number | null;
 }
 
 function mapCoverDateSeen(raw: unknown): CoverDateSeenItem | null {
@@ -267,12 +274,27 @@ function mapCoverDateSeen(raw: unknown): CoverDateSeenItem | null {
   const o = raw as Record<string, unknown>;
   const id = typeof o.id === "number" ? o.id : Number(o.id);
   if (!Number.isFinite(id)) return null;
-  const date = typeof o.date === "string" ? o.date : "";
-  if (!date) return null;
+  const date = typeof o.date === "string" && o.date.trim() ? o.date : null;
+  const dateYear = toIdOrNull(o.date_year ?? o.dateYear);
+  const dateMonth = toIdOrNull(o.date_month ?? o.dateMonth);
+  const dateDay = toIdOrNull(o.date_day ?? o.dateDay);
+  if (!date && dateYear == null && dateMonth == null && dateDay == null) return null;
   const gRaw = String(o.granularity ?? "").toUpperCase();
   const granularity: CoverDateSeenItem["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return { id: id as number, date, granularity };
+    gRaw === "MONTH"
+      ? "MONTH"
+      : gRaw === "YEAR"
+        ? "YEAR"
+        : gRaw === "MONTH_ONLY"
+          ? "MONTH_ONLY"
+          : gRaw === "DAY_ONLY"
+            ? "DAY_ONLY"
+            : gRaw === "YEAR_DAY"
+              ? "YEAR_DAY"
+              : gRaw === "MONTH_DAY"
+                ? "MONTH_DAY"
+                : "DAY";
+  return { id: id as number, date, granularity, dateYear, dateMonth, dateDay };
 }
 
 function decimalToString(v: unknown): string | null {

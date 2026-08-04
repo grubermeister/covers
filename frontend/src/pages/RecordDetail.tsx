@@ -140,7 +140,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: AssociatedDateSeen): string {
-  return formatDateSeen(d.date, d.granularity) || d.date || "";
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 function associatedCoverDatesDisplay(

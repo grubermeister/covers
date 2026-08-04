@@ -10,6 +10,10 @@
 
 import type { MarkingFieldInput } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
+import {
+  formatPartialDateInput,
+  partialDateInputFromPayload,
+} from "@/lib/partialDate";
 import type { MarkingTypeValue } from "@/services/markings";
 
 export interface ContributionLookups {
@@ -40,8 +44,16 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   // consumed: editor-only ERD/LRD (fall back to these for earliest/latest)
   "marking_erd", "markingErd",
   "marking_erd_granularity", "markingErdGranularity",
+  "marking_erd_unknown", "markingErdUnknown",
+  "marking_erd_date_year", "markingErdDateYear",
+  "marking_erd_date_month", "markingErdDateMonth",
+  "marking_erd_date_day", "markingErdDateDay",
   "marking_lrd", "markingLrd",
   "marking_lrd_granularity", "markingLrdGranularity",
+  "marking_lrd_unknown", "markingLrdUnknown",
+  "marking_lrd_date_year", "markingLrdDateYear",
+  "marking_lrd_date_month", "markingLrdDateMonth",
+  "marking_lrd_date_day", "markingLrdDateDay",
   // consumed: physical attributes
   "shape", "shape_id", "shapeId",
   "color", "color_id", "colorId",
@@ -112,8 +124,20 @@ function normalizeMarkingType(raw: string): MarkingTypeValue | null {
   return null;
 }
 
+function booleanValue(value: unknown): boolean | null {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", ""].includes(normalized)) return false;
+  }
+  return null;
+}
+
 function isManuscriptValue(sd: Record<string, unknown>): boolean {
-  return sd.is_manuscript === true || sd.isManuscript === true;
+  return booleanValue(sd.is_manuscript ?? sd.isManuscript) === true;
 }
 
 function yearOnly(value: unknown): string {
@@ -121,6 +145,32 @@ function yearOnly(value: unknown): string {
   if (!s) return "";
   const m = /^(\d{4})/.exec(s);
   return m ? m[1] : s;
+}
+
+function markingBoundaryDate(sd: Record<string, unknown>, prefix: "marking_erd" | "marking_lrd"): string {
+  const camelPrefix = prefix === "marking_erd" ? "markingErd" : "markingLrd";
+  const formatted = formatPartialDateInput(
+    partialDateInputFromPayload(
+      sd,
+      {
+        unknown: `${prefix}_unknown`,
+        year: `${prefix}_date_year`,
+        month: `${prefix}_date_month`,
+        day: `${prefix}_date_day`,
+        legacyDate: prefix,
+        legacyGranularity: `${prefix}_granularity`,
+      },
+      {
+        unknown: `${camelPrefix}Unknown`,
+        year: `${camelPrefix}DateYear`,
+        month: `${camelPrefix}DateMonth`,
+        day: `${camelPrefix}DateDay`,
+        legacyDate: camelPrefix,
+        legacyGranularity: `${camelPrefix}Granularity`,
+      },
+    ),
+  );
+  return formatted;
 }
 
 function firstNonEmpty(...values: unknown[]): string {
@@ -134,8 +184,10 @@ function firstNonEmpty(...values: unknown[]): string {
 function readEarliestLatest(sd: Record<string, unknown>): { earliest: string; latest: string } {
   const dr = toStr(sd.date_range ?? sd.dateRange);
   const drParts = dr ? dr.split(/\s*-\s*/).map((s) => s.trim()) : [];
-  const e = yearOnly(firstNonEmpty(sd.first_seen, sd.firstSeen, drParts[0], sd.marking_erd, sd.markingErd));
-  const l = yearOnly(firstNonEmpty(sd.last_seen, sd.lastSeen, drParts[1], sd.marking_lrd, sd.markingLrd));
+  const erd = markingBoundaryDate(sd, "marking_erd");
+  const lrd = markingBoundaryDate(sd, "marking_lrd");
+  const e = erd || yearOnly(firstNonEmpty(sd.first_seen, sd.firstSeen, drParts[0]));
+  const l = lrd || yearOnly(firstNonEmpty(sd.last_seen, sd.lastSeen, drParts[1]));
   return { earliest: e, latest: l };
 }
 
@@ -168,9 +220,7 @@ function readImpression(sd: Record<string, unknown>): string {
 }
 
 function readIsIrreg(sd: Record<string, unknown>): boolean | null {
-  if (sd.is_irreg === true || sd.isIrreg === true || sd.isIrregular === true) return true;
-  if (sd.is_irreg === false || sd.isIrreg === false || sd.isIrregular === false) return false;
-  return null;
+  return booleanValue(sd.is_irreg ?? sd.isIrreg ?? sd.isIrregular);
 }
 
 function readNestedId(value: unknown, snake: string, camel: string): number | undefined {

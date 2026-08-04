@@ -9,6 +9,11 @@ import {
   contributionImageMetasFromSubmittedData,
   contributionMetaImageUrl,
 } from "@/lib/contributionImages";
+import {
+  partialDateInputFromSubmittedData,
+  validatePartialDate,
+  type DateSeenGranularity,
+} from "@/lib/partialDate";
 
 /**
  * Unified Marking service. The v2 API returns one row per marking
@@ -917,8 +922,11 @@ export async function restoreMarkingVersion(
  */
 export interface AssociatedDateSeen {
   id: number;
-  date: string;
-  granularity: "DAY" | "MONTH" | "YEAR";
+  date: string | null;
+  granularity: DateSeenGranularity;
+  dateYear: number | null;
+  dateMonth: number | null;
+  dateDay: number | null;
 }
 
 /** Cover attributes shown inside an Associated Cover row. */
@@ -986,12 +994,27 @@ function mapAssociatedDateSeen(raw: unknown): AssociatedDateSeen | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const id = toIdOrNull(o.id);
-  const date = typeof o.date === "string" ? o.date : "";
-  if (id == null || !date) return null;
+  const date = typeof o.date === "string" && o.date.trim() ? o.date : null;
+  const dateYear = toNumOrNull(o.date_year ?? o.dateYear);
+  const dateMonth = toNumOrNull(o.date_month ?? o.dateMonth);
+  const dateDay = toNumOrNull(o.date_day ?? o.dateDay);
+  if (id == null || (!date && dateYear == null && dateMonth == null && dateDay == null)) return null;
   const gRaw = String(o.granularity ?? "").toUpperCase();
   const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return { id, date, granularity };
+    gRaw === "MONTH"
+      ? "MONTH"
+      : gRaw === "YEAR"
+        ? "YEAR"
+        : gRaw === "MONTH_ONLY"
+          ? "MONTH_ONLY"
+          : gRaw === "DAY_ONLY"
+            ? "DAY_ONLY"
+            : gRaw === "YEAR_DAY"
+              ? "YEAR_DAY"
+              : gRaw === "MONTH_DAY"
+                ? "MONTH_DAY"
+                : "DAY";
+  return { id, date, granularity, dateYear, dateMonth, dateDay };
 }
 
 function mapAssociatedCoverDetails(raw: unknown): AssociatedCoverDetails | null {
@@ -1229,15 +1252,17 @@ function resolveCoverSubmissionThumbnail(
 }
 
 function datesSeenFromCoverSubmission(sd: Record<string, unknown>): AssociatedDateSeen[] {
-  const raw = sd.cover_date ?? sd.coverDate;
-  if (raw == null || String(raw).trim() === "") return [];
-  const date = String(raw).trim();
-  const gRaw = String(
-    sd.cover_granularity ?? sd.coverGranularity ?? sd.date_granularity ?? sd.dateGranularity ?? "DAY",
-  ).toUpperCase();
-  const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return [{ id: 0, date, granularity }];
+  const input = partialDateInputFromSubmittedData(sd);
+  const parsed = validatePartialDate(input);
+  if (!parsed.ok || parsed.value.unknown || parsed.value.granularity == null) return [];
+  return [{
+    id: 0,
+    date: parsed.value.legacyDate,
+    granularity: parsed.value.granularity,
+    dateYear: parsed.value.year,
+    dateMonth: parsed.value.month,
+    dateDay: parsed.value.day,
+  }];
 }
 
 function mapCoverContributionToAssociatedCover(

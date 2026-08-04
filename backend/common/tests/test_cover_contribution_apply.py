@@ -197,6 +197,9 @@ class CoverContributionApplyFunctionTests(TestCase):
         # DateSeen child (COVER subject)
         ds = DateSeen.objects.get(subject_type="COVER", subject_id=cover.pk)
         self.assertEqual(ds.granularity, "DAY")
+        self.assertEqual(ds.date_year, 1850)
+        self.assertEqual(ds.date_month, 6)
+        self.assertEqual(ds.date_day, 1)
 
         # Image child (COVER subject) with a cover-valid view
         img = Image.objects.get(subject_type="COVER", subject_id=cover.pk)
@@ -222,6 +225,62 @@ class CoverContributionApplyFunctionTests(TestCase):
         contrib = _make_cover_contribution(self.user, sd, self.collection)
         cover = apply_cover_contribution_to_catalog(contrib)["cover"]
         self.assertFalse(cover.display_submitter_name)
+
+    def test_unknown_cover_date_creates_no_date_seen(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_date="",
+            cover_granularity="",
+            cover_date_unknown="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+
+        self.assertFalse(
+            DateSeen.objects.filter(
+                subject_type=DateSeen.SUBJECT_COVER,
+                subject_id=cover.pk,
+            ).exists()
+        )
+
+    def test_partial_cover_date_components_materialize(self):
+        cases = [
+            ({"cover_date_year": "1850"}, "YEAR", "1850-01-01", 1850, None, None),
+            ({"cover_date_year": "1850", "cover_date_month": "6"}, "MONTH", "1850-06-01", 1850, 6, None),
+            (
+                {"cover_date_year": "1850", "cover_date_month": "6", "cover_date_day": "14"},
+                "DAY",
+                "1850-06-14",
+                1850,
+                6,
+                14,
+            ),
+            ({"cover_date_month": "6"}, "MONTH_ONLY", None, None, 6, None),
+            ({"cover_date_day": "14"}, "DAY_ONLY", None, None, None, 14),
+            ({"cover_date_year": "1850", "cover_date_day": "14"}, "YEAR_DAY", None, 1850, None, 14),
+            ({"cover_date_month": "6", "cover_date_day": "14"}, "MONTH_DAY", None, None, 6, 14),
+        ]
+
+        for fields, granularity, stored_date, year, month, day in cases:
+            with self.subTest(granularity=granularity):
+                sd = _cover_submitted_data(
+                    self.parent,
+                    cover_date="",
+                    cover_granularity="",
+                    **fields,
+                )
+                contrib = _make_cover_contribution(self.user, sd, self.collection)
+                cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+                ds = DateSeen.objects.get(
+                    subject_type=DateSeen.SUBJECT_COVER,
+                    subject_id=cover.pk,
+                )
+                self.assertEqual(ds.granularity, granularity)
+                self.assertEqual(ds.date.isoformat() if ds.date else None, stored_date)
+                self.assertEqual(ds.date_year, year)
+                self.assertEqual(ds.date_month, month)
+                self.assertEqual(ds.date_day, day)
 
     def test_description_flows_to_cover(self):
         # #39: the submitter's free-text description rides submitted_data and
@@ -941,6 +1000,41 @@ class MarkingErdLrdApplyTests(TestCase):
         annotated = Marking.objects.with_date_range().get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 1, 1))
         self.assertEqual(annotated.latest_seen, date(1851, 1, 1))
+
+    def test_new_marking_records_partial_erd_and_lrd_components(self):
+        sd = self._marking_sd(
+            marking_erd_date_month="12",
+            marking_erd_date_day="1",
+            marking_lrd_date_year="1851",
+            marking_lrd_date_day="14",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+
+        rows = sorted(
+            DateSeen.objects.filter(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking.pk,
+            ).values_list(
+                "date",
+                "granularity",
+                "date_year",
+                "date_month",
+                "date_day",
+            ),
+            key=lambda row: row[1],
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                (None, "MONTH_DAY", None, 12, 1),
+                (None, "YEAR_DAY", 1851, None, 14),
+            ],
+        )
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        self.assertIsNone(annotated.earliest_seen)
+        self.assertIsNone(annotated.latest_seen)
 
     def test_invalid_erd_raises(self):
         sd = self._marking_sd(marking_erd="not-a-date")
