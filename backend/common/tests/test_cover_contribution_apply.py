@@ -211,6 +211,40 @@ class CoverContributionApplyFunctionTests(TestCase):
             1,
         )
 
+    def test_no_cover_image_affirmation_allows_no_image_rows(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+            no_cover_image="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+
+        self.assertFalse(
+            Image.objects.filter(
+                subject_type=Image.SUBJECT_COVER,
+                subject_id=cover.pk,
+            ).exists()
+        )
+
+    def test_missing_cover_image_without_affirmation_is_rejected(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        with self.assertRaisesMessage(
+            ContributionApplyError,
+            "Submission has no images; at least one image is required.",
+        ):
+            apply_cover_contribution_to_catalog(contrib)
+
     def test_display_submitter_name_opt_in_flows_to_cover(self):
         # The submitter's opt-in choice rides submitted_data and must land on
         # the materialized Cover so the public detail page can honor it.
@@ -1056,6 +1090,38 @@ class MarkingErdLrdApplyTests(TestCase):
         contrib = _make_cover_contribution(self.user, sd, self.collection)
         marking = apply_contribution_to_catalog(contrib)
         self.assertFalse(marking.display_submitter_name)
+
+    def test_no_marking_image_affirmation_allows_no_image_rows(self):
+        sd = self._marking_sd(
+            marking_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+            no_marking_image="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertFalse(
+            Image.objects.filter(
+                subject_type=Image.SUBJECT_MARKING,
+                subject_id=marking.pk,
+            ).exists()
+        )
+
+    def test_missing_marking_image_without_affirmation_is_rejected(self):
+        sd = self._marking_sd(
+            marking_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        with self.assertRaisesMessage(
+            ContributionApplyError,
+            "Submission has no images; at least one image is required.",
+        ):
+            apply_contribution_to_catalog(contrib)
 
     def test_new_marking_records_partial_erd_and_lrd_components(self):
         sd = self._marking_sd(

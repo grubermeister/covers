@@ -264,6 +264,7 @@ export default function CoverEdit() {
   const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [description, setDescription] = useState("");
   const [coverDate, setCoverDate] = useState<PartialDateInput>({ ...EMPTY_COVER_DATE });
+  const [noCoverImage, setNoCoverImage] = useState(false);
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrorsShape>({});
   const [referenceDetailErrorsById, setReferenceDetailErrorsById] = useState<
@@ -332,6 +333,8 @@ export default function CoverEdit() {
         setIsBackstamp(String(sd.is_backstamp ?? sd.isBackstamp) === "true");
         setDisplaySubmitterName(String(sd.display_submitter_name ?? sd.displaySubmitterName) === "true");
         setDescription(String(sd.description ?? ""));
+        const loadedNoCoverImage = String(sd.no_cover_image ?? sd.noCoverImage) === "true";
+        setNoCoverImage(loadedNoCoverImage);
         const comment = String(sd.contributor_comment ?? sd.comment_for_editor ?? "").trim();
         if (comment) setContributorComment(comment);
 
@@ -346,7 +349,7 @@ export default function CoverEdit() {
 
         const metas = contributionImageMetasFromSubmittedData(sd);
         const draftImages = markingImagesFromContributionMetas(metas, markingId);
-        if (draftImages.length > 0) {
+        if (!loadedNoCoverImage && draftImages.length > 0) {
           const tagsRaw = sd.cover_image_tags ?? sd.coverImageTags;
           let tags: string[] = [];
           if (typeof tagsRaw === "string") {
@@ -389,6 +392,7 @@ export default function CoverEdit() {
     setDisplaySubmitterName(initial.displaySubmitterName);
     setDescription(initial.description);
     setCoverDate(initial.coverDate);
+    setNoCoverImage(false);
   }, [mode, initial]);
 
   const coverRowId = coverRow?.id;
@@ -557,6 +561,7 @@ export default function CoverEdit() {
       });
     }
     if (next.length === 0) return;
+    setNoCoverImage(false);
     setGallery((prev) => {
       const seen = new Set(prev.map((p) => p.key));
       const additions = next.filter((p) => !seen.has(p.key));
@@ -586,6 +591,35 @@ export default function CoverEdit() {
       return prev.filter((_, i) => i !== index);
     });
     setFieldErrors((prev) => ({ ...prev, images: undefined }));
+  };
+
+  const setNoCoverImageChecked = (checked: boolean) => {
+    setNoCoverImage(checked);
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    if (!checked) return;
+    setGallery((prev) => {
+      const removed = prev
+        .filter(
+          (item): item is Extract<GalleryItem, { kind: "existing" }> =>
+            item.kind === "existing",
+        )
+        .map((item) => normalizeImageUrl(item.img.imageUrl))
+        .filter((url) => url.length > 0);
+      if (removed.length > 0) {
+        setRemovedExistingImageKeys((keys) => {
+          const next = [...keys];
+          for (const url of removed) {
+            if (!next.includes(url)) next.push(url);
+          }
+          return next;
+        });
+      }
+      for (const item of prev) {
+        if (item.kind === "pending") URL.revokeObjectURL(item.upload.previewUrl);
+      }
+      return [];
+    });
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const moveGalleryBy = (index: number, delta: -1 | 1) => {
@@ -637,8 +671,8 @@ export default function CoverEdit() {
       errors.date = dateResult.error;
     }
     const imageCount = gallery.length;
-    if (imageCount < 1) {
-      errors.images = "At least one cover image is required.";
+    if (imageCount < 1 && !noCoverImage) {
+      errors.images = "Add at least one cover image or confirm no image is available.";
     }
 
     for (const work of selectedReferenceWorks) {
@@ -770,6 +804,7 @@ export default function CoverEdit() {
       form.append("is_institutional", String(isInstitutional));
       form.append("is_backstamp", String(isBackstamp));
       form.append("display_submitter_name", String(displaySubmitterName));
+      if (noCoverImage) form.append("no_cover_image", "true");
       form.append("description", description.trim());
       const trimmedComment = contributorComment.trim();
       if (trimmedComment) {
@@ -1238,6 +1273,14 @@ export default function CoverEdit() {
                           the star to set the default; check Tracing on hand-traced or computer-traced diagrams.
                         </p>
                       )}
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={noCoverImage}
+                          onCheckedChange={(v) => setNoCoverImageChecked(v === true)}
+                          disabled={submitting}
+                        />
+                        No image is available to upload
+                      </label>
                       {fieldErrors.images && <p className="text-sm text-destructive">{fieldErrors.images}</p>}
                     </div>
 

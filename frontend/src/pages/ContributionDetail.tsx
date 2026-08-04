@@ -445,8 +445,11 @@ const ContributionDetail = () => {
   let displayName = `Submission #${contribution.id}`;
   let fieldRowsError: string | null = null;
   try {
+    const fieldData = { ...sd };
+    delete fieldData.display_submitter_name;
+    delete fieldData.displaySubmitterName;
     const fieldInput = submittedDataToFieldInput(
-      sd,
+      fieldData,
       { letteringOptions, dateFormatOptions },
       { contributionId: contribution.id },
     );

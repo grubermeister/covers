@@ -2262,6 +2262,39 @@ def _resolve_collection_for_submission(
     return region, collection, effective_state
 
 
+MARKING_DATE_BOUNDARY_KEYS = (
+    (
+        "marking_erd",
+        "marking_erd_granularity",
+        "marking_erd_unknown",
+        "marking_erd_date_year",
+        "marking_erd_date_month",
+        "marking_erd_date_day",
+    ),
+    (
+        "marking_lrd",
+        "marking_lrd_granularity",
+        "marking_lrd_unknown",
+        "marking_lrd_date_year",
+        "marking_lrd_date_month",
+        "marking_lrd_date_day",
+    ),
+)
+
+
+def _clear_replaced_marking_date_boundaries(existing_data: dict, submitted_data: dict) -> None:
+    """
+    Pending-contribution edits merge JSON into the prior submitted_data. If a
+    user changes LRD from unknown to a date, the old *_unknown=true key must not
+    survive beside the new date keys.
+    """
+    for boundary_keys in MARKING_DATE_BOUNDARY_KEYS:
+        if not any(key in submitted_data for key in boundary_keys):
+            continue
+        for key in boundary_keys:
+            existing_data.pop(key, None)
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ContributionSubmitView(APIView):
     """
@@ -2522,7 +2555,18 @@ class ContributionSubmitView(APIView):
             if not user_can_submit_catalog_code:
                 existing_sd = strip_catalog_code_keys(existing_sd)
                 existing_sd = strip_marking_date_keys(existing_sd)
+            else:
+                _clear_replaced_marking_date_boundaries(existing_sd, submitted_data)
             existing_sd.update(submitted_data)
+            if transition_to_pending:
+                image_error = _validate_final_submission_image_choice(
+                    existing_sd, is_cover_submission
+                )
+                if image_error:
+                    return Response(
+                        {"detail": image_error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             contrib.submitted_data = existing_sd
             contrib.collection = collection
             contrib.modified_by = request.user
@@ -2588,6 +2632,16 @@ class ContributionSubmitView(APIView):
                 submitted_data["cover_image_metas"] = image_metas
             submitted_data["image_metas"] = image_metas
             submitted_data["image_meta"] = image_metas[0]
+
+        if not is_draft:
+            image_error = _validate_final_submission_image_choice(
+                submitted_data, is_cover_submission
+            )
+            if image_error:
+                return Response(
+                    {"detail": image_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         contrib = Contribution.objects.create(
             contributor=request.user,
@@ -2683,6 +2737,54 @@ def _parse_removed_image_keys(raw):
     if isinstance(raw, list):
         return [str(k) for k in raw if k]
     return []
+
+
+def _submitted_payload_has_images(submitted_data, is_cover):
+    keys = (
+        ("cover_image_metas", "image_metas")
+        if is_cover
+        else ("marking_image_metas", "image_metas")
+    )
+    for key in keys:
+        value = submitted_data.get(key)
+        if isinstance(value, list) and len(value) > 0:
+            return True
+    return False
+
+
+def _submitted_payload_affirms_no_images(submitted_data, is_cover):
+    keys = (
+        ("no_cover_image", "noCoverImage", "cover_no_image", "coverNoImage")
+        if is_cover
+        else (
+            "no_marking_image",
+            "noMarkingImage",
+            "marking_no_image",
+            "markingNoImage",
+        )
+    )
+    for key in (*keys, "no_image", "noImage"):
+        value = submitted_data.get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if isinstance(value, int):
+            if value == 1:
+                return True
+            continue
+        if str(value or "").strip().lower() in {"true", "1", "yes", "on"}:
+            return True
+    return False
+
+
+def _validate_final_submission_image_choice(submitted_data, is_cover):
+    if _submitted_payload_has_images(submitted_data, is_cover):
+        return None
+    if _submitted_payload_affirms_no_images(submitted_data, is_cover):
+        return None
+    label = "cover image" if is_cover else "marking image"
+    return "Add at least one {} or confirm no image is available.".format(label)
 
 
 def _storage_filename_removed(storage_filename, removed_set):

@@ -167,6 +167,86 @@ class ContributionSubmitMarkingEditTests(TestCase):
         self.assertEqual(metas[0]["storage_filename"], self.image.storage_filename)
         self.assertFalse(metas[0]["tracing"])
 
+    def test_new_marking_without_image_requires_affirmation(self):
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["detail"],
+            "Add at least one marking image or confirm no image is available.",
+        )
+
+    def test_new_marking_accepts_no_image_affirmation(self):
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "no_marking_image": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        contribution = Contribution.objects.get(pk=response.data["id"])
+        self.assertTrue(contribution.submitted_data["no_marking_image"])
+
+    def test_new_cover_without_image_requires_affirmation(self):
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "submission_kind": "cover",
+                "state": "VA",
+                "parent_marking_id": self.marking.pk,
+                "marking_id": self.marking.pk,
+                "type": "FC",
+                "cover_date_unknown": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["detail"],
+            "Add at least one cover image or confirm no image is available.",
+        )
+
+    def test_new_cover_accepts_no_image_affirmation(self):
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "submission_kind": "cover",
+                "state": "VA",
+                "parent_marking_id": self.marking.pk,
+                "marking_id": self.marking.pk,
+                "type": "FC",
+                "cover_date_unknown": True,
+                "no_cover_image": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        contribution = Contribution.objects.get(pk=response.data["id"])
+        self.assertTrue(contribution.submitted_data["no_cover_image"])
+
     def test_fresh_marking_edit_supersedes_prior_same_contributor_rows(self):
         original = Contribution.objects.create(
             contributor=self.user,
@@ -308,6 +388,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "code": "BAD-VA-M0001",
                 "catalog_code": "BAD-VA-M0002",
                 "catalogCode": "BAD-VA-M0003",
+                "no_marking_image": True,
             },
             format="json",
         )
@@ -333,6 +414,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "is_manuscript": True,
                 "inscription_txt": "RICHMOND VA",
                 "catalog_code": "APMC-VA-M0001",
+                "no_marking_image": True,
             },
             format="json",
         )
@@ -362,6 +444,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "marking_lrd_granularity": "DAY",
                 "marking_lrd_date_year": "1850",
                 "marking_lrd_date_month": "12",
+                "no_marking_image": True,
             },
             format="json",
         )
@@ -399,6 +482,7 @@ class ContributionSubmitMarkingEditTests(TestCase):
                 "marking_lrd_granularity": "DAY",
                 "marking_lrd_date_year": "1850",
                 "marking_lrd_date_month": "12",
+                "no_marking_image": True,
             },
             format="json",
         )
@@ -543,6 +627,47 @@ class ContributionSubmitMarkingEditTests(TestCase):
             contribution.submitted_data["inscription_txt"],
             "UPDATED RICHMOND VA",
         )
+
+    def test_editor_editing_pending_marking_replaces_unknown_lrd_with_year(self):
+        editor = self._editor("pending-date-editor")
+        contribution = self._make_pending_marking_contribution(
+            marking_lrd_unknown=True,
+            marking_lrd_date_month="12",
+            marking_lrd_date_day="31",
+        )
+        contribution.contributor = editor
+        contribution.created_by = editor
+        contribution.modified_by = editor
+        contribution.save(update_fields=["contributor", "created_by", "modified_by"])
+        self.client.force_authenticate(editor)
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "edit_contribution_id": contribution.pk,
+                "submission_kind": "marking",
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "marking_lrd": "1899-01-01",
+                "marking_lrd_granularity": "YEAR",
+                "marking_lrd_date_year": "1899",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        contribution.refresh_from_db()
+        self.assertEqual(contribution.submitted_data["marking_lrd"], "1899-01-01")
+        self.assertEqual(contribution.submitted_data["marking_lrd_granularity"], "YEAR")
+        self.assertEqual(contribution.submitted_data["marking_lrd_date_year"], "1899")
+        self.assertNotIn("marking_lrd_unknown", contribution.submitted_data)
+        self.assertNotIn("marking_lrd_date_month", contribution.submitted_data)
+        self.assertNotIn("marking_lrd_date_day", contribution.submitted_data)
 
     def test_approve_marking_edit_updates_existing_catalog_code(self):
         self.marking.code = "ASCC1-VA-M0001"

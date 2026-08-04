@@ -147,6 +147,7 @@ function appendMarkingBoundaryDate(
     form.append(`${prefix}_unknown`, "true");
     return;
   }
+  form.append(`${prefix}_unknown`, "false");
   if (value.year != null) form.append(`${prefix}_date_year`, String(value.year));
   if (value.month != null) form.append(`${prefix}_date_month`, String(value.month));
   if (value.day != null) form.append(`${prefix}_date_day`, String(value.day));
@@ -162,6 +163,7 @@ function markingBoundaryDatePayload(
 ): Record<string, unknown> {
   if (value.unknown) return { [`${prefix}_unknown`]: true };
   return {
+    [`${prefix}_unknown`]: false,
     ...(value.year != null ? { [`${prefix}_date_year`]: value.year } : {}),
     ...(value.month != null ? { [`${prefix}_date_month`]: value.month } : {}),
     ...(value.day != null ? { [`${prefix}_date_day`]: value.day } : {}),
@@ -574,6 +576,7 @@ const Contribute = () => {
   const [description, setDescription] = useState("");
   const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [contributorComment, setContributorComment] = useState("");
+  const [noMarkingImage, setNoMarkingImage] = useState(false);
   // One entry in the combined image gallery: "existing" wraps an already-saved
   // image (edit-marking or draft-resume); "new" wraps a freshly-picked file.
   type MarkingGalleryItem =
@@ -927,6 +930,8 @@ const Contribute = () => {
         setContributorComment(
           getStr(submittedValue(sd, "contributor_comment", "contributorComment")),
         );
+        const loadedNoMarkingImage = submittedBool(sd, "no_marking_image", "noMarkingImage");
+        setNoMarkingImage(loadedNoMarkingImage);
         setShape(shapeVal || "");
         setColor(colorVal || "");
         const wh = submittedDataToWidthHeightStrings(sd as Record<string, unknown>);
@@ -1000,7 +1005,7 @@ const Contribute = () => {
             })
             .filter((u) => u.length > 0);
         }
-        if (existingUrls.length > 0) {
+        if (!loadedNoMarkingImage && existingUrls.length > 0) {
           setGallery(
             existingUrls.map((url) => ({
               kind: "existing" as const,
@@ -1039,7 +1044,7 @@ const Contribute = () => {
           getMarkingByIdRaw(editMarkingIdNum)
             .then((m) => {
               if (cancelled || !m) return;
-              if (existingUrls.length === 0 && Array.isArray(m.images)) {
+              if (!loadedNoMarkingImage && existingUrls.length === 0 && Array.isArray(m.images)) {
                 const rows = (m.images as unknown[])
                   .map((img) => {
                     const o = img as Record<string, unknown>;
@@ -1136,6 +1141,7 @@ const Contribute = () => {
             tracing: r.tracing,
           })),
         );
+        setNoMarkingImage(false);
         setRemovedExistingImageKeys([]);
 
         const modifiedDate = typeof data.modified_date === "string" ? data.modified_date : null;
@@ -1331,6 +1337,7 @@ const Contribute = () => {
       });
     }
     if (toAdd.length === 0) return;
+    setNoMarkingImage(false);
     if (fieldErrors.images) {
       setFieldErrors((prev) => ({ ...prev, images: undefined }));
     }
@@ -1385,6 +1392,31 @@ const Contribute = () => {
     if (fieldErrors.images) {
       setFieldErrors((prev) => ({ ...prev, images: undefined }));
     }
+    if (markingFileInputRef.current) markingFileInputRef.current.value = "";
+  };
+
+  const setNoMarkingImageChecked = (checked: boolean) => {
+    setNoMarkingImage(checked);
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    if (!checked) return;
+    setGallery((prev) => {
+      const removed = prev
+        .filter(
+          (item): item is Extract<MarkingGalleryItem, { kind: "existing" }> =>
+            item.kind === "existing",
+        )
+        .map((item) => item.url);
+      if (removed.length > 0) {
+        setRemovedExistingImageKeys((keys) => {
+          const next = [...keys];
+          for (const url of removed) {
+            if (!next.includes(url)) next.push(url);
+          }
+          return next;
+        });
+      }
+      return [];
+    });
     if (markingFileInputRef.current) markingFileInputRef.current.value = "";
   };
 
@@ -1489,8 +1521,8 @@ const Contribute = () => {
       // At least one image must accompany every entry. The combined gallery
       // holds both kept existing images and new uploads, so a single emptiness
       // check covers all modes (new / edit-marking / edit-contribution).
-      if (gallery.length === 0) {
-        errors.images = "At least one image is required";
+      if (gallery.length === 0 && !noMarkingImage) {
+        errors.images = "Add at least one image or confirm no image is available";
       }
 
       // Dimensions: only validated for handstamped markings. Manuscript markings
@@ -1737,6 +1769,9 @@ const Contribute = () => {
         if ((isEditMarking || isEditContribution) && removedExistingImageKeys.length > 0) {
           form.append("removed_existing_image_keys", JSON.stringify(removedExistingImageKeys));
         }
+        if (noMarkingImage) {
+          form.append("no_marking_image", "true");
+        }
         if (isEditMarking && existingTagMapEntries.length > 0) {
           const existingTagMap: Record<string, UploadedImageTag> =
             Object.fromEntries(existingTagMapEntries);
@@ -1787,6 +1822,7 @@ const Contribute = () => {
             ? markingBoundaryDatePayload("marking_lrd", lrdToSend)
             : {}),
           marking_image_tags: orderedNewTags,
+          ...(noMarkingImage ? { no_marking_image: true } : {}),
           ...(imageOrder.length > 0 ? { image_order: imageOrder } : {}),
           ...(trimmedComment
             ? { contributor_comment: trimmedComment, comment_for_editor: trimmedComment }
@@ -2062,6 +2098,14 @@ const Contribute = () => {
             </>
           )}
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={noMarkingImage}
+            onCheckedChange={(v) => setNoMarkingImageChecked(v === true)}
+            disabled={submitting}
+          />
+          No image is available to upload
+        </label>
       </div>
     );
   };

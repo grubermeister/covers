@@ -76,9 +76,12 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   "comment_for_editor", "commentForEditor",
   "review_notes", "reviewNotes",
   "comment",
+  // ignored: attribution opt-in (rendered outside the catalog field list)
+  "display_submitter_name", "displaySubmitterName",
   // ignored: image payloads (rendered in the carousel above the field list)
   "image_meta",
   "image_metas", "imageMetas",
+  "no_marking_image", "noMarkingImage",
   "marking_images", "markingImages",
   "marking_image_metas", "markingImageMetas",
   "marking_image_tags", "markingImageTags",

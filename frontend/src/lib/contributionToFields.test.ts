@@ -97,4 +97,24 @@ describe("submittedDataToFieldInput", () => {
     expect(fieldInput.isManuscript).toBe(true);
     expect(fieldInput.isIrreg).toBe(true);
   });
+
+  it("accepts attribution opt-in metadata without rendering it as a field", () => {
+    const fieldInput = submittedDataToFieldInput(
+      {
+        submission_kind: "marking",
+        state: "VA",
+        town: "Richmond",
+        type: "TOWNMARK",
+        display_submitter_name: true,
+        displaySubmitterName: true,
+        no_marking_image: true,
+        noMarkingImage: true,
+      },
+      lookups,
+      { contributionId: 38 },
+    );
+
+    expect(fieldInput.state).toBe("VA");
+    expect(fieldInput.town).toBe("Richmond");
+  });
 });

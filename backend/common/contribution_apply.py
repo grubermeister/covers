@@ -9,11 +9,11 @@ a 500 with a field-specific message).
 
 Scope:
   * Marking submissions (type in TOWNMARK/RATEMARK/AUXMARK): create one
-    Marking + one-or-more Image rows + zero-or-more Citation rows.
+    Marking + Image rows unless no image was explicitly affirmed + zero-or-more Citation rows.
     apply_contribution_to_catalog returns the created Marking.
   * Cover submissions (submission_kind == "cover" or type in FC/FL):
     create one Cover + one CoverMarking (linked to the parent marking,
-    review_status=APPROVED) + zero-or-one DateSeen + one-or-more Image
+    review_status=APPROVED) + zero-or-one DateSeen + Image
     rows + zero-or-more Citation rows + zero-or-one CoverValuation. The
     cover branch returns a dict, NOT a Marking -- see
     apply_cover_contribution_to_catalog for the exact shape. The approve
@@ -647,6 +647,22 @@ def _coerce_optional_bool(payload: dict, key: str, default):
     return default
 
 
+def _payload_affirms_no_images(payload: dict, subject_type) -> bool:
+    if subject_type == Image.SUBJECT_COVER:
+        keys = ("no_cover_image", "noCoverImage", "cover_no_image", "coverNoImage")
+    else:
+        keys = (
+            "no_marking_image",
+            "noMarkingImage",
+            "marking_no_image",
+            "markingNoImage",
+        )
+    for key in (*keys, "no_image", "noImage"):
+        if _coerce_optional_bool(payload, key, False):
+            return True
+    return False
+
+
 def _parse_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
@@ -889,7 +905,8 @@ def _sync_images(
     fallback to a 'tracing' flag baked into the meta); new uploads take the
     positional tags in tags_key, indexed over the new uploads only.
 
-    At least one image is required; an empty desired set is malformed.
+    At least one image is required unless the contributor explicitly affirmed
+    that no image is available.
     """
     metas = None
     for k in metas_keys:
@@ -898,6 +915,12 @@ def _sync_images(
             metas = candidate
             break
     if not metas:
+        if _payload_affirms_no_images(payload, subject_type):
+            Image.objects.filter(
+                subject_type=subject_type,
+                subject_id=subject_id,
+            ).delete()
+            return
         raise ContributionApplyError(
             "Submission has no images; at least one image is required."
         )
