@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, MoveRight, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, Pencil, Plus, Replace, Star, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -673,6 +673,14 @@ const RecordDetail = () => {
   const dimensionsValue = dimensionsDisplay(record) || EMPTY;
   const earliestValue = formatDateSeen(record.earliestSeen, record.earliestSeenGranularity);
   const latestValue = formatDateSeen(record.latestSeen, record.latestSeenGranularity);
+  const earliestSeenTo =
+    record.earliestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.earliestSeenCoverId}`
+      : undefined;
+  const latestSeenTo =
+    record.latestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.latestSeenCoverId}`
+      : undefined;
   const datesSeenValue = formatDatesSeenList(record.datesSeen);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
@@ -716,7 +724,9 @@ const RecordDetail = () => {
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
+      earliestSeenTo,
       latestSeen: latestValue,
+      latestSeenTo,
       datesSeen: datesSeenValue,
       shapeName: record.shapeName,
       rateValFormatted: formatRateValue(record.rateVal),
@@ -1075,7 +1085,7 @@ const RecordDetail = () => {
                                       setMoveImageError(null);
                                     }}
                                   >
-                                    <MoveRight className="h-3 w-3" />
+                                    <Replace className="h-3 w-3" />
                                   </Button>
                                 )}
                                 <Button

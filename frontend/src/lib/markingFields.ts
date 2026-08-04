@@ -21,6 +21,8 @@ export interface MarkingFieldRow {
   // hasDisplayValue filter even when blank). ContributionDetail ignores it
   // and shows every row.
   alwaysShow: boolean;
+  // Optional router target for a single linked field value.
+  to?: string;
   // When non-empty, the renderer shows these chips instead of `value`. `value`
   // is still the visibility key (hasDisplayValue) and the fallback when no tags
   // are supplied (e.g. ContributionDetail). (issue #28)
@@ -40,7 +42,9 @@ export interface MarkingFieldInput {
   inscriptionTxt: string;
   // Already formatted according to DateSeen granularity.
   earliestSeen: string;
+  earliestSeenTo?: string;
   latestSeen: string;
+  latestSeenTo?: string;
   // Pre-formatted comma-joined list of all observed dates (via
   // formatDatesSeenList), populated only when a marking has multiple distinct
   // dates; "" otherwise. Optional so the contribution path (a single
@@ -95,8 +99,8 @@ export function buildMarkingFields(
     },
     { label: "Town", value: i.town, alwaysShow: false },
     { label: inscriptionLabel(i.type), value: i.inscriptionTxt, alwaysShow: false },
-    { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true },
-    { label: "Latest Seen", value: i.latestSeen, alwaysShow: true },
+    { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true, to: i.earliestSeenTo },
+    { label: "Latest Seen", value: i.latestSeen, alwaysShow: true, to: i.latestSeenTo },
     // Only populated (and only shown) when the marking has multiple distinct
     // dates; the helper returns "" otherwise so this row collapses. (issue #25)
     { label: "Dates Seen", value: i.datesSeen ?? "", alwaysShow: false },

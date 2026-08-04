@@ -1,4 +1,4 @@
-import { ArrowDown, ArrowUp, MoveRight, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowUp, Replace, Star, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
@@ -114,7 +114,7 @@ export function EntryAssociatedThumbnailsCard({
                         disabled={reorderingImages}
                         onClick={() => onMoveImage(idx)}
                       >
-                        <MoveRight className="h-3 w-3" />
+                        <Replace className="h-3 w-3" />
                       </Button>
                     )}
                     {onDeleteImage && img.imageId != null && (

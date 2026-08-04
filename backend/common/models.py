@@ -2,7 +2,7 @@ import hashlib
 import uuid
 from datetime import date as date_cls
 from django.db import models
-from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField
+from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField, IntegerField, Value
 from django.db.models.functions import Coalesce, Least, Greatest
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
@@ -86,6 +86,7 @@ class MarkingQuerySet(models.QuerySet):
             subject_type='COVER',
             subject_id__in=CoverMarking.objects.filter(
                 marking_id=OuterRef(OuterRef('pk')),
+                review_status=CoverMarking.REVIEW_APPROVED,
             ).values('cover_id'),
             date__isnull=False,
         )
@@ -94,6 +95,12 @@ class MarkingQuerySet(models.QuerySet):
             latest_seen_direct=Subquery(direct_qs.order_by('-date', '-pk').values('date')[:1]),
             earliest_seen_via_cover=Subquery(cover_qs.order_by('date', 'pk').values('date')[:1]),
             latest_seen_via_cover=Subquery(cover_qs.order_by('-date', '-pk').values('date')[:1]),
+            earliest_seen_via_cover_id=Subquery(
+                cover_qs.order_by('date', 'pk').values('subject_id')[:1],
+            ),
+            latest_seen_via_cover_id=Subquery(
+                cover_qs.order_by('-date', '-pk').values('subject_id')[:1],
+            ),
             earliest_seen_direct_granularity=Subquery(
                 direct_qs.order_by('date', 'pk').values('granularity')[:1],
             ),
@@ -155,6 +162,38 @@ class MarkingQuerySet(models.QuerySet):
                 ),
                 default=F('latest_seen_via_cover_granularity'),
                 output_field=CharField(),
+            ),
+            earliest_seen_cover_id=Case(
+                When(
+                    earliest_seen_direct__isnull=True,
+                    then=F('earliest_seen_via_cover_id'),
+                ),
+                When(
+                    earliest_seen_via_cover__isnull=True,
+                    then=Value(None),
+                ),
+                When(
+                    earliest_seen_direct__lte=F('earliest_seen_via_cover'),
+                    then=Value(None),
+                ),
+                default=F('earliest_seen_via_cover_id'),
+                output_field=IntegerField(),
+            ),
+            latest_seen_cover_id=Case(
+                When(
+                    latest_seen_direct__isnull=True,
+                    then=F('latest_seen_via_cover_id'),
+                ),
+                When(
+                    latest_seen_via_cover__isnull=True,
+                    then=Value(None),
+                ),
+                When(
+                    latest_seen_direct__gte=F('latest_seen_via_cover'),
+                    then=Value(None),
+                ),
+                default=F('latest_seen_via_cover_id'),
+                output_field=IntegerField(),
             ),
         )
 

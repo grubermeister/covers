@@ -68,6 +68,83 @@ class MarkingDateRangeTests(TestCase):
         self.assertEqual(annotated.latest_seen.isoformat(), "1865-08-14")
         self.assertEqual(annotated.latest_seen_granularity, "DAY")
 
+    def test_with_date_range_includes_boundary_cover_ids(self):
+        marking = self._make_marking("RICHMOND VA")
+        early_cover = Cover.objects.create(
+            code="C-early",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        late_cover = Cover.objects.create(
+            code="C-late",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        for cover in (early_cover, late_cover):
+            CoverMarking.objects.create(
+                cover=cover,
+                marking=marking,
+                created_by=self.user,
+                modified_by=self.user,
+            )
+        self._add_date(DateSeen.SUBJECT_COVER, early_cover.pk, "1840-01-01", "YEAR")
+        self._add_date(DateSeen.SUBJECT_COVER, late_cover.pk, "1865-08-14", "DAY")
+
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        data = MarkingSerializer(annotated).data
+
+        self.assertEqual(annotated.earliest_seen_cover_id, early_cover.pk)
+        self.assertEqual(annotated.latest_seen_cover_id, late_cover.pk)
+        self.assertEqual(data["earliest_seen_cover_id"], early_cover.pk)
+        self.assertEqual(data["latest_seen_cover_id"], late_cover.pk)
+
+    def test_with_date_range_does_not_link_direct_boundary_dates(self):
+        marking = self._make_marking("RICHMOND VA")
+        cover = Cover.objects.create(
+            code="C-tie",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        CoverMarking.objects.create(
+            cover=cover,
+            marking=marking,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        self._add_date(DateSeen.SUBJECT_MARKING, marking.pk, "1850-01-01", "YEAR")
+        self._add_date(DateSeen.SUBJECT_COVER, cover.pk, "1850-01-01", "YEAR")
+
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+
+        self.assertEqual(annotated.earliest_seen.isoformat(), "1850-01-01")
+        self.assertEqual(annotated.latest_seen.isoformat(), "1850-01-01")
+        self.assertIsNone(annotated.earliest_seen_cover_id)
+        self.assertIsNone(annotated.latest_seen_cover_id)
+
+    def test_with_date_range_ignores_unapproved_cover_links(self):
+        marking = self._make_marking("RICHMOND VA")
+        pending_cover = Cover.objects.create(
+            code="C-pending",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        CoverMarking.objects.create(
+            cover=pending_cover,
+            marking=marking,
+            review_status=CoverMarking.REVIEW_PENDING,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        self._add_date(DateSeen.SUBJECT_COVER, pending_cover.pk, "1840-01-01", "YEAR")
+        self._add_date(DateSeen.SUBJECT_MARKING, marking.pk, "1850-01-01", "YEAR")
+
+        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+
+        self.assertEqual(annotated.earliest_seen.isoformat(), "1850-01-01")
+        self.assertEqual(annotated.latest_seen.isoformat(), "1850-01-01")
+        self.assertIsNone(annotated.earliest_seen_cover_id)
+        self.assertIsNone(annotated.latest_seen_cover_id)
+
     def _make_marking(self, inscription):
         return Marking.objects.create(
             type="TOWNMARK",

@@ -373,8 +373,10 @@ export interface MarkingRecord {
   regions: MarkingRegion[];
   earliestSeen: string | null;
   earliestSeenGranularity: string | null;
+  earliestSeenCoverId: number | null;
   latestSeen: string | null;
   latestSeenGranularity: string | null;
+  latestSeenCoverId: number | null;
   // All MARKING-scoped DateSeen rows the catalog records for this marking (one
   // per observed date), ordered by date. Detail view only; used to render a
   // "Dates Seen" listing when there are multiple dates (issue #25).
@@ -653,11 +655,13 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
       typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
         ? o.earliest_seen_granularity
         : null,
+    earliestSeenCoverId: toIdOrNull(o.earliest_seen_cover_id),
     latestSeen: typeof o.latest_seen === "string" && o.latest_seen ? o.latest_seen : null,
     latestSeenGranularity:
       typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
         ? o.latest_seen_granularity
         : null,
+    latestSeenCoverId: toIdOrNull(o.latest_seen_cover_id),
     datesSeen: (Array.isArray(o.dates_seen) ? o.dates_seen : [])
       .map(mapAssociatedDateSeen)
       .filter((x): x is AssociatedDateSeen => x !== null),
