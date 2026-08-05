@@ -201,6 +201,31 @@ should be re-run on woco.dev before quoting exact user counts.
    (leak insurance) to `deploy/worldcovers.service` (and its validator).
 4. **`CONN_MAX_AGE=60`** in settings — stop paying per-request MySQL connects.
 
+### UPDATE 2026-08-05 — structural fix #1 IMPLEMENTED and measured (issue #71)
+
+The date-range denormalization below has been built on this branch (columns +
+indexes + backfill migration + signal maintenance + `recompute_marking_date_ranges
+--verify`). Backfill parity: **zero mismatches** recomputing 2,617 real markings
+against the old annotation's output. Before/after, same hardware and method:
+
+| Endpoint | 100k before | 100k after | 1M before | 1M after |
+|---|---|---|---|---|
+| Default list (region sort) | 13.5 s | **0.96 s** | 145 s | **20.7 s** |
+| Year-filtered | 15.8 s | **1.1 s** | 172 s | **23.0 s** |
+| Sort by date, no count | — | **0.13 s** | — | **0.12 s** |
+| Sort by date, with count | — | 0.14 s | — | 1.4 s |
+| Text search | 4.5 s | 2.1 s | 46 s | 49 s |
+
+Read the table columns-first: **date-ordered pagination is now flat in table
+size** (130 ms at 100k → 118 ms at 1M) — the scaling class changed exactly as
+designed. What remains per-request is precisely the two documented follow-ups:
+the default sort's region-junction join (#74 — 0.96 s/20.7 s is that join's
+filesort, no longer the subqueries) and the text-search double scan (#74,
+unchanged by this fix). The 1M count cost (1.4 s) is the COUNT(*) the backend
+can already skip via `include_count=false` — the frontend just needs to send
+it (#72 family). Backfill runtime: 55 s per 100k markings (staging's ~4k:
+seconds, inside the deploy window).
+
 ### Structural fix #1 — the one that changes the scaling class
 
 **Materialize `earliest_seen`/`latest_seen` (+granularity) as real, indexed
