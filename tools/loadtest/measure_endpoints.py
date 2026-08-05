@@ -34,17 +34,24 @@ ENDPOINTS = [
 ]
 
 
+# With DEBUG=False the app sets SECURE_SSL_REDIRECT; SECURE_PROXY_SSL_HEADER
+# lets us claim the request is already HTTPS instead of chasing a redirect.
+HEADERS = {"X-Forwarded-Proto": "https"}
+
+
 def fetch(url, timeout):
+    req = urllib.request.Request(url, headers=HEADERS)
     start = time.perf_counter()
-    with urllib.request.urlopen(url, timeout=timeout) as resp:
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read()
         return time.perf_counter() - start, resp.status, len(body)
 
 
 def marking_count(base_url, timeout):
-    with urllib.request.urlopen(
-        f"{base_url}/api/v2/markings/?page=1&page_size=1", timeout=timeout
-    ) as resp:
+    req = urllib.request.Request(
+        f"{base_url}/api/v2/markings/?page=1&page_size=1", headers=HEADERS
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.load(resp).get("count", -1)
 
 
@@ -56,9 +63,17 @@ def main():
     ap.add_argument("--timeout", type=float, default=120.0)
     ap.add_argument("--tier-label", required=True, help="e.g. 10k, 100k, 1M")
     ap.add_argument("--out", default="tools/loadtest/results.csv")
+    ap.add_argument("--only", default="",
+                    help="Comma-separated endpoint names to run (default: all).")
     args = ap.parse_args()
 
-    count = marking_count(args.base_url, args.timeout)
+    try:
+        count = marking_count(args.base_url, args.timeout)
+    except Exception as exc:
+        # At high tiers even the count preflight can exceed the timeout;
+        # that is a finding, not a reason to abort the run.
+        print(f"count preflight failed ({exc}); continuing with count=-1")
+        count = -1
     print(f"tier={args.tier_label} markings={count} base={args.base_url}")
 
     out = pathlib.Path(args.out)
@@ -70,7 +85,10 @@ def main():
         if write_header:
             writer.writerow(["tier", "markings", "endpoint", "iterations",
                              "p50_ms", "p95_ms", "max_ms", "status", "resp_bytes"])
+        selected = {n.strip() for n in args.only.split(",") if n.strip()}
         for name, path in ENDPOINTS:
+            if selected and name not in selected:
+                continue
             url = args.base_url + path
             timings, status, size = [], None, None
             try:
