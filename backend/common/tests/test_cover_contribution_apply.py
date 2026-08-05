@@ -938,7 +938,7 @@ class MarkingErdLrdApplyTests(TestCase):
             self._direct_dates(marking.pk),
             [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR")],
         )
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 1, 1))
         self.assertEqual(annotated.latest_seen, date(1851, 1, 1))
 
@@ -1001,7 +1001,7 @@ class MarkingErdLrdApplyTests(TestCase):
             self._direct_dates(marking.pk),
             [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR"), (date(1860, 1, 1), "YEAR")],
         )
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.latest_seen, date(1860, 1, 1))
 
     def test_manual_erd_merges_with_earlier_cover_date(self):
@@ -1027,5 +1027,5 @@ class MarkingErdLrdApplyTests(TestCase):
             modified_by=self.user,
         )
 
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 6, 14))
