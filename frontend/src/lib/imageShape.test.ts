@@ -1,4 +1,7 @@
-import { classifyImageShape, looksLikeWrongKind } from "./imageShape";
+/**
+ * @jest-environment jsdom
+ */
+import { classifyImageShape, looksLikeWrongKind, measureImageFile } from "./imageShape";
 
 /**
  * Issue #76. The numbers below are real measurements from prod, not invented
@@ -50,5 +53,52 @@ describe("looksLikeWrongKind", () => {
     const middling = { width: 900, height: 400 };
     expect(looksLikeWrongKind(middling, "MARKING")).toBe(false);
     expect(looksLikeWrongKind(middling, "COVER")).toBe(false);
+  });
+});
+
+describe("measureImageFile", () => {
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+
+  beforeEach(() => {
+    URL.createObjectURL = jest.fn(() => "blob:stub");
+    URL.revokeObjectURL = jest.fn();
+  });
+
+  afterEach(() => {
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+    jest.restoreAllMocks();
+  });
+
+  function stubImageLoad(outcome: "load" | "error", size = { w: 0, h: 0 }) {
+    Object.defineProperty(global.Image.prototype, "src", {
+      configurable: true,
+      set(this: HTMLImageElement) {
+        Object.defineProperty(this, "naturalWidth", { value: size.w, configurable: true });
+        Object.defineProperty(this, "naturalHeight", { value: size.h, configurable: true });
+        setTimeout(() => {
+          if (outcome === "load") this.onload?.(new Event("load"));
+          else this.onerror?.(new Event("error"));
+        }, 0);
+      },
+    });
+  }
+
+  it("reports the natural dimensions of a decodable image", async () => {
+    stubImageLoad("load", { w: 2631, h: 1290 });
+    await expect(measureImageFile(new Blob())).resolves.toEqual({
+      width: 2631,
+      height: 1290,
+    });
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
+  });
+
+  it("resolves null rather than rejecting when the image will not decode", async () => {
+    // TIFF is an allowed upload type most browsers cannot render. A failed
+    // measurement must never block an upload the server would accept.
+    stubImageLoad("error");
+    await expect(measureImageFile(new Blob())).resolves.toBeNull();
+    expect(URL.revokeObjectURL).toHaveBeenCalled();
   });
 });
