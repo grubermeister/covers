@@ -24,6 +24,7 @@ import v1_bundle_overlay
 import v1_attach_images
 import v1_catalog_rows
 import v1_massachusetts
+import v1_to_v2_catalog_format
 import ascc_data_munger
 from munger.relationships import roll_up_catalog_text
 from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
@@ -2688,6 +2689,181 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(markings[0]["lettering"], "")
         self.assertEqual(markings[0]["is_irreg"], "")
         self.assertIn("manuscript_false_without_shape", {r["issue"] for r in report})
+
+
+class V1CoverImageRoutingTests(unittest.TestCase):
+    """Issue #75: v1 txtView decides whether an image belongs to a cover.
+
+    v1 had no cover records, so every image hung off the catalog row and
+    txtView was the only signal that a scan showed a whole cover rather than
+    the marking. Routing on it is what stops each state injection re-creating
+    the mis-slotted images that issue #78 has to clean up.
+    """
+
+    def build_one_image(self, ref_extra, existing_covers=None):
+        """Run build_images over a single ref and return (image, covers, links)."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            image_root = root / "images"
+            image_root.mkdir()
+            Image.new("RGB", (6, 4)).save(image_root / "cover.png")
+            ref = {
+                "source_row_id": "77",
+                "townmark_image_id": "9",
+                "source_filename": "cover.png",
+                "storage_filename": "va/cover.png",
+                "display_order": "1",
+                "image_description": "",
+                "is_tracing": "False",
+            }
+            ref.update(ref_extra)
+            warnings = []
+            images, covers, links = v1_bundle_overlay.build_images(
+                "VA",
+                [ref],
+                {"77": ["ASCC6-VA-M1301"]},
+                image_root,
+                root / "media" / "va",
+                False,
+                dict(AUDIT),
+                warnings,
+                existing_covers,
+            )
+            return images, covers, links, warnings
+
+    def test_view_routing_table(self):
+        cases = {
+            "Front": ("COVER", "FRONT"),
+            "front": ("COVER", "FRONT"),
+            "Back": ("COVER", "BACK"),
+            "Details": ("MARKING", "DETAIL"),
+            "": ("MARKING", "FULL"),
+        }
+        for txt_view, expected in cases.items():
+            with self.subTest(txt_view=txt_view):
+                self.assertEqual(
+                    v1_to_v2_catalog_format.route_v1_view(txt_view), expected
+                )
+
+    def test_front_image_becomes_a_cover_with_a_link_to_its_marking(self):
+        images, covers, links, _ = self.build_one_image(
+            {"subject_type": "COVER", "image_view": "FRONT"}
+        )
+
+        self.assertEqual(len(images), 1)
+        self.assertEqual(images[0]["subject_type"], "COVER")
+        self.assertEqual(images[0]["image_view"], "FRONT")
+        # The image points at the cover, and the cover is the one just created.
+        self.assertEqual(len(covers), 1)
+        self.assertEqual(images[0]["subject_id"], covers[0]["code"])
+        self.assertEqual(covers[0]["is_institutional"], "False")
+        # ...which is still reachable from the marking it was catalogued under.
+        self.assertEqual(len(links), 1)
+        self.assertEqual(links[0]["cover"], covers[0]["code"])
+        self.assertEqual(links[0]["marking"], "ASCC6-VA-M1301")
+
+    def test_marking_image_creates_no_cover(self):
+        images, covers, links, _ = self.build_one_image(
+            {"subject_type": "MARKING", "image_view": "FULL"}
+        )
+
+        self.assertEqual(images[0]["subject_type"], "MARKING")
+        self.assertEqual(images[0]["subject_id"], "ASCC6-VA-M1301")
+        self.assertEqual(covers, [])
+        self.assertEqual(links, [])
+
+    def test_ref_without_subject_type_stays_on_the_marking(self):
+        """Refs CSVs written before #75 have no subject_type column."""
+        images, covers, _, _ = self.build_one_image({"image_view": "FULL"})
+
+        self.assertEqual(images[0]["subject_type"], "MARKING")
+        self.assertEqual(covers, [])
+
+    def test_allocated_cover_code_clears_existing_serials(self):
+        existing = [{"code": "ASCC6-VA-C1007"}]
+        _, covers, _, _ = self.build_one_image(
+            {"subject_type": "COVER", "image_view": "FRONT"}, existing
+        )
+
+        self.assertEqual(covers[0]["code"], "ASCC6-VA-C1008")
+
+    def test_two_cover_views_on_one_row_warn_rather_than_pairing(self):
+        """Front+Back is only 11 of 215 v1 rows; 31 carry two Fronts.
+
+        Pairing by position would merge genuinely distinct covers, so each
+        cover-view image gets its own cover and the row is flagged instead.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            image_root = root / "images"
+            image_root.mkdir()
+            refs = []
+            for n, view in ((1, "FRONT"), (2, "BACK")):
+                Image.new("RGB", (6, 4)).save(image_root / "c{0}.png".format(n))
+                refs.append({
+                    "source_row_id": "77",
+                    "townmark_image_id": str(n),
+                    "source_filename": "c{0}.png".format(n),
+                    "storage_filename": "va/c{0}.png".format(n),
+                    "display_order": str(n),
+                    "subject_type": "COVER",
+                    "image_view": view,
+                    "image_description": view.title(),
+                    "is_tracing": "False",
+                })
+            warnings = []
+            images, covers, links = v1_bundle_overlay.build_images(
+                "VA",
+                refs,
+                {"77": ["ASCC6-VA-M1301"]},
+                image_root,
+                root / "media" / "va",
+                False,
+                dict(AUDIT),
+                warnings,
+                [],
+            )
+
+        self.assertEqual(len(images), 2)
+        self.assertEqual(len(covers), 2)
+        self.assertNotEqual(covers[0]["code"], covers[1]["code"])
+        # Both still hang off the same marking.
+        self.assertEqual({link["marking"] for link in links}, {"ASCC6-VA-M1301"})
+        self.assertIn(
+            "multiple_covers_from_one_row", {w["issue"] for w in warnings}
+        )
+
+    def test_write_image_refs_carries_txtview_through(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            images_path = root / "tblTownmarkImages.csv"
+            refs_path = root / "image_refs.csv"
+            write_csv(
+                images_path,
+                ["nRawStateDataID", "ynDeleted", "nTownmarkImageID",
+                 "txtFilename", "nOrder", "txtView"],
+                [
+                    {"nRawStateDataID": "77", "ynDeleted": "False",
+                     "nTownmarkImageID": "1", "txtFilename": "a.jpg",
+                     "nOrder": "1", "txtView": "Front"},
+                    {"nRawStateDataID": "77", "ynDeleted": "False",
+                     "nTownmarkImageID": "2", "txtFilename": "b.jpg",
+                     "nOrder": "2", "txtView": ""},
+                ],
+            )
+            v1_to_v2_catalog_format.write_image_refs(
+                images_path, refs_path, ["77"], "VA"
+            )
+            refs = read_csv(refs_path)
+
+        self.assertEqual(
+            [(r["subject_type"], r["image_view"]) for r in refs],
+            [("COVER", "FRONT"), ("MARKING", "FULL")],
+        )
+        # txtView is retained as the description: it is the only provenance for
+        # the routing decision, and issue #78 identifies already-imported rows
+        # by exactly this field.
+        self.assertEqual([r["image_description"] for r in refs], ["Front", ""])
 
 
 if __name__ == "__main__":
