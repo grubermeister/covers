@@ -49,3 +49,10 @@ tier,markings,endpoint,iterations,p50_ms,p95_ms,max_ms,status,resp_bytes
 1M-fixed,1000000,list_year_nocount,5,18122.3,18552.4,18843.8,200,7429
 1M-fixed,1000000,town_options,5,4165.5,4196.7,4796.1,200,15040683
 1M-fixed,1000000,list_order_earliest,5,1277.2,1317.5,1321.5,200,7207
+staging-10k,10298,list_default,20,396.5,504.9,517.0,200,7544
+staging-10k,10298,list_year_filtered,20,376.5,410.4,450.7,200,7608
+staging-10k,10298,list_search_text,20,553.2,596.7,619.7,200,11928
+staging-10k,10298,list_default_nocount,20,397.3,642.2,1428.7,200,7563
+staging-10k,10298,list_year_nocount,20,366.8,444.1,456.3,200,7628
+staging-10k,10298,town_options,20,343.3,377.4,393.0,200,148634
+staging-10k,10298,list_order_earliest,20,265.3,307.5,351.1,200,12748
