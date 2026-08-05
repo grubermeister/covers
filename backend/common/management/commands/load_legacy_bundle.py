@@ -15,6 +15,7 @@ import csv
 from pathlib import Path
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 
@@ -67,6 +68,8 @@ class Command(BaseCommand):
                     continue
                 n = self._load_csv(path, model, id_col, user.id, opts["batch_size"])
                 self.stdout.write(f"{stem}: {n} rows")
+            # bulk_create fires no signals; refresh the date-range cache.
+            call_command("recompute_marking_date_ranges", "--all")
         self.stdout.write(self.style.SUCCESS(f"Loaded {bundle} into {db_name}."))
 
     def _load_csv(self, path, model, id_col, user_id, batch_size):

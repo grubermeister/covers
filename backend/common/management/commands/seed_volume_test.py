@@ -14,7 +14,7 @@ region links -- so per-marking child ratios, catalog_txt duplication, and
 town/region fan-out all scale together the way real state imports would.
 Covers do not come from ASCC bundles, so a configurable fraction of markings
 gets a synthesized Cover + CoverMarking + COVER DateSeen, exercising the
-cover-mediated arm of MarkingQuerySet.with_date_range().
+cover-mediated arm of the marking date-range computation (common.date_range).
 
 Inserts use bulk_create and deliberately bypass the audit stack
 (SubmissionTransaction / MarkingVersion / reversion): this seeder exists to
@@ -23,6 +23,7 @@ measure READ scaling, not write amplification.
 from collections import defaultdict
 
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 from django.db.models import Max
@@ -165,6 +166,10 @@ class Command(BaseCommand):
             self.stdout.write(f"Generation {generation}: total now {current} markings.")
 
         self._synthesize_covers(opts["covers_percent"], audit, batch)
+        # bulk_create fires no signals, so refresh the date-range cache
+        # columns (issue #59) in one set-based pass.
+        self.stdout.write("Recomputing marking date-range cache...")
+        call_command("recompute_marking_date_ranges", "--all")
         self.stdout.write(self.style.SUCCESS(
             f"Done: {Marking.all_objects.count()} markings, "
             f"{Cover.all_objects.count()} covers, "

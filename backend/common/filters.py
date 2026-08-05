@@ -111,20 +111,17 @@ class MarkingListFilter(django_filters.FilterSet):
 
     @staticmethod
     def filter_earliest_use_year_min(queryset, name, value):
-        # Filter on the unioned (direct + cover-mediated) earliest date that
-        # `with_date_range` annotates onto the Marking queryset. Idempotent:
-        # re-annotating with the same expression is safe.
+        # earliest_seen is a real indexed column (issue #59); __year__gte
+        # compiles to a sargable date-range comparison in Django 5.2.
         if value is None:
             return queryset
-        return queryset.with_date_range().filter(earliest_seen__year__gte=int(value))
+        return queryset.filter(earliest_seen__year__gte=int(value))
 
     @staticmethod
     def filter_latest_use_year_max(queryset, name, value):
-        # Filter on the unioned (direct + cover-mediated) latest date that
-        # `with_date_range` annotates onto the Marking queryset.
         if value is None:
             return queryset
-        return queryset.with_date_range().filter(latest_seen__year__lte=int(value))
+        return queryset.filter(latest_seen__year__lte=int(value))
 
     @staticmethod
     def filter_is_manuscript(queryset, name, value):

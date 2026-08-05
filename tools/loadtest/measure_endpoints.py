@@ -31,6 +31,9 @@ ENDPOINTS = [
     ("list_year_nocount", "/api/v2/markings/?page=1&page_size=10&include_count=false"
                           "&earliest_use_year_min=1800&latest_use_year_max=1900"),
     ("town_options", "/api/v2/post-offices/town-options/"),
+    # Post-#59-fix: date ordering against the materialized indexed column —
+    # the flat-pagination case the denormalization exists to enable.
+    ("list_order_earliest", "/api/v2/markings/?page=1&page_size=10&ordering=earliest_seen,id"),
 ]
 
 

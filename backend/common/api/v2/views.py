@@ -179,17 +179,16 @@ class IsResponsibleForRegion(BasePermission):
 
 
 def _marking_list_queryset():
-    """Optimized queryset for Marking list-style endpoints with date-range annotations.
+    """Optimized queryset for Marking list-style endpoints.
 
-    Uses MarkingQuerySet.with_date_range so earliest_seen / latest_seen aggregate
-    both directly-attached DateSeen rows (subject_type='MARKING') and
-    cover-mediated DateSeen rows (subject_type='COVER' via cover_markings).
+    earliest_seen / latest_seen are real columns maintained by
+    common.date_range (issue #59), so no annotation is needed here.
     """
     return Marking.objects.select_related(
         "post_office", "shape", "lettering", "color"
     ).prefetch_related(
         "post_office__post_office_regions__region"
-    ).with_date_range()
+    )
 
 
 class CatalogCodeSuggestionView(APIView):
@@ -1294,7 +1293,6 @@ class MarkingViewSet(viewsets.ModelViewSet):
                 Marking.all_objects
                 .select_related("post_office", "shape", "lettering", "color")
                 .prefetch_related("post_office__post_office_regions__region")
-                .with_date_range()
                 .filter(pk=self.kwargs[self.lookup_field])
                 .first()
             )
@@ -1425,7 +1423,6 @@ class MarkingViewSet(viewsets.ModelViewSet):
             Marking.all_objects.filter(recycle_bin_entry__isnull=False)
             .select_related("post_office", "shape", "lettering", "color")
             .prefetch_related("post_office__post_office_regions__region")
-            .with_date_range()
             .order_by("-recycle_bin_entry__removed_at")
         )
         if not user.is_superuser:
