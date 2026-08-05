@@ -302,6 +302,35 @@ Suggested acceptance target for the re-test: **p95 < 1 s for search at 1M
 records with 25 concurrent users on the 4 GB box** — comfortably achievable
 with indexed date columns; unreachable by any hardware without them.
 
+### Live staging validation (2026-08-05, woco.dev, post-#71) — PASSED
+
+Read-only test against the deployed site at its real **10,298 markings**
+(zero writes, zero seeding; Locust from Reese's machine, real network,
+scenarios mirroring actual frontend traffic). Single-user latencies, network
+included: default list 397 ms, year-filtered 377 ms, date-ordered 265 ms,
+text search 553 ms — versus **1.2–1.7 s of server time alone** at this same
+record count before the fix.
+
+| Load level | Requests | Errors | Browse p50/p95 | Cheap endpoint (colors) p50 |
+|---|---|---|---|---|
+| 1 user | 118 | 0 | 240 / 290 ms | 48 ms |
+| 5 users | 659 | 0 | 250 / 330 ms | 48 ms |
+| 10 users | 1,294 | 0 | 260 / 370 ms | 49 ms |
+| **25 users** | **3,275 (21 req/s)** | **0** | **370 / 620 ms** | **52 ms** |
+| Soak 10 users × 15 min | 8,250 | 0 | 260 / 340 ms (no drift) | 49 ms |
+
+The pre-fix failure mode — cheap endpoints starving behind marking queries
+(8 ms → 8.5 s at 10 users in the local reproduction) — did not appear at any
+level: `/colors/` stayed ≈ 50 ms throughout. Graceful degradation only;
+worst single request across all 13,596: 1.5 s.
+
+**Verdict for #59's acceptance criteria: met.** The current 4 GB box serves
+this audience (25 concurrent active browsers ≈ a launch-day spike for this
+society) with an order of magnitude of headroom at 10k records, and the
+local 1M-tier evidence (§2, §6) shows date-ordered/filter paths stay flat to
+1M+. Remaining deferred items: the hour-long soak and seeded 100k+ tiers on
+woco.dev (Michael's call, low urgency now), and the follow-ups #72–#74.
+
 ## Appendix: reproduction
 
 - Seeder: `backend/common/management/commands/seed_volume_test.py` (voltest-guarded)
