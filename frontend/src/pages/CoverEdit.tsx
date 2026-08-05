@@ -30,6 +30,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
+import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { COVER_SUBMISSION_GUIDELINES } from "@/labels/guidelines";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import {
@@ -286,6 +288,15 @@ export default function CoverEdit() {
   // Catalog image URLs the contributor removed during this edit session. Sent as
   // removed_existing_image_keys so the catalog image is dropped on approval.
   const [removedExistingImageKeys, setRemovedExistingImageKeys] = useState<string[]>([]);
+  // Gallery keys whose pixel dimensions read as a marking closeup rather than a
+  // cover scan (issue #76). Keyed rather than flagged on the item so removing
+  // an image drops it from the count for free.
+  const [markingLikeImageKeys, setMarkingLikeImageKeys] = useState<string[]>([]);
+  const [wrongImageKindAcknowledged, setWrongImageKindAcknowledged] = useState(false);
+  const markingLikeImageCount = useMemo(
+    () => gallery.filter((item) => markingLikeImageKeys.includes(item.key)).length,
+    [gallery, markingLikeImageKeys],
+  );
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -573,6 +584,19 @@ export default function CoverEdit() {
     });
     setFieldErrors((prev) => ({ ...prev, images: undefined }));
     if (inputRef.current) inputRef.current.value = "";
+    // The inverse of the marking form's check (issue #76): a small, square
+    // image on the cover form is probably a marking closeup. Best-effort --
+    // an image that will not decode is left alone.
+    for (const item of next) {
+      if (item.kind !== "pending") continue;
+      const { key, upload } = item;
+      void measureImageFile(upload.file).then((dimensions) => {
+        if (!dimensions || !looksLikeWrongKind(dimensions, "COVER")) return;
+        setMarkingLikeImageKeys((prev) =>
+          prev.includes(key) ? prev : [...prev, key],
+        );
+      });
+    }
   };
 
   // Reorder + set-default + tracing + remove all act on the single combined
@@ -677,6 +701,12 @@ export default function CoverEdit() {
     const imageCount = gallery.length;
     if (imageCount < 1 && !noCoverImage) {
       errors.images = "Add at least one cover image or confirm no image is available.";
+    } else if (markingLikeImageCount > 0 && !wrongImageKindAcknowledged) {
+      // Cleared by ticking the acknowledgement in WrongImageKindWarning or by
+      // removing the image -- never a hard block (issue #76). Unreachable when
+      // the gallery is empty, so the no-image opt-out above always wins.
+      errors.images =
+        "Confirm the highlighted image is correct, or remove it, before submitting.";
     }
 
     for (const work of selectedReferenceWorks) {
@@ -1286,6 +1316,12 @@ export default function CoverEdit() {
                         No image is available to upload
                       </label>
                       {fieldErrors.images && <p className="text-sm text-destructive">{fieldErrors.images}</p>}
+                      <WrongImageKindWarning
+                        expected="COVER"
+                        count={markingLikeImageCount}
+                        acknowledged={wrongImageKindAcknowledged}
+                        onAcknowledgedChange={setWrongImageKindAcknowledged}
+                      />
                     </div>
 
                     <div className="space-y-3 pt-1">
