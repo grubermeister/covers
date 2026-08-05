@@ -29,7 +29,7 @@ def _page_through(client, path, name, max_pages=50):
     # Mirrors frontend services/*.ts: follow `next` at default page size 10.
     url = path
     for _ in range(max_pages):
-        with client.get(url, name=name, catch_response=True) as resp:
+        with client.get(url, name=name, catch_response=True, timeout=180) as resp:
             if resp.status_code != 200:
                 resp.failure(f"HTTP {resp.status_code}")
                 return
@@ -42,20 +42,26 @@ def _page_through(client, path, name, max_pages=50):
 class CatalogVisitor(HttpUser):
     wait_time = between(1, 5)
 
+    def on_start(self):
+        # The app sets SECURE_SSL_REDIRECT when DEBUG=False; claiming HTTPS via
+        # SECURE_PROXY_SSL_HEADER avoids a redirect to an https:// port that
+        # only speaks HTTP (which hangs the TLS handshake indefinitely).
+        self.client.headers.update({"X-Forwarded-Proto": "https"})
+
     @task(3)
     def dashboard_mount(self):
         _page_through(self.client, "/api/v2/colors/", "/colors/ (paged)")
         _page_through(self.client, "/api/v2/shapes/", "/shapes/ (paged)")
         _page_through(self.client, "/api/v2/letterings/", "/letterings/ (paged)")
-        self.client.get("/api/v2/regions/?page_size=500", name="/regions/")
-        self.client.get("/api/v2/post-offices/town-options/", name="/town-options/")
+        self.client.get("/api/v2/regions/?page_size=500", timeout=180, name="/regions/")
+        self.client.get("/api/v2/post-offices/town-options/", timeout=180, name="/town-options/")
 
     @task(5)
     def search(self):
         page = random.randint(1, 5)
         self.client.get(
             f"/api/v2/markings/?page={page}&page_size=10",
-            name="/markings/ (browse)",
+            timeout=180, name="/markings/ (browse)",
         )
 
     @task(2)
@@ -63,7 +69,7 @@ class CatalogVisitor(HttpUser):
         self.client.get(
             "/api/v2/markings/?page=1&page_size=10"
             "&earliest_use_year_min=1800&latest_use_year_max=1900",
-            name="/markings/ (year filter)",
+            timeout=180, name="/markings/ (year filter)",
         )
 
     @task(2)
@@ -71,7 +77,7 @@ class CatalogVisitor(HttpUser):
         term = random.choice(SEARCH_TERMS)
         self.client.get(
             f"/api/v2/markings/?page=1&page_size=10&search={term}",
-            name="/markings/ (text search)",
+            timeout=180, name="/markings/ (text search)",
         )
 
     @task(3)
@@ -79,10 +85,10 @@ class CatalogVisitor(HttpUser):
         # Grab a page then view one record, like a user clicking a result.
         resp = self.client.get(
             f"/api/v2/markings/?page={random.randint(1, 20)}&page_size=10",
-            name="/markings/ (browse)",
+            timeout=180, name="/markings/ (browse)",
         )
         if resp.status_code == 200:
             results = resp.json().get("results", [])
             if results:
                 mid = random.choice(results)["id"]
-                self.client.get(f"/api/v2/markings/{mid}/", name="/markings/<id>/")
+                self.client.get(f"/api/v2/markings/{mid}/", timeout=180, name="/markings/<id>/")
