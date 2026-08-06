@@ -122,9 +122,6 @@ def classify_paren_field(field_text):
         if not (SIZE_LEADING_SHAPE_RE.match(f)
                 and not RATE_KEYWORD_RE.search(f)):
             return 'rate'
-        if not (SIZE_LEADING_SHAPE_RE.match(f)
-                and not RATE_KEYWORD_RE.search(f)):
-            return 'rate'
 
     # 4. Size/shape/dateformat composite
     if f.upper() in SHAPE_CODE_SET:

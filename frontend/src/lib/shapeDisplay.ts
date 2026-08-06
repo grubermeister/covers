@@ -1,4 +1,4 @@
-export const TRUE_CIRCLE_SHAPE_CODES = ["C", "DC", "DLC", "DLDC"] as const;
+export const TRUE_CIRCLE_SHAPE_CODES = ["C", "CDS", "DC", "DLC", "DLDC"] as const;
 const TRUE_CIRCLE_SHAPE_LABELS = new Set([
   "CIRCLE",
   "CDS",

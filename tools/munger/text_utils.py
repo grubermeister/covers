@@ -9,7 +9,7 @@ _POST_OFFICE_DOUBLE_DASH_RE = re.compile(r"-{2,}")
 _POST_OFFICE_MULTI_SPACE_RE = re.compile(r"\s+")
 _POST_OFFICE_EDGE_TRIM_RE = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
 _POST_OFFICE_COMPACT_RE = re.compile(r"[^A-Z]+")
-_POST_OFFICE_RAILROAD_ABBR_RE = re.compile(r"\bR[1L]\s+RD\b")
+_POST_OFFICE_RAILROAD_ABBR_RE = re.compile(r"\bR[1lL]\s+RD\b")
 _POST_OFFICE_ATTACHED_YEAR_TAIL_RE = re.compile(
     r"(?<=[A-Z])C?\d{3,4}(?:'?[S])?(?:[,-]\d{1,4}(?:'?[S])?)*(?:\s+.*)?$"
 )

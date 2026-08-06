@@ -211,7 +211,7 @@ def _is_head_note_annotation(head, match, allow_leading_note=False,
     prev = head[match.start() - 1] if match.start() > 0 else ''
     after_pos = match.end()
     next_ch = head[after_pos] if after_pos < len(head) else ''
-    if prev.isspace() or not prev.isalnum():
+    if not prev or prev.isspace() or not prev.isalnum():
         return True
     if HEAD_NOTE_KEYWORD_RE.search(note):
         return True

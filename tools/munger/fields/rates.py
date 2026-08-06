@@ -56,11 +56,6 @@ IMPRESSION_BY_TOKEN = {
     'negative': 'Negative',
     'stencil': 'Stencil',
 }
-IMPRESSION_PREFIX_RE = re.compile(r'^(negative|stencil)\s+', re.IGNORECASE)
-IMPRESSION_BY_TOKEN = {
-    'negative': 'Negative',
-    'stencil': 'Stencil',
-}
 
 ROMAN_RE = re.compile(r'^[IVXLDM]+$')
 
@@ -214,6 +209,7 @@ def parse_rate_token(tok):
             result['rate_amount_raw'] = clean
 
     return result
+
 
 def parse_rate_field(text):
     """Decompose a rate-classified paren field into a list of parsed tokens."""

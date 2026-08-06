@@ -7,6 +7,7 @@ import re
 
 
 BPM_REFERENCE_CODE = "BPM2"
+_BOSTON_TOWN_NAME = "BOSTON"
 TOWN_COL = "txtTown"
 TOWN_POSTMARK_COL = "txtTownPostmark"
 POSTMARK_COL = "txtPostmark"
@@ -49,7 +50,7 @@ def clean(value: object) -> str:
 
 
 def is_boston_row(state: str, row: dict[str, str]) -> bool:
-    return state.strip().upper() == "MA" and clean(row.get(TOWN_COL)).upper() == "BOSTON"
+    return state.strip().upper() == "MA" and clean(row.get(TOWN_COL)).upper() == _BOSTON_TOWN_NAME
 
 
 def _locator_piece_re() -> str:
@@ -227,7 +228,7 @@ def _is_boston_fragment(text: str) -> bool:
     if re.search(r"\d", text):
         return False
     letters = re.sub(r"[^A-Za-z]", "", text).upper()
-    return 2 <= len(letters) <= 6 and "BOSTON".startswith(letters)
+    return 2 <= len(letters) <= 6 and _BOSTON_TOWN_NAME.startswith(letters)
 
 
 def sanitize_boston_inscription(text: object) -> str:
@@ -239,9 +240,9 @@ def sanitize_boston_inscription(text: object) -> str:
     value = _strip_bpm_parens_before_data(value)
     value = clean(value).rstrip("(").strip()
     if _is_boston_fragment(value):
-        return "BOSTON"
+        return _BOSTON_TOWN_NAME
     if SAME_HEAD_RE.match(value):
-        return "BOSTON"
+        return _BOSTON_TOWN_NAME
     return value
 
 
@@ -252,7 +253,7 @@ def boston_catalog_head(row: dict[str, str]) -> str:
     postmark = sanitize_boston_inscription(row.get(POSTMARK_COL))
     if postmark:
         return postmark
-    return "BOSTON"
+    return _BOSTON_TOWN_NAME
 
 
 def normalize_boston_listing_for_munger(

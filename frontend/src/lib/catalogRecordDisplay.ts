@@ -5,6 +5,7 @@ import {
   formatDateSeenLike,
   type DateSeenGranularity,
 } from "@/lib/partialDate";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 
 /** Shown when a catalog field has no value (Catalog Search / Record Detail contract). */
 export const CATALOG_FIELD_EMPTY = "-";

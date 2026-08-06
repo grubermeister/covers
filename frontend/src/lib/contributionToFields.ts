@@ -14,6 +14,7 @@ import {
   formatPartialDateInput,
   partialDateInputFromPayload,
 } from "@/lib/partialDate";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import type { MarkingTypeValue } from "@/services/markings";
 
 export interface ContributionLookups {

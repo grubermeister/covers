@@ -194,6 +194,7 @@ def parse_size_field(text):
     else:
         m = SIZE_PARSE_RE.match(_collapse_ampersand_shape(t))
     if not m:
+        size_desc_note = None
         embedded = _embedded_shape_size_candidate(t)
         if embedded:
             size_text, size_desc_note = embedded

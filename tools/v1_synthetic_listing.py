@@ -12,7 +12,6 @@ from __future__ import annotations
 import re
 
 from munger.fields import KNOWN_COLORS, is_color_field
-from munger.fields import KNOWN_COLORS, is_color_field
 from munger.fields.colors import parse_color_field
 from munger.fields.rates import parse_rate_token, split_rate_tokens
 from munger.fields.sizes import parse_size_field
@@ -371,7 +370,6 @@ def rate_note_tokens(row: dict[str, str]) -> list[str]:
     """
     notes = []
     seen = set()
-    for column in RATE_TEXT_COLUMNS:
     for column in RATE_TEXT_COLUMNS:
         value = _normalize_rate_text(row.get(column))
         if not value or _is_v1_color_field(value) or _is_date_format_text(value):
