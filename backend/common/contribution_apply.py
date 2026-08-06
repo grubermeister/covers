@@ -1168,7 +1168,7 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
     collapse that history to two boundary rows; cover-derived dates live under
     subject_type=COVER and are out of scope here. Each non-blank boundary is
     get_or_create'd at its (subject, date), so a same-date row is reused rather
-    than duplicated. `MarkingQuerySet.with_date_range` takes min/max across all
+    than duplicated. The marking date-range cache (common.date_range) takes min/max across all
     rows, so adding a boundary widens the displayed range. The form prefills
     these from the current earliest/latest and only sends a boundary the user
     changed, so a no-touch edit is a no-op (narrowing a range is an admin/data

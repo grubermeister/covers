@@ -23,7 +23,7 @@ class MarkingDateRangeTests(TestCase):
             modified_by=self.user,
         )
 
-    def test_with_date_range_includes_boundary_granularities(self):
+    def test_date_range_columns_include_boundary_granularities(self):
         marking = Marking.objects.create(
             type="TOWNMARK",
             inscription_txt="RICHMOND VA",
@@ -61,12 +61,14 @@ class MarkingDateRangeTests(TestCase):
             modified_by=self.user,
         )
 
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        # Columns are maintained by the DateSeen/CoverMarking signal receivers
+        # (issue #59); a plain re-read sees the cached range.
+        marking.refresh_from_db()
 
-        self.assertEqual(annotated.earliest_seen.isoformat(), "1860-01-01")
-        self.assertEqual(annotated.earliest_seen_granularity, "YEAR")
-        self.assertEqual(annotated.latest_seen.isoformat(), "1865-08-14")
-        self.assertEqual(annotated.latest_seen_granularity, "DAY")
+        self.assertEqual(marking.earliest_seen.isoformat(), "1860-01-01")
+        self.assertEqual(marking.earliest_seen_granularity, "YEAR")
+        self.assertEqual(marking.latest_seen.isoformat(), "1865-08-14")
+        self.assertEqual(marking.latest_seen_granularity, "DAY")
 
     def test_with_date_range_includes_boundary_cover_ids(self):
         marking = self._make_marking("RICHMOND VA")

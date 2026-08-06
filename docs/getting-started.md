@@ -34,14 +34,12 @@ step before you touch the page.
    In** button. **Ignore all of it.**
 3. Underneath the Sign In button there is a small link: **Request a login**. Click that.
 
-<!-- SCREENSHOT 01: the /auth page, full card, with the "Request a login" link at the bottom
-     circled or arrowed. This is the single most important image in the guide. -->
+![The WorldCovers Account sign-in card, with the "Request a login" link beneath the Sign In button circled in red](/assets/guide/01-request-a-login.png)
 
 4. A window opens titled **Request Login Access**. Fill in **First Name**, **Last Name**, and
    **Email**, then click **Submit Request**.
 
-<!-- SCREENSHOT 02: the "Request Login Access" dialog, filled in with harmless placeholder
-     values (e.g. Jane / Doe / jane@example.com). No real addresses. -->
+![The Request Login Access dialog with First Name, Last Name and Email filled in, and a Submit Request button](/assets/guide/02-request-login-dialog.png)
 
 5. You will see a confirmation reading **Request submitted!**. That is all you do for now — there
    is no password to choose, and nothing arrives instantly.
@@ -59,12 +57,12 @@ step before you touch the page.
    menu.
 3. Choose **Change password**.
 
-<!-- SCREENSHOT 03: the avatar dropdown menu open, showing Dashboard / Change password / logout. -->
+![The account menu open, listing Dashboard, Change password and Logout](/assets/guide/03-account-menu.png)
 
 4. Enter the temporary password under **Current password**, then your own new password twice, and
    save.
 
-<!-- SCREENSHOT 04: the "Change password" dialog, empty fields. Never capture a real password. -->
+![The Change Password dialog with empty Current password, New password and Confirm new password fields](/assets/guide/04-change-password.png)
 
 5. Now go to **https://woco.dev** and sign in there with **the same email and the same new
    password**. This is where your state's data lives and where you will do your reviewing.
@@ -81,8 +79,7 @@ something — do not create a second account.
 2. Use the search box — it reads *Search records, citations...* — and the filters beside it to
    narrow down to your state.
 
-<!-- SCREENSHOT 05: the Catalog/search page with filters visible and a state's results loaded.
-     Use a state that is genuinely loaded on woco.dev at capture time. -->
+![The Catalog page: the Filters sidebar on the left, and marking results listed on the right](/assets/guide/05-catalog-search.png)
 
 3. Results are Markings: **Townmarks** (the town's own postmark), **Ratemarks** (the postage rate),
    and **Auxmarks** (instructional markings such as PAID, FREE, MISSENT).
@@ -94,7 +91,7 @@ something — do not create a second account.
 
 Click any result to open its record page.
 
-<!-- SCREENSHOT 06: a record detail page, whole screen, on a record with a decent amount of data. -->
+![A record detail page showing the marking image alongside the Marking Details panel: type, state, town, dates, colour and catalog code](/assets/guide/06-record-detail.png)
 
 What you are looking at:
 
@@ -118,8 +115,7 @@ reason you are here.
 On a record page, editors see a checkbox labelled **Reviewed / confirmed**. Tick it once you are
 satisfied that the record is right.
 
-<!-- SCREENSHOT 07: a record page with the "Reviewed / confirmed" checkbox visible, unticked.
-     Must be captured while signed in as an editor — the checkbox is hidden from everyone else. -->
+![The "Reviewed / confirmed" checkbox on a record, unticked](/assets/guide/07-reviewed-checkbox.png)
 
 ### Seeing what is left
 
@@ -129,7 +125,7 @@ settings: **All (Default)**, **Reviewed**, and **Unreviewed**.
 Set it to **Unreviewed** and you get exactly the records you have not yet worked through. This is
 how you get through a whole state methodically instead of losing your place.
 
-<!-- SCREENSHOT 08: the Review Status filter open, showing All / Reviewed / Unreviewed. -->
+![The Review Status filter open, offering All (Default), Reviewed and Unreviewed](/assets/guide/08-review-status-filter.png)
 
 ### The one convention that surprises everybody
 
@@ -155,12 +151,11 @@ hellowoco.app for final cleanup.
 Beyond reviewing, you can add to the catalog. Use **Submit New Marking** for a marking the catalog
 does not have, and **Submit Edit to Existing Marking** to correct one that it does.
 
-<!-- SCREENSHOT 09: the record page header showing the Submit Edit to Existing Marking button. -->
+![The "Submit Edit to Existing Marking" button in a record's Marking Details header](/assets/guide/09-submit-edit-button.png)
 
 To record an actual cover bearing a marking, use **Submit New Cover** from that marking's record.
 
-<!-- SCREENSHOT 10: the Submit New Cover form, showing the image upload area and the three
-     checkboxes below it. -->
+![The Submit New Cover form: Type and Date fields, the Cover images upload area, and the Institutionally Owned, Backstamp and submitter-name checkboxes below it](/assets/guide/10-submit-cover-form.png)
 
 On the cover form, three checkboxes matter:
 
@@ -179,7 +174,7 @@ and the entry goes into the review queue rather than straight into the catalog.
 
 Everything you have submitted is listed under **Dashboard** in the menu under your name.
 
-<!-- SCREENSHOT 11: the Dashboard, with at least one submission in a visible state. -->
+![The Dashboard's My Submissions tab showing a submission with a Draft badge and an Edit Draft button](/assets/guide/11-dashboard.png)
 
 ---
 

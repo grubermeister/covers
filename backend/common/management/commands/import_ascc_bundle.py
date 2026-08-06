@@ -42,9 +42,12 @@ import csv
 import json
 import os
 import tablib
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
 from import_export.results import RowResult
+
+from common.date_range import suppress_date_range_recompute
 
 from common.admin import (
     CitationResource,
@@ -383,7 +386,10 @@ class Command(BaseCommand):
         # uses set_rollback(True) at the end of a successful pass for the
         # same effect.
         try:
-            with transaction.atomic():
+            # suppress_date_range_recompute: skip per-row cache refreshes from
+            # the DateSeen/CoverMarking signal receivers during the bulk load;
+            # one set-based recompute below covers the whole bundle.
+            with transaction.atomic(), suppress_date_range_recompute():
                 if truncate:
                     self.stdout.write(self.style.NOTICE(
                         "Truncating ASCC catalog and collection tables..."
@@ -488,6 +494,12 @@ class Command(BaseCommand):
                 # this back too.
                 if "regions" in order:
                     _ensure_collections_for_regions(self.stdout)
+
+                # Refresh the marking date-range cache columns in one
+                # set-based pass (issue #59). Inside the outer atomic so a
+                # failed/dry-run bundle rolls this back with everything else.
+                self.stdout.write("  recomputing marking date-range cache...")
+                call_command("recompute_marking_date_ranges", "--all")
 
                 # Successful pass through every stem. Under --dry-run, mark
                 # the outer transaction for rollback so the bundle never

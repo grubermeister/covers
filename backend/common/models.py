@@ -206,7 +206,7 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
     itself -- see MarkingRecycleBin. Code that must see removed markings
     (recycle-bin endpoints, restore, audit) uses Marking.all_objects.
 
-    Keeps the MarkingQuerySet methods (e.g. with_date_range) via from_queryset.
+    Keeps the MarkingQuerySet methods via from_queryset.
     """
     def get_queryset(self):
         return super().get_queryset().filter(recycle_bin_entry__isnull=True)
@@ -214,6 +214,7 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
 
 MARKING_DATE_FMT_CHOICES = [('MD', 'MD'), ('MDD', 'MDD'), ('YD', 'YD'), ('YMD', 'YMD'), ('YMDD', 'YMDD')]
 MARKING_IMPRESSION_CHOICES = [('Normal', 'Normal'), ('Stencil', 'Stencil'), ('Negative', 'Negative')]
+DATE_RANGE_GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
 
 
 class Marking(TimestampedModel):
@@ -261,6 +262,10 @@ class Marking(TimestampedModel):
         verbose_name_plural = 'Markings'
         ordering = ['id']
         base_manager_name = 'all_objects'
+        indexes = [
+            models.Index(fields=['earliest_seen'], name='marking_earliest_seen_idx'),
+            models.Index(fields=['latest_seen'], name='marking_latest_seen_idx'),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=Q(type__in=[c[0] for c in MarkingType.choices]),
