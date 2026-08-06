@@ -325,7 +325,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
 
     if (s.marking_id != null) {
       navigate(`/edit/${s.marking_id}`, {
-        state: { fromDashboard: true, fromDashboardDirect: true },
+        state: { from: "/dashboard", fromDashboard: true, fromDashboardDirect: true },
       });
     }
   };
@@ -358,24 +358,6 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     const statusNorm = String(item.status || "").toLowerCase();
     if (statusNorm === "draft") {
       goEditDraft(item as DashboardItem);
-      return;
-    }
-    if (statusNorm !== "approved") {
-      navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });
-      return;
-    }
-    if (item.cover_id != null) {
-      if (item.marking_id != null) {
-        navigate(`/record/${item.marking_id}/cover/${item.cover_id}`, {
-          state: dashboardReturnState(),
-        });
-        return;
-      }
-      navigate(`/covers/${item.cover_id}`, { state: dashboardReturnState() });
-      return;
-    }
-    if (item.marking_id != null) {
-      navigate(`/record/${item.marking_id}`, { state: dashboardReturnState() });
       return;
     }
     navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });

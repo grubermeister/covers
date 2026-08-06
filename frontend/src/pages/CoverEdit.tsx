@@ -545,6 +545,10 @@ export default function CoverEdit() {
     navigate(returnPath());
   };
 
+  const handleCancelEditing = () => {
+    navigate(returnPath());
+  };
+
   const mergePickedFiles = (files: FileList | File[] | null) => {
     if (!files || (Array.isArray(files) && files.length === 0)) return;
     const list = Array.isArray(files) ? files : Array.from(files);
@@ -1039,28 +1043,6 @@ export default function CoverEdit() {
                       </label>
                       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                         <div className="space-y-1.5">
-                          <Label htmlFor="cover-date-year" className="text-xs text-muted-foreground">
-                            Year
-                          </Label>
-                          <Input
-                            id="cover-date-year"
-                            type="text"
-                            inputMode="numeric"
-                            placeholder="YYYY"
-                            value={coverDate.year}
-                            onChange={(e) => {
-                              setCoverDate((prev) => ({
-                                ...prev,
-                                unknown: false,
-                                year: e.target.value.replace(/\D/g, "").slice(0, 4),
-                              }));
-                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
-                            }}
-                            disabled={submitting || coverDate.unknown}
-                            className={cn(fieldErrors.date && "border-destructive")}
-                          />
-                        </div>
-                        <div className="space-y-1.5">
                           <Label htmlFor="cover-date-month" className="text-xs text-muted-foreground">
                             Month
                           </Label>
@@ -1105,6 +1087,28 @@ export default function CoverEdit() {
                             onChange={(e) => {
                               const raw = e.target.value.replace(/\D/g, "").slice(0, 2);
                               setCoverDate((prev) => ({ ...prev, unknown: false, day: raw }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                            className={cn(fieldErrors.date && "border-destructive")}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-year" className="text-xs text-muted-foreground">
+                            Year
+                          </Label>
+                          <Input
+                            id="cover-date-year"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="YYYY"
+                            value={coverDate.year}
+                            onChange={(e) => {
+                              setCoverDate((prev) => ({
+                                ...prev,
+                                unknown: false,
+                                year: e.target.value.replace(/\D/g, "").slice(0, 4),
+                              }));
                               setFieldErrors((prev) => ({ ...prev, date: undefined }));
                             }}
                             disabled={submitting || coverDate.unknown}
@@ -1485,9 +1489,27 @@ export default function CoverEdit() {
                       >
                         Save as Draft
                       </Button>
-                      <Button type="submit" className="w-full sm:flex-1" disabled={submitting}>
+                      <Button
+                        type="submit"
+                        className={
+                          mode === "edit"
+                            ? "w-full sm:flex-1 bg-green-800 text-white hover:bg-green-900"
+                            : "w-full sm:flex-1"
+                        }
+                        disabled={submitting}
+                      >
                         {submitting ? "Saving..." : mode === "create" ? "Submit Cover" : "Submit changes for review"}
                       </Button>
+                      {mode === "edit" && (
+                        <Button
+                          type="button"
+                          className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                          disabled={submitting}
+                          onClick={handleCancelEditing}
+                        >
+                          Cancel Editing
+                        </Button>
+                      )}
                     </div>
                   </form>
                 </CardContent>

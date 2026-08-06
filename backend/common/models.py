@@ -2,8 +2,7 @@ import hashlib
 import uuid
 from datetime import date as date_cls
 from django.db import models
-from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField, IntegerField, Value
-from django.db.models.functions import Coalesce, Least, Greatest
+from django.db.models import Q, F
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
@@ -52,150 +51,11 @@ class MarkingType(models.TextChoices):
 
 
 class MarkingQuerySet(models.QuerySet):
-    def with_date_range(self):
-        """
-        Annotate each Marking with the min/max date_seen.date values aggregated
-        from two sources:
-          1. DateSeen rows attached directly to the marking
-             (subject_type='MARKING', subject_id=marking.id)
-          2. DateSeen rows attached to covers that bear the marking via
-             cover_markings (subject_type='COVER', subject_id=cover.id)
-        Exposed to serializers as `earliest_seen` / `latest_seen`, plus
-        matching granularity annotations from the row that supplied each
-        boundary date.
-
-        Uses subqueries against DateSeen so the two sources can be unioned
-        without producing a Cartesian explosion between cover_markings and
-        directly-attached DateSeen rows.
-        """
-        direct_qs = DateSeen.objects.filter(
-            subject_type='MARKING',
-            subject_id=OuterRef('pk'),
-            date__isnull=False,
-        )
-        # The CoverMarking lookup sits TWO subqueries deep: the outermost
-        # query is Marking, the cover_qs Subquery (DateSeen) is one level in,
-        # and the CoverMarking filter that follows is two levels in. A bare
-        # `OuterRef('pk')` resolves only one level out -- it would join
-        # CoverMarking.marking_id against DateSeen.pk, which is gibberish and
-        # decorrelates the result so every Marking row gets the same span.
-        # Django's documented idiom for two-level nesting is
-        # `OuterRef(OuterRef('pk'))`; the outer wrapper hops past DateSeen
-        # back up to the Marking queryset.
-        cover_qs = DateSeen.objects.filter(
-            subject_type='COVER',
-            subject_id__in=CoverMarking.objects.filter(
-                marking_id=OuterRef(OuterRef('pk')),
-                review_status=CoverMarking.REVIEW_APPROVED,
-            ).values('cover_id'),
-            date__isnull=False,
-        )
-        return self.annotate(
-            earliest_seen_direct=Subquery(direct_qs.order_by('date', 'pk').values('date')[:1]),
-            latest_seen_direct=Subquery(direct_qs.order_by('-date', '-pk').values('date')[:1]),
-            earliest_seen_via_cover=Subquery(cover_qs.order_by('date', 'pk').values('date')[:1]),
-            latest_seen_via_cover=Subquery(cover_qs.order_by('-date', '-pk').values('date')[:1]),
-            earliest_seen_via_cover_id=Subquery(
-                cover_qs.order_by('date', 'pk').values('subject_id')[:1],
-            ),
-            latest_seen_via_cover_id=Subquery(
-                cover_qs.order_by('-date', '-pk').values('subject_id')[:1],
-            ),
-            earliest_seen_direct_granularity=Subquery(
-                direct_qs.order_by('date', 'pk').values('granularity')[:1],
-            ),
-            latest_seen_direct_granularity=Subquery(
-                direct_qs.order_by('-date', '-pk').values('granularity')[:1],
-            ),
-            earliest_seen_via_cover_granularity=Subquery(
-                cover_qs.order_by('date', 'pk').values('granularity')[:1],
-            ),
-            latest_seen_via_cover_granularity=Subquery(
-                cover_qs.order_by('-date', '-pk').values('granularity')[:1],
-            ),
-        ).annotate(
-            # MySQL's GREATEST/LEAST return NULL if any argument is NULL, so we
-            # wrap in Coalesce to fall back to whichever source has a value when
-            # the other source is empty. Order of fallbacks does not affect
-            # correctness because Coalesce returns the first non-null arg.
-            earliest_seen=Coalesce(
-                Least('earliest_seen_direct', 'earliest_seen_via_cover'),
-                F('earliest_seen_direct'),
-                F('earliest_seen_via_cover'),
-            ),
-            latest_seen=Coalesce(
-                Greatest('latest_seen_direct', 'latest_seen_via_cover'),
-                F('latest_seen_direct'),
-                F('latest_seen_via_cover'),
-            ),
-        ).annotate(
-            # Tie policy: prefer direct MARKING DateSeen rows over cover-derived
-            # rows when both sources share the same boundary date.
-            earliest_seen_granularity=Case(
-                When(
-                    earliest_seen_direct__isnull=True,
-                    then=F('earliest_seen_via_cover_granularity'),
-                ),
-                When(
-                    earliest_seen_via_cover__isnull=True,
-                    then=F('earliest_seen_direct_granularity'),
-                ),
-                When(
-                    earliest_seen_direct__lte=F('earliest_seen_via_cover'),
-                    then=F('earliest_seen_direct_granularity'),
-                ),
-                default=F('earliest_seen_via_cover_granularity'),
-                output_field=CharField(),
-            ),
-            latest_seen_granularity=Case(
-                When(
-                    latest_seen_direct__isnull=True,
-                    then=F('latest_seen_via_cover_granularity'),
-                ),
-                When(
-                    latest_seen_via_cover__isnull=True,
-                    then=F('latest_seen_direct_granularity'),
-                ),
-                When(
-                    latest_seen_direct__gte=F('latest_seen_via_cover'),
-                    then=F('latest_seen_direct_granularity'),
-                ),
-                default=F('latest_seen_via_cover_granularity'),
-                output_field=CharField(),
-            ),
-            earliest_seen_cover_id=Case(
-                When(
-                    earliest_seen_direct__isnull=True,
-                    then=F('earliest_seen_via_cover_id'),
-                ),
-                When(
-                    earliest_seen_via_cover__isnull=True,
-                    then=Value(None),
-                ),
-                When(
-                    earliest_seen_direct__lte=F('earliest_seen_via_cover'),
-                    then=Value(None),
-                ),
-                default=F('earliest_seen_via_cover_id'),
-                output_field=IntegerField(),
-            ),
-            latest_seen_cover_id=Case(
-                When(
-                    latest_seen_direct__isnull=True,
-                    then=F('latest_seen_via_cover_id'),
-                ),
-                When(
-                    latest_seen_via_cover__isnull=True,
-                    then=Value(None),
-                ),
-                When(
-                    latest_seen_direct__gte=F('latest_seen_via_cover'),
-                    then=Value(None),
-                ),
-                default=F('latest_seen_via_cover_id'),
-                output_field=IntegerField(),
-            ),
-        )
+    # earliest_seen / latest_seen are real columns maintained by
+    # common.date_range (issue #59); the former with_date_range()
+    # correlated-subquery annotation is gone. The subclass remains so
+    # future marking-specific queryset methods have a home.
+    pass
 
 
 class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
@@ -247,6 +107,22 @@ class Marking(TimestampedModel):
     post_office = models.ForeignKey('PostOffice', on_delete=models.PROTECT, related_name='markings')
     is_reviewed = models.BooleanField(default=False, help_text='A state editor has personally vetted this record (Issue #22).')
     display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public marking detail page")
+
+    # Derived cache of the use range (issue #59): min/max over the marking's
+    # own DateSeen rows plus DateSeen rows of covers linked via CoverMarking,
+    # with direct rows supplying the granularity on boundary-date ties.
+    # dates_seen stays the source of truth; common.date_range recomputes these
+    # whenever that evidence changes. Never write these fields directly.
+    earliest_seen = models.DateField(null=True, blank=True, editable=False)
+    earliest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
+    latest_seen = models.DateField(null=True, blank=True, editable=False)
+    latest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
 
     # objects: default manager, EXCLUDES recycle-binned markings.
     # all_objects: unfiltered, INCLUDES recycle-binned markings.

@@ -95,7 +95,9 @@ def compute_marking_date_ranges(marking_ids, *, DateSeen=None, CoverMarking=None
     bounds = {}
 
     for sid, date, gran, pk in DateSeen.objects.filter(
-        subject_type="MARKING", subject_id__in=marking_ids
+        subject_type="MARKING",
+        subject_id__in=marking_ids,
+        date__isnull=False,
     ).values_list("subject_id", "date", "granularity", "pk"):
         _fold(bounds, sid, date, gran, pk, source=0)
 
@@ -106,7 +108,9 @@ def compute_marking_date_ranges(marking_ids, *, DateSeen=None, CoverMarking=None
         cover_to_markings.setdefault(cover_id, []).append(marking_id)
     if cover_to_markings:
         for cid, date, gran, pk in DateSeen.objects.filter(
-            subject_type="COVER", subject_id__in=list(cover_to_markings)
+            subject_type="COVER",
+            subject_id__in=list(cover_to_markings),
+            date__isnull=False,
         ).values_list("subject_id", "date", "granularity", "pk"):
             for marking_id in cover_to_markings[cid]:
                 _fold(bounds, marking_id, date, gran, pk, source=1)

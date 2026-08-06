@@ -516,11 +516,7 @@ const RecordDetail = () => {
   const fromDashboard = locationState?.fromDashboard === true;
   const dashboardTab = locationState?.dashboardTab;
   const handleBack = () => {
-    if (fromDashboard) {
-      navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
-    } else {
-      navigate(-1);
-    }
+    navigate("/search");
   };
 
   if (loading) {
@@ -560,6 +556,7 @@ const RecordDetail = () => {
   const goEdit = () =>
     navigate(`/edit/${record.id}?mode=suggestion`, {
       state: {
+        from: location.pathname + location.search,
         fromSearch: location.state?.fromSearch,
         fromDashboard,
         dashboardTab,

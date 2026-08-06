@@ -522,6 +522,7 @@ const Contribute = () => {
   const isPendingEditContribution = loadedContributionStatus === "pending";
   const isResumingDraft = isEditContribution && !isResubmissionStatus && !isPendingEditContribution;
   const isResumingMarkingEditDraft = isResumingDraft && resumedEditMarkingId != null;
+  const isMarkingEditAction = isEditMarking || isResumingMarkingEditDraft;
   const copy = isPendingEditContribution
     ? {
         ...baseCopy,
@@ -1250,6 +1251,39 @@ const Contribute = () => {
 
   const noAssignedStates = false;
 
+  const handleCancelEditing = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    const fallbackMarkingId = editMarkingId ?? resumedEditMarkingId;
+    if (fallbackMarkingId != null) {
+      navigate(`/record/${fallbackMarkingId}`);
+      return;
+    }
+    navigate("/dashboard");
+  };
+
+  const handleBackFromNewMarking = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/dashboard");
+  };
+
   const townOptions = useMemo(() => {
     const normalizedState = state.trim().toLowerCase();
     if (!normalizedState) return [];
@@ -1545,10 +1579,16 @@ const Contribute = () => {
     // or explicitly unknown. Drafts stay permissive, but typed draft values are
     // still checked for shape.
     const shouldValidateBoundaryDates = !saveAsDraft && isStateEditor;
+    const erdChanged = partialDateKey(erd) !== partialDateKey(erdBaseline);
+    const lrdChanged = partialDateKey(lrd) !== partialDateKey(lrdBaseline);
     const erdValidation =
-      shouldValidateBoundaryDates || partialDateHasValue(erd) ? validatePartialDate(erd) : null;
+      shouldValidateBoundaryDates || partialDateHasValue(erd) || erdChanged
+        ? validatePartialDate(erd)
+        : null;
     const lrdValidation =
-      shouldValidateBoundaryDates || partialDateHasValue(lrd) ? validatePartialDate(lrd) : null;
+      shouldValidateBoundaryDates || partialDateHasValue(lrd) || lrdChanged
+        ? validatePartialDate(lrd)
+        : null;
     if (erdValidation?.ok === false) {
       errors.erd = erdValidation.error;
     }
@@ -2135,23 +2175,6 @@ const Contribute = () => {
         Date unknown
       </label>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-        <Input
-          id={`${baseId}-year`}
-          type="text"
-          inputMode="numeric"
-          placeholder="YYYY"
-          value={value.year}
-          onChange={(e) => {
-            setValue({
-              ...value,
-              unknown: false,
-              year: e.target.value.replace(/\D/g, "").slice(0, 4),
-            });
-            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
-          }}
-          disabled={submitting || value.unknown}
-          className={error ? "border-destructive" : ""}
-        />
         <Select
           value={value.month || "__none__"}
           onValueChange={(month) => {
@@ -2196,6 +2219,23 @@ const Contribute = () => {
           disabled={submitting || value.unknown}
           className={error ? "border-destructive" : ""}
         />
+        <Input
+          id={`${baseId}-year`}
+          type="text"
+          inputMode="numeric"
+          placeholder="YYYY"
+          value={value.year}
+          onChange={(e) => {
+            setValue({
+              ...value,
+              unknown: false,
+              year: e.target.value.replace(/\D/g, "").slice(0, 4),
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+          className={error ? "border-destructive" : ""}
+        />
       </div>
       {error && <p className="text-sm text-destructive">{error}</p>}
     </div>
@@ -2208,6 +2248,15 @@ const Contribute = () => {
 
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {mode === "new" && (
+            <div className="mb-6 flex flex-wrap items-center gap-3">
+              <Button variant="ghost" onClick={handleBackFromNewMarking} className="-ml-4">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back
+              </Button>
+            </div>
+          )}
+
           <div className="mb-8">
             <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground mb-2">
               {copy.h1}
@@ -3067,11 +3116,25 @@ const Contribute = () => {
                       )}
                       <Button
                         type="submit"
-                        className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        className={
+                          isMarkingEditAction
+                            ? "w-full sm:flex-1 bg-green-800 text-white hover:bg-green-900"
+                            : "w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        }
                         disabled={submitting || noAssignedStates}
                       >
                         {submitting ? "Submitting..." : copy.button}
                       </Button>
+                      {isMarkingEditAction && (
+                        <Button
+                          type="button"
+                          className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                          disabled={submitting}
+                          onClick={handleCancelEditing}
+                        >
+                          Cancel Editing
+                        </Button>
+                      )}
                     </div>
                     {isResumingDraft && editContributionId != null && (
                       <div className="pt-2 flex justify-end">

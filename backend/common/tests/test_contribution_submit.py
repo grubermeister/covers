@@ -496,6 +496,56 @@ class ContributionSubmitMarkingEditTests(TestCase):
         self.assertEqual(contribution.submitted_data["marking_lrd_date_year"], "1850")
         self.assertEqual(contribution.submitted_data["marking_lrd_date_month"], "12")
 
+    def test_editor_submitted_unknown_marking_date_is_preserved(self):
+        editor = self._editor("submit-unknown-date-editor")
+        self.client.force_authenticate(editor)
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "marking_lrd_unknown": True,
+                "no_marking_image": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        contribution = Contribution.objects.get(pk=response.data["id"])
+        self.assertIs(contribution.submitted_data["marking_lrd_unknown"], True)
+
+    def test_editor_submitted_empty_marking_date_is_rejected(self):
+        editor = self._editor("submit-empty-date-editor")
+        self.client.force_authenticate(editor)
+
+        response = self.client.post(
+            "/api/v2/contributions/",
+            {
+                "state": "VA",
+                "town": "Richmond",
+                "type": "TOWNMARK",
+                "color": "Black",
+                "color_id": self.color.pk,
+                "is_manuscript": True,
+                "inscription_txt": "RICHMOND VA",
+                "marking_erd_unknown": False,
+                "no_marking_image": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.data["detail"],
+            "Earliest date must include a date component or set Date unknown.",
+        )
+
     def test_direct_marking_suggestion_uses_apmc_without_reference(self):
         editor = User.objects.create_superuser(
             username="direct-editor",

@@ -62,6 +62,24 @@ describe("submittedDataToFieldInput", () => {
     expect(fieldInput.latestSeen).toBe("Day 14, 1850 (month unknown)");
   });
 
+  it("formats explicit unknown marking ERD/LRD flags", () => {
+    const fieldInput = submittedDataToFieldInput(
+      {
+        submission_kind: "marking",
+        state: "VA",
+        town: "Richmond",
+        type: "TOWNMARK",
+        marking_erd_unknown: true,
+        marking_lrd_unknown: true,
+      },
+      lookups,
+      { contributionId: 56 },
+    );
+
+    expect(fieldInput.earliestSeen).toBe("Date unknown");
+    expect(fieldInput.latestSeen).toBe("Date unknown");
+  });
+
   it("preserves manuscript and irregular flags from string form payloads", () => {
     const fieldInput = submittedDataToFieldInput(
       {

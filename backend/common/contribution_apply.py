@@ -1162,19 +1162,16 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
     marking_erd / marking_lrd (+ *_granularity). Used when a marking is added
     or edited from another catalog and has no covers to derive dates from.
 
-    ADDITIVE and NON-DESTRUCTIVE -- unlike the cover flow, this never deletes.
-    A catalog-imported marking carries one MARKING DateSeen row per observed
-    date (see tools/ascc_data_munger.py), and a delete-then-recreate would
-    collapse that history to two boundary rows; cover-derived dates live under
-    subject_type=COVER and are out of scope here. Each non-blank boundary is
-    get_or_create'd at its (subject, date), so a same-date row is reused rather
-    than duplicated. The marking date-range cache (common.date_range) takes min/max across all
-    rows, so adding a boundary widens the displayed range. The form prefills
-    these from the current earliest/latest and only sends a boundary the user
-    changed, so a no-touch edit is a no-op (narrowing a range is an admin/data
-    operation, intentionally not exposed through this form).
+    No date fields means no-op, preserving imported history. Explicit
+    *_unknown=true means the editor is replacing direct marking-level date
+    evidence with unknown, so direct MARKING DateSeen rows are cleared first.
+    Cover-derived dates live under subject_type=COVER and are out of scope here.
+
+    Each non-blank concrete boundary is get_or_create'd at its (subject, date),
+    so a same-date row is reused rather than duplicated. The marking date-range
+    cache (common.date_range) takes min/max across all rows.
     """
-    for date_key, gran_key, unknown_key, year_key, month_key, day_key in (
+    boundary_specs = (
         (
             "marking_erd",
             "marking_erd_granularity",
@@ -1191,7 +1188,15 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
             "marking_lrd_date_month",
             "marking_lrd_date_day",
         ),
-    ):
+    )
+
+    if any(_coerce_optional_bool(payload, spec[2], False) for spec in boundary_specs):
+        DateSeen.objects.filter(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking_id,
+        ).delete()
+
+    for date_key, gran_key, unknown_key, year_key, month_key, day_key in boundary_specs:
         if _coerce_optional_bool(payload, unknown_key, False):
             continue
         has_component = any(

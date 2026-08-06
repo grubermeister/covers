@@ -14,6 +14,7 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
 from django.db.models import Min, Max, Q
 from django.db.models.functions import ExtractYear
@@ -1671,33 +1672,13 @@ class MarkingViewSet(viewsets.ModelViewSet):
     )
 )
 class MarkingDateRangeView(APIView):
-    """Earliest and latest dates_seen.date years across the approved catalog.
-
-    Aggregates DateSeen rows that belong to approved catalog content only:
-      * subject_type='MARKING': subject_id must reference an existing Marking.
-        Draft contributions do not have a Marking row yet (Contribution.marking
-        is null until approval), so MARKING-scoped draft dates cannot exist.
-      * subject_type='COVER':  subject_id must reference a Cover that is linked
-        to at least one Marking via an APPROVED CoverMarking. Cover-scoped
-        DateSeen rows created during draft / pending / rejected reviews are
-        therefore excluded from the public catalog range.
-    """
+    """Earliest and latest observed years across the searchable catalog."""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        approved_cover_ids = CoverMarking.objects.filter(
-            review_status=CoverMarking.REVIEW_APPROVED,
-        ).values("cover_id")
-        approved_marking_ids = Marking.objects.values("pk")
-
-        qs = DateSeen.objects.filter(
-            Q(subject_type=DateSeen.SUBJECT_MARKING, subject_id__in=approved_marking_ids)
-            | Q(subject_type=DateSeen.SUBJECT_COVER, subject_id__in=approved_cover_ids)
-        ).filter(date__isnull=False)
-
-        agg = qs.aggregate(
-            earliest_year=Min(ExtractYear("date")),
-            latest_year=Max(ExtractYear("date")),
+        agg = Marking.objects.aggregate(
+            earliest_year=Min(ExtractYear("earliest_seen")),
+            latest_year=Max(ExtractYear("latest_seen")),
         )
         earliest = int(agg["earliest_year"]) if agg["earliest_year"] is not None else None
         latest = int(agg["latest_year"]) if agg["latest_year"] is not None else None
@@ -2279,6 +2260,54 @@ MARKING_DATE_BOUNDARY_KEYS = (
 )
 
 
+def _truthy_payload_bool(data: dict, key: str) -> bool:
+    value = data.get(key)
+    if value is True:
+        return True
+    if isinstance(value, int) and value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
+def _payload_has_value(data: dict, key: str) -> bool:
+    return data.get(key) not in (None, "")
+
+
+def _validate_marking_date_boundary_payload(data: dict):
+    for label, keys in (
+        ("Earliest date", MARKING_DATE_BOUNDARY_KEYS[0]),
+        ("Latest date", MARKING_DATE_BOUNDARY_KEYS[1]),
+    ):
+        date_key, _gran_key, unknown_key, year_key, month_key, day_key = keys
+        if not any(key in data for key in keys):
+            continue
+        if _truthy_payload_bool(data, unknown_key):
+            continue
+        has_component = any(
+            _payload_has_value(data, key)
+            for key in (year_key, month_key, day_key)
+        )
+        has_legacy_date = _payload_has_value(data, date_key)
+        if not has_component and not has_legacy_date:
+            return "{} must include a date component or set Date unknown.".format(label)
+        if not has_component:
+            continue
+        row = DateSeen(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=0,
+            date_year=_parse_int(data.get(year_key)),
+            date_month=_parse_int(data.get(month_key)),
+            date_day=_parse_int(data.get(day_key)),
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            return "Invalid {} components: {}".format(label.lower(), exc)
+    return None
+
+
 def _clear_replaced_marking_date_boundaries(existing_data: dict, submitted_data: dict) -> None:
     """
     Pending-contribution edits merge JSON into the prior submitted_data. If a
@@ -2470,6 +2499,17 @@ class ContributionSubmitView(APIView):
             submitted_data["state"] = state_value
         if routing_deferred:
             submitted_data["routing_deferred"] = True
+        if (
+            not is_cover_submission
+            and not is_draft
+            and user_can_submit_catalog_code
+        ):
+            date_boundary_error = _validate_marking_date_boundary_payload(submitted_data)
+            if date_boundary_error:
+                return Response(
+                    {"detail": date_boundary_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # Collapse duplicate marking-edit drafts. When a contributor saves a
         # draft against an existing marking (edit_marking_id) without already

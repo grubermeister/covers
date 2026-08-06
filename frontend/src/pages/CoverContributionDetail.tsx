@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { CheckCircle, Loader2, MessageSquare, Pencil, Trash2, XCircle } from "lucide-react";
+import { CheckCircle, ExternalLink, Loader2, MessageSquare, Pencil, Trash2, XCircle } from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -559,6 +559,17 @@ export default function CoverContributionDetail({ initialContribution = null }: 
     });
   };
 
+  const openApprovedCover = () => {
+    if (contribution.coverId == null) return;
+    const path =
+      parentMarkingId != null
+        ? `/record/${parentMarkingId}/cover/${contribution.coverId}`
+        : `/covers/${contribution.coverId}`;
+    navigate(path, {
+      state: { from: location.pathname + location.search },
+    });
+  };
+
   return (
     <>
     <EntryDetailLayout
@@ -700,6 +711,17 @@ export default function CoverContributionDetail({ initialContribution = null }: 
                     >
                       <Pencil className="mr-2 h-4 w-4" />
                       {normalizedStatus === "pending" ? "Edit" : "Edit before resubmitting"}
+                    </Button>
+                  )}
+                  {normalizedStatus === "approved" && contribution.coverId != null && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={openApprovedCover}
+                      disabled={submitting || deleting}
+                    >
+                      <ExternalLink className="mr-2 h-4 w-4" />
+                      View cover
                     </Button>
                   )}
                   {canDeleteOwn && (

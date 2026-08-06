@@ -1027,11 +1027,7 @@ class MarkingSubmitterNameSerializerTests(TestCase):
 
 
 class MarkingErdLrdApplyTests(TestCase):
-    """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking.
-
-    The boundaries land as MARKING-subject DateSeen rows; the apply path must be
-    additive so editing a catalog marking never destroys its imported dates.
-    """
+    """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking."""
 
     def setUp(self):
         self.user = _make_user("erd-contributor")
@@ -1154,9 +1150,9 @@ class MarkingErdLrdApplyTests(TestCase):
                 (None, "YEAR_DAY", 1851, None, 14),
             ],
         )
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
-        self.assertIsNone(annotated.earliest_seen)
-        self.assertIsNone(annotated.latest_seen)
+        marking.refresh_from_db()
+        self.assertIsNone(marking.earliest_seen)
+        self.assertIsNone(marking.latest_seen)
 
     def test_invalid_erd_raises(self):
         sd = self._marking_sd(marking_erd="not-a-date")
@@ -1219,6 +1215,36 @@ class MarkingErdLrdApplyTests(TestCase):
         )
         annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.latest_seen, date(1860, 1, 1))
+
+    def test_edit_unknown_dates_clear_direct_marking_history(self):
+        marking = apply_contribution_to_catalog(
+            _make_cover_contribution(
+                self.user,
+                self._marking_sd(
+                    marking_erd="1845-01-01",
+                    marking_erd_granularity="YEAR",
+                    marking_lrd="1851-01-01",
+                    marking_lrd_granularity="YEAR",
+                ),
+                self.collection,
+            )
+        )
+
+        edit_sd = self._marking_sd(
+            edit_marking_id=marking.pk,
+            marking_erd_unknown=True,
+            marking_lrd_unknown=True,
+        )
+        apply_contribution_to_catalog(
+            _make_cover_contribution(self.user, edit_sd, self.collection)
+        )
+
+        self.assertEqual(self._direct_dates(marking.pk), [])
+        marking.refresh_from_db()
+        self.assertIsNone(marking.earliest_seen)
+        self.assertIsNone(marking.earliest_seen_granularity)
+        self.assertIsNone(marking.latest_seen)
+        self.assertIsNone(marking.latest_seen_granularity)
 
     def test_manual_erd_merges_with_earlier_cover_date(self):
         # Michael's model: a catalog ERD is later corrected by real covers. A
