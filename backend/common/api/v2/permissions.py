@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-from common.models import Contribution, Region
+from common.models import Contribution, Image, Region
 
 
 REVIEW_CONTRIBUTION_PERM = "common.review_contribution"
@@ -133,6 +133,61 @@ class IsEditorOrAdminWrite(IsEditor):
         if request.method in SAFE_METHODS:
             return True
         return super().has_permission(request, view)
+
+
+def user_is_responsible_for_image(user, image):
+    """Whether ``user`` may act on ``image``, via the subject it hangs off.
+
+    Image is polymorphic on (subject_type, subject_id) with no FK, so the
+    subject has to be looked up before the ordinary marking/cover checks apply.
+    A row pointing at a subject that no longer exists is superuser-only: there
+    is no region to reason about. (Deleting a Marking or Cover orphans its
+    Image rows silently -- there is no cascade.)
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if image is None:
+        return False
+    from common.models import Cover, Marking
+
+    if image.subject_type == Image.SUBJECT_MARKING:
+        marking = Marking.all_objects.filter(pk=image.subject_id).first()
+        return _user_is_responsible_for_marking(user, marking)
+    if image.subject_type == Image.SUBJECT_COVER:
+        cover = Cover.all_objects.filter(pk=image.subject_id).first()
+        if cover is None:
+            return False
+        return _user_is_responsible_for_cover(user, cover)
+    return False
+
+
+class IsResponsibleForImageSubject(BasePermission):
+    """
+    Object-level write check for Image rows, scoped to the subject's region.
+
+    ImageViewSet carried only the role check (IsEditorOrAdminWrite), so any
+    editor could mutate any image in any state -- unlike MarkingViewSet, which
+    also applies IsResponsibleForRegion. Applied to the crop action (issue #77);
+    widening it to the whole viewset is tracked separately so that change can be
+    reviewed on its own.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (user.is_superuser or user_can_review_contributions(user))
+        )
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        return user_is_responsible_for_image(request.user, obj)
 
 
 class CanReviewContribution(BasePermission):
