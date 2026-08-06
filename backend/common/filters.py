@@ -2,6 +2,8 @@
 ## WoCo Commons - Model Filters
 ## MPC: 2025/11/15
 ###################################################################################################
+from datetime import date
+
 import django_filters
 from django.db.models import Q
 from rest_framework import filters
@@ -111,17 +113,17 @@ class MarkingListFilter(django_filters.FilterSet):
 
     @staticmethod
     def filter_earliest_use_year_min(queryset, name, value):
-        # earliest_seen is a real indexed column (issue #59); __year__gte
-        # compiles to a sargable date-range comparison in Django 5.2.
         if value is None:
             return queryset
-        return queryset.filter(earliest_seen__year__gte=int(value))
+        year = int(value)
+        return queryset.filter(earliest_seen__gte=date(year, 1, 1))
 
     @staticmethod
     def filter_latest_use_year_max(queryset, name, value):
         if value is None:
             return queryset
-        return queryset.filter(latest_seen__year__lte=int(value))
+        year = int(value)
+        return queryset.filter(latest_seen__lte=date(year, 12, 31))
 
     @staticmethod
     def filter_is_manuscript(queryset, name, value):

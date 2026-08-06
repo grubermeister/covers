@@ -1,4 +1,8 @@
 /** Helpers to distinguish cover vs marking rows in Contribution.submitted_data. */
+import {
+  formatPartialDateInput,
+  partialDateInputFromSubmittedData,
+} from "@/lib/partialDate";
 
 const COVER_TYPE_LABELS: Record<string, string> = {
   FC: "Folded Cover",
@@ -23,7 +27,9 @@ export function isCoverContributionData(sd: Record<string, unknown> | null | und
   const parentRaw = sd.parent_marking_id ?? sd.marking_id ?? sd.parentMarkingId;
   const hasParent =
     parentRaw != null && String(parentRaw).trim() !== "" && String(parentRaw) !== "0";
-  const hasCoverDate = String(sd.cover_date ?? sd.coverDate ?? "").trim().length > 0;
+  const partialDate = partialDateInputFromSubmittedData(sd);
+  const hasCoverDate =
+    partialDate.unknown || partialDate.year.length > 0 || partialDate.month.length > 0 || partialDate.day.length > 0;
 
   return Boolean(hasParent && (hasCoverType || hasCoverDate) && !hasTown && !hasMarkingType);
 }
@@ -49,7 +55,7 @@ export function coverContributionDisplayName(
 ): string {
   const typeCode = String(sd.type ?? "").trim().toUpperCase();
   const typeLabel = COVER_TYPE_LABELS[typeCode] || typeCode || "Cover";
-  const date = String(sd.cover_date ?? sd.coverDate ?? "").trim();
+  const date = formatPartialDateInput(partialDateInputFromSubmittedData(sd));
   const markingId = parentMarkingIdFromContribution(sd);
   const isDraft = String(status ?? "").trim().toLowerCase() === "draft";
   const parts = [isDraft ? "Cover draft" : "Cover", typeLabel];

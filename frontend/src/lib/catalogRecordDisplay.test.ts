@@ -12,6 +12,16 @@ describe("formatDateSeen", () => {
   it("formats YEAR granularity as YYYY", () => {
     expect(formatDateSeen("1865-01-01", "YEAR")).toBe("1865");
   });
+
+  it("formats partial component dates", () => {
+    expect(
+      formatDateSeen(null, "MONTH_DAY", {
+        dateYear: null,
+        dateMonth: 8,
+        dateDay: 14,
+      }),
+    ).toBe("AUG 14 (year unknown)");
+  });
 });
 
 describe("formatDatesSeenList", () => {

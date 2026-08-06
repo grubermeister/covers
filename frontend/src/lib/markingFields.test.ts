@@ -54,6 +54,25 @@ describe("buildMarkingFields — Dates Seen row (issue #25)", () => {
   });
 });
 
+describe("buildMarkingFields - boundary date links", () => {
+  it("attaches cover detail targets to earliest and latest rows when supplied", () => {
+    const rows = buildMarkingFields(
+      baseInput({
+        earliestSeenTo: "/record/12/cover/34",
+        latestSeenTo: "/record/12/cover/56",
+      }),
+      { isStaff: false },
+    );
+
+    expect(rows.find((r) => r.label === "Earliest Seen")?.to).toBe(
+      "/record/12/cover/34",
+    );
+    expect(rows.find((r) => r.label === "Latest Seen")?.to).toBe(
+      "/record/12/cover/56",
+    );
+  });
+});
+
 describe("buildMarkingFields — State/Territory tags (issue #28)", () => {
   it("attaches region tags (search links) to the State/Territory row when supplied", () => {
     const rows = buildMarkingFields(

@@ -9,11 +9,11 @@ a 500 with a field-specific message).
 
 Scope:
   * Marking submissions (type in TOWNMARK/RATEMARK/AUXMARK): create one
-    Marking + one-or-more Image rows + zero-or-more Citation rows.
+    Marking + Image rows unless no image was explicitly affirmed + zero-or-more Citation rows.
     apply_contribution_to_catalog returns the created Marking.
   * Cover submissions (submission_kind == "cover" or type in FC/FL):
     create one Cover + one CoverMarking (linked to the parent marking,
-    review_status=APPROVED) + zero-or-one DateSeen + one-or-more Image
+    review_status=APPROVED) + zero-or-one DateSeen + Image
     rows + zero-or-more Citation rows + zero-or-one CoverValuation. The
     cover branch returns a dict, NOT a Marking -- see
     apply_cover_contribution_to_catalog for the exact shape. The approve
@@ -46,6 +46,7 @@ import json
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
@@ -134,6 +135,7 @@ def apply_contribution_to_catalog(contrib):
         desc_raw = desc_raw.strip()
     else:
         desc_raw = str(desc_raw).strip()
+    display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
 
     date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
     if isinstance(date_fmt, str):
@@ -158,6 +160,7 @@ def apply_contribution_to_catalog(contrib):
         impression=impression,
         rate_val=_parse_decimal(payload.get("rate_val")),
         post_office=post_office,
+        display_submitter_name=bool(display_submitter_name),
         created_by=actor,
         modified_by=actor,
     )
@@ -259,6 +262,12 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
     # Omitted color means "no change"; explicit blank/null means "clear".
     if _payload_mentions_fk(payload, "color_id", "color"):
         marking.color = color
+    if "display_submitter_name" in payload:
+        marking.display_submitter_name = bool(
+            _coerce_optional_bool(
+                payload, "display_submitter_name", marking.display_submitter_name
+            )
+        )
     marking.modified_by = actor
     marking.full_clean()
     marking.save()
@@ -638,6 +647,22 @@ def _coerce_optional_bool(payload: dict, key: str, default):
     return default
 
 
+def _payload_affirms_no_images(payload: dict, subject_type) -> bool:
+    if subject_type == Image.SUBJECT_COVER:
+        keys = ("no_cover_image", "noCoverImage", "cover_no_image", "coverNoImage")
+    else:
+        keys = (
+            "no_marking_image",
+            "noMarkingImage",
+            "marking_no_image",
+            "markingNoImage",
+        )
+    for key in (*keys, "no_image", "noImage"):
+        if _coerce_optional_bool(payload, key, False):
+            return True
+    return False
+
+
 def _parse_decimal(value: Any) -> Decimal | None:
     if value is None:
         return None
@@ -880,7 +905,8 @@ def _sync_images(
     fallback to a 'tracing' flag baked into the meta); new uploads take the
     positional tags in tags_key, indexed over the new uploads only.
 
-    At least one image is required; an empty desired set is malformed.
+    At least one image is required unless the contributor explicitly affirmed
+    that no image is available.
     """
     metas = None
     for k in metas_keys:
@@ -889,6 +915,12 @@ def _sync_images(
             metas = candidate
             break
     if not metas:
+        if _payload_affirms_no_images(payload, subject_type):
+            Image.objects.filter(
+                subject_type=subject_type,
+                subject_id=subject_id,
+            ).delete()
+            return
         raise ContributionApplyError(
             "Submission has no images; at least one image is required."
         )
@@ -1043,15 +1075,40 @@ def _sync_citations(subject_type: str, subject_id, payload: dict, actor) -> None
 
 def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
     """
-    Reconcile the cover's DateSeen to zero-or-one row from cover_date +
-    cover_granularity: delete the existing DateSeen(COVER, cover_id), then
-    recreate from the payload. On a freshly created cover the delete is a no-op.
-    A missing cover_date clears the date (so a contributor who clears the date
-    on edit removes it); a present-but-unparseable date is an error.
+    Reconcile the cover's DateSeen to zero-or-one row.
+
+    New submissions may send component keys:
+    cover_date_year / cover_date_month / cover_date_day, or
+    cover_date_unknown=true. Legacy cover_date + cover_granularity payloads
+    continue to work.
     """
     DateSeen.objects.filter(
         subject_type=DateSeen.SUBJECT_COVER, subject_id=cover_id
     ).delete()
+    if _coerce_optional_bool(payload, "cover_date_unknown", False):
+        return
+
+    has_component = any(
+        payload.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    if has_component:
+        row = DateSeen(
+            subject_type=DateSeen.SUBJECT_COVER,
+            subject_id=cover_id,
+            date_year=_parse_int(payload.get("cover_date_year")),
+            date_month=_parse_int(payload.get("cover_date_month")),
+            date_day=_parse_int(payload.get("cover_date_day")),
+            created_by=actor,
+            modified_by=actor,
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            raise ContributionApplyError("Invalid cover date components: {}".format(exc))
+        row.save()
+        return
+
     raw = payload.get("cover_date") or payload.get("coverDate")
     if raw in (None, ""):
         return
@@ -1081,8 +1138,16 @@ def _sync_cover_date_seen(cover_id, payload: dict, actor) -> None:
 MARKING_DATE_SUBMIT_KEYS = frozenset({
     "marking_erd",
     "marking_erd_granularity",
+    "marking_erd_unknown",
+    "marking_erd_date_year",
+    "marking_erd_date_month",
+    "marking_erd_date_day",
     "marking_lrd",
     "marking_lrd_granularity",
+    "marking_lrd_unknown",
+    "marking_lrd_date_year",
+    "marking_lrd_date_month",
+    "marking_lrd_date_day",
 })
 
 
@@ -1097,22 +1162,76 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
     marking_erd / marking_lrd (+ *_granularity). Used when a marking is added
     or edited from another catalog and has no covers to derive dates from.
 
-    ADDITIVE and NON-DESTRUCTIVE -- unlike the cover flow, this never deletes.
-    A catalog-imported marking carries one MARKING DateSeen row per observed
-    date (see tools/ascc_data_munger.py), and a delete-then-recreate would
-    collapse that history to two boundary rows; cover-derived dates live under
-    subject_type=COVER and are out of scope here. Each non-blank boundary is
-    get_or_create'd at its (subject, date), so a same-date row is reused rather
-    than duplicated. The marking date-range cache (common.date_range) takes min/max across all
-    rows, so adding a boundary widens the displayed range. The form prefills
-    these from the current earliest/latest and only sends a boundary the user
-    changed, so a no-touch edit is a no-op (narrowing a range is an admin/data
-    operation, intentionally not exposed through this form).
+    No date fields means no-op, preserving imported history. Explicit
+    *_unknown=true means the editor is replacing direct marking-level date
+    evidence with unknown, so direct MARKING DateSeen rows are cleared first.
+    Cover-derived dates live under subject_type=COVER and are out of scope here.
+
+    Each non-blank concrete boundary is get_or_create'd at its (subject, date),
+    so a same-date row is reused rather than duplicated. The marking date-range
+    cache (common.date_range) takes min/max across all rows.
     """
-    for date_key, gran_key in (
-        ("marking_erd", "marking_erd_granularity"),
-        ("marking_lrd", "marking_lrd_granularity"),
-    ):
+    boundary_specs = (
+        (
+            "marking_erd",
+            "marking_erd_granularity",
+            "marking_erd_unknown",
+            "marking_erd_date_year",
+            "marking_erd_date_month",
+            "marking_erd_date_day",
+        ),
+        (
+            "marking_lrd",
+            "marking_lrd_granularity",
+            "marking_lrd_unknown",
+            "marking_lrd_date_year",
+            "marking_lrd_date_month",
+            "marking_lrd_date_day",
+        ),
+    )
+
+    if any(_coerce_optional_bool(payload, spec[2], False) for spec in boundary_specs):
+        DateSeen.objects.filter(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking_id,
+        ).delete()
+
+    for date_key, gran_key, unknown_key, year_key, month_key, day_key in boundary_specs:
+        if _coerce_optional_bool(payload, unknown_key, False):
+            continue
+        has_component = any(
+            payload.get(key) not in (None, "")
+            for key in (year_key, month_key, day_key)
+        )
+        if has_component:
+            row = DateSeen(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking_id,
+                date_year=_parse_int(payload.get(year_key)),
+                date_month=_parse_int(payload.get(month_key)),
+                date_day=_parse_int(payload.get(day_key)),
+                created_by=actor,
+                modified_by=actor,
+            )
+            try:
+                row.normalize_date_parts()
+            except DjangoValidationError as exc:
+                raise ContributionApplyError("Invalid {} components: {}".format(date_key, exc))
+            DateSeen.objects.get_or_create(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking_id,
+                granularity=row.granularity,
+                date_year=row.date_year,
+                date_month=row.date_month,
+                date_day=row.date_day,
+                defaults={
+                    "date": row.date,
+                    "created_by": actor,
+                    "modified_by": actor,
+                },
+            )
+            continue
+
         raw = payload.get(date_key)
         if raw in (None, ""):
             continue
@@ -1126,12 +1245,27 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
             raise ContributionApplyError(
                 "Invalid {}: {!r}".format(gran_key, granularity)
             )
-        DateSeen.objects.get_or_create(
+        row = DateSeen(
             subject_type=DateSeen.SUBJECT_MARKING,
             subject_id=marking_id,
             date=parsed,
+            granularity=granularity,
+            created_by=actor,
+            modified_by=actor,
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            raise ContributionApplyError("Invalid {}: {}".format(date_key, exc))
+        DateSeen.objects.get_or_create(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking_id,
+            granularity=row.granularity,
+            date_year=row.date_year,
+            date_month=row.date_month,
+            date_day=row.date_day,
             defaults={
-                "granularity": granularity,
+                "date": row.date,
                 "created_by": actor,
                 "modified_by": actor,
             },

@@ -9,6 +9,11 @@ import {
   contributionImageMetasFromSubmittedData,
   contributionMetaImageUrl,
 } from "@/lib/contributionImages";
+import {
+  partialDateInputFromSubmittedData,
+  validatePartialDate,
+  type DateSeenGranularity,
+} from "@/lib/partialDate";
 
 /**
  * Unified Marking service. The v2 API returns one row per marking
@@ -368,8 +373,10 @@ export interface MarkingRecord {
   regions: MarkingRegion[];
   earliestSeen: string | null;
   earliestSeenGranularity: string | null;
+  earliestSeenCoverId: number | null;
   latestSeen: string | null;
   latestSeenGranularity: string | null;
+  latestSeenCoverId: number | null;
   // All MARKING-scoped DateSeen rows the catalog records for this marking (one
   // per observed date), ordered by date. Detail view only; used to render a
   // "Dates Seen" listing when there are multiple dates (issue #25).
@@ -382,6 +389,10 @@ export interface MarkingRecord {
   canRemove: boolean;
   // Whether a state editor has personally vetted this record (Issue #22).
   isReviewed: boolean;
+  /** Submitter opted in to show their name on the public marking detail page. */
+  displaySubmitterName: boolean;
+  /** Submitter display name; null unless they opted in (server-gated). */
+  submitterName: string | null;
   // Contributor's "comment for editor" and the editor's review feedback, sourced
   // from the marking's approved Contribution. The backend returns "" to anyone
   // who is not that contributor or an editor, so a non-empty value is safe to show.
@@ -644,11 +655,13 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
       typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
         ? o.earliest_seen_granularity
         : null,
+    earliestSeenCoverId: toIdOrNull(o.earliest_seen_cover_id),
     latestSeen: typeof o.latest_seen === "string" && o.latest_seen ? o.latest_seen : null,
     latestSeenGranularity:
       typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
         ? o.latest_seen_granularity
         : null,
+    latestSeenCoverId: toIdOrNull(o.latest_seen_cover_id),
     datesSeen: (Array.isArray(o.dates_seen) ? o.dates_seen : [])
       .map(mapAssociatedDateSeen)
       .filter((x): x is AssociatedDateSeen => x !== null),
@@ -659,6 +672,11 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
     isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    submitterName:
+      typeof o.submitter_name === "string" && o.submitter_name
+        ? o.submitter_name
+        : null,
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
   };
@@ -917,8 +935,11 @@ export async function restoreMarkingVersion(
  */
 export interface AssociatedDateSeen {
   id: number;
-  date: string;
-  granularity: "DAY" | "MONTH" | "YEAR";
+  date: string | null;
+  granularity: DateSeenGranularity;
+  dateYear: number | null;
+  dateMonth: number | null;
+  dateDay: number | null;
 }
 
 /** Cover attributes shown inside an Associated Cover row. */
@@ -986,12 +1007,27 @@ function mapAssociatedDateSeen(raw: unknown): AssociatedDateSeen | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const id = toIdOrNull(o.id);
-  const date = typeof o.date === "string" ? o.date : "";
-  if (id == null || !date) return null;
+  const date = typeof o.date === "string" && o.date.trim() ? o.date : null;
+  const dateYear = toNumOrNull(o.date_year ?? o.dateYear);
+  const dateMonth = toNumOrNull(o.date_month ?? o.dateMonth);
+  const dateDay = toNumOrNull(o.date_day ?? o.dateDay);
+  if (id == null || (!date && dateYear == null && dateMonth == null && dateDay == null)) return null;
   const gRaw = String(o.granularity ?? "").toUpperCase();
   const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return { id, date, granularity };
+    gRaw === "MONTH"
+      ? "MONTH"
+      : gRaw === "YEAR"
+        ? "YEAR"
+        : gRaw === "MONTH_ONLY"
+          ? "MONTH_ONLY"
+          : gRaw === "DAY_ONLY"
+            ? "DAY_ONLY"
+            : gRaw === "YEAR_DAY"
+              ? "YEAR_DAY"
+              : gRaw === "MONTH_DAY"
+                ? "MONTH_DAY"
+                : "DAY";
+  return { id, date, granularity, dateYear, dateMonth, dateDay };
 }
 
 function mapAssociatedCoverDetails(raw: unknown): AssociatedCoverDetails | null {
@@ -1229,15 +1265,17 @@ function resolveCoverSubmissionThumbnail(
 }
 
 function datesSeenFromCoverSubmission(sd: Record<string, unknown>): AssociatedDateSeen[] {
-  const raw = sd.cover_date ?? sd.coverDate;
-  if (raw == null || String(raw).trim() === "") return [];
-  const date = String(raw).trim();
-  const gRaw = String(
-    sd.cover_granularity ?? sd.coverGranularity ?? sd.date_granularity ?? sd.dateGranularity ?? "DAY",
-  ).toUpperCase();
-  const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return [{ id: 0, date, granularity }];
+  const input = partialDateInputFromSubmittedData(sd);
+  const parsed = validatePartialDate(input);
+  if (!parsed.ok || parsed.value.unknown || parsed.value.granularity == null) return [];
+  return [{
+    id: 0,
+    date: parsed.value.legacyDate,
+    granularity: parsed.value.granularity,
+    dateYear: parsed.value.year,
+    dateMonth: parsed.value.month,
+    dateDay: parsed.value.day,
+  }];
 }
 
 function mapCoverContributionToAssociatedCover(

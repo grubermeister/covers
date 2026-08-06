@@ -185,6 +185,46 @@ class DateRangeApiTests(DateRangeCacheBase):
         self.assertEqual(ids, {early.pk})
         self.assertNotIn(undated.pk, ids)
 
+    def test_year_filters_match_displayed_range_boundaries(self):
+        spanning = self._marking("SPANNING")
+        before = self._marking("BEFORE")
+        after = self._marking("AFTER")
+        self._date("MARKING", spanning.pk, "1792-01-01")
+        self._date("MARKING", spanning.pk, "1899-01-01")
+        self._date("MARKING", before.pk, "1791-01-01")
+        self._date("MARKING", after.pk, "1900-01-01")
+
+        resp = self.client.get("/api/v2/markings/?earliest_use_year_min=1899")
+        ids = {r["id"] for r in resp.data["results"]}
+        self.assertEqual(ids, {after.pk})
+
+        resp = self.client.get("/api/v2/markings/?latest_use_year_max=1792")
+        ids = {r["id"] for r in resp.data["results"]}
+        self.assertEqual(ids, {before.pk})
+
+        resp = self.client.get("/api/v2/markings/?latest_use_year_max=1791")
+        ids = {r["id"] for r in resp.data["results"]}
+        self.assertEqual(ids, {before.pk})
+
+        resp = self.client.get(
+            "/api/v2/markings/?earliest_use_year_min=1899&latest_use_year_max=1899"
+        )
+        ids = {r["id"] for r in resp.data["results"]}
+        self.assertEqual(ids, set())
+
+    def test_markings_range_uses_searchable_marking_columns(self):
+        active = self._marking("ACTIVE")
+        hidden = self._marking("HIDDEN")
+        cover = self._cover(hidden, code="H-1")
+        self._date("MARKING", active.pk, "1850-01-01")
+        self._date("COVER", cover.pk, "1899-01-01")
+        MarkingRecycleBin.objects.create(marking=hidden, removed_by=self.user)
+
+        resp = self.client.get("/api/v2/markings-range/")
+
+        self.assertEqual(resp.status_code, 200, resp.content)
+        self.assertEqual(resp.data, {"earliest_year": 1850, "latest_year": 1850})
+
     def test_ordering_by_earliest_seen(self):
         b = self._marking("B-1890")
         a = self._marking("A-1810")

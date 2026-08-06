@@ -99,7 +99,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: CoverDateSeenItem): string {
-  return formatDateSeen(d.date, d.granularity) || d.date || "";
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 
@@ -298,19 +302,12 @@ const CoverDetailPage = () => {
   };
 
   const handleBack = () => {
-    if (state?.fromDashboard) {
-      navigate("/dashboard", { state: { tab: state.dashboardTab ?? "submissions" } });
+    const associatedMarkingId = markingId ?? associatedMarkings[0]?.marking.id ?? null;
+    if (associatedMarkingId != null) {
+      navigate(`/record/${associatedMarkingId}`);
       return;
     }
-    if (state?.from) {
-      navigate(state.from);
-      return;
-    }
-    if (markingId != null) {
-      navigate(`/record/${markingId}`);
-      return;
-    }
-    navigate(-1);
+    navigate("/search");
   };
 
   useEffect(() => {

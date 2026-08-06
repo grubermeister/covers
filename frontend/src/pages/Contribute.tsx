@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
@@ -24,7 +25,13 @@ import { getShapes, type ShapeOption } from "@/services/shapes";
 import { getPostOffices, type PostOfficeOption } from "@/services/postOffices";
 import { getRegions } from "@/services/regions";
 import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
-import { deriveGranularityFromIso } from "@/lib/dateGranularity";
+import {
+  partialDateInputFromDateSeen,
+  partialDateInputFromPayload,
+  validatePartialDate,
+  type PartialDateInput,
+  type PartialDateValue,
+} from "@/lib/partialDate";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
 import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
@@ -67,6 +74,104 @@ const MARKING_TYPE_OPTIONS = [
   { value: "RATEMARK", label: ENTRY_LABELS.markingType.RATEMARK },
   { value: "AUXMARK", label: ENTRY_LABELS.markingType.AUXMARK },
 ];
+
+const DATE_MONTH_OPTIONS = [
+  { value: "1", label: "JAN" },
+  { value: "2", label: "FEB" },
+  { value: "3", label: "MAR" },
+  { value: "4", label: "APR" },
+  { value: "5", label: "MAY" },
+  { value: "6", label: "JUN" },
+  { value: "7", label: "JUL" },
+  { value: "8", label: "AUG" },
+  { value: "9", label: "SEP" },
+  { value: "10", label: "OCT" },
+  { value: "11", label: "NOV" },
+  { value: "12", label: "DEC" },
+];
+
+const EMPTY_PARTIAL_DATE: PartialDateInput = {
+  unknown: false,
+  year: "",
+  month: "",
+  day: "",
+};
+
+type MarkingBoundaryPrefix = "marking_erd" | "marking_lrd";
+
+function markingBoundaryDateFromPayload(
+  sd: Record<string, unknown>,
+  prefix: MarkingBoundaryPrefix,
+): PartialDateInput {
+  const camelPrefix = prefix === "marking_erd" ? "markingErd" : "markingLrd";
+  return partialDateInputFromPayload(
+    sd,
+    {
+      unknown: `${prefix}_unknown`,
+      year: `${prefix}_date_year`,
+      month: `${prefix}_date_month`,
+      day: `${prefix}_date_day`,
+      legacyDate: prefix,
+      legacyGranularity: `${prefix}_granularity`,
+    },
+    {
+      unknown: `${camelPrefix}Unknown`,
+      year: `${camelPrefix}DateYear`,
+      month: `${camelPrefix}DateMonth`,
+      day: `${camelPrefix}DateDay`,
+      legacyDate: camelPrefix,
+      legacyGranularity: `${camelPrefix}Granularity`,
+    },
+  );
+}
+
+function partialDateKey(value: PartialDateInput): string {
+  return JSON.stringify({
+    unknown: value.unknown,
+    year: value.year.trim(),
+    month: value.month.trim(),
+    day: value.day.trim(),
+  });
+}
+
+function partialDateHasValue(value: PartialDateInput): boolean {
+  return value.unknown || !!value.year.trim() || !!value.month.trim() || !!value.day.trim();
+}
+
+function appendMarkingBoundaryDate(
+  form: FormData,
+  prefix: MarkingBoundaryPrefix,
+  value: PartialDateValue,
+) {
+  if (value.unknown) {
+    form.append(`${prefix}_unknown`, "true");
+    return;
+  }
+  form.append(`${prefix}_unknown`, "false");
+  if (value.year != null) form.append(`${prefix}_date_year`, String(value.year));
+  if (value.month != null) form.append(`${prefix}_date_month`, String(value.month));
+  if (value.day != null) form.append(`${prefix}_date_day`, String(value.day));
+  if (value.legacyDate && value.legacyGranularity) {
+    form.append(prefix, value.legacyDate);
+    form.append(`${prefix}_granularity`, value.legacyGranularity);
+  }
+}
+
+function markingBoundaryDatePayload(
+  prefix: MarkingBoundaryPrefix,
+  value: PartialDateValue,
+): Record<string, unknown> {
+  if (value.unknown) return { [`${prefix}_unknown`]: true };
+  return {
+    [`${prefix}_unknown`]: false,
+    ...(value.year != null ? { [`${prefix}_date_year`]: value.year } : {}),
+    ...(value.month != null ? { [`${prefix}_date_month`]: value.month } : {}),
+    ...(value.day != null ? { [`${prefix}_date_day`]: value.day } : {}),
+    ...(value.legacyDate && value.legacyGranularity
+      ? { [prefix]: value.legacyDate, [`${prefix}_granularity`]: value.legacyGranularity }
+      : {}),
+  };
+}
 
 /** docs/model.md lettering seed values; the dropdown is restricted to these. */
 const LETTERING_SEED_NAMES = new Set([
@@ -138,24 +243,43 @@ const FIELD_ERROR_SCROLL_TARGETS: Array<[string, string]> = [
   ["shape", "shape"],
   ["color", "color"],
   ["dateFormat", "date-format"],
+  ["erd", "marking-erd"],
+  ["lrd", "marking-lrd"],
   ["widthMm", "width-mm"],
   ["heightMm", "height-mm"],
   ["lettering", "lettering"],
   ["rateValue", "rate-value"],
-  ["images", "marking-images-input"],
+  ["images", "marking-images-zone"],
 ];
+
+function getFocusableTarget(el: HTMLElement): HTMLElement {
+  const primarySelector =
+    "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role='combobox']:not([disabled])";
+  if (el.matches(primarySelector)) {
+    return el;
+  }
+
+  const primary = el.querySelector<HTMLElement>(primarySelector);
+  if (primary) return primary;
+
+  return el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? el;
+}
+
+function scrollAndFocusElement(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const focusable = getFocusableTarget(el);
+  if (typeof focusable.focus === "function") {
+    window.setTimeout(() => focusable.focus(), 300);
+  }
+  return true;
+}
 
 function scrollToFirstError(errors: Record<string, string | undefined>) {
   for (const [key, id] of FIELD_ERROR_SCROLL_TARGETS) {
     if (!errors[key]) continue;
     const el = document.getElementById(id);
-    if (!el) continue;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    const focusable = el as HTMLElement & { focus?: () => void };
-    if (typeof focusable.focus === "function") {
-      window.setTimeout(() => focusable.focus?.(), 300);
-    }
-    return;
+    if (scrollAndFocusElement(el)) return;
   }
 }
 
@@ -174,6 +298,18 @@ type ReferenceDetailFieldErrors = {
   pageNumber?: string;
   citationUrl?: string;
 };
+
+function scrollToFirstReferenceDetailError(
+  selectedReferenceWorks: ReferenceWorkRecord[],
+  errors: Record<number, ReferenceDetailFieldErrors>,
+) {
+  for (const work of selectedReferenceWorks) {
+    const rowErrors = errors[work.id];
+    if (!rowErrors) continue;
+    const id = rowErrors.pageNumber ? `reference-page-${work.id}` : `reference-url-${work.id}`;
+    if (scrollAndFocusElement(document.getElementById(id))) return;
+  }
+}
 
 /**
  * Per-image tag persisted on Contribution.submitted_data. Marking-image
@@ -273,6 +409,58 @@ function parseReferenceWorkDetails(raw: unknown): Record<number, ReferenceDetail
   return out;
 }
 
+function submittedValue(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): unknown {
+  return sd[snakeKey] ?? (camelKey ? sd[camelKey] : undefined);
+}
+
+function submittedString(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): string {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  return value != null && value !== "" ? String(value).trim() : "";
+}
+
+function submittedBool(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): boolean {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function submittedNumber(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): number {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") return Number(value);
+  return NaN;
+}
+
+function submittedArray(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): unknown[] {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  return Array.isArray(value) ? value : [];
+}
+
 const Contribute = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -334,6 +522,7 @@ const Contribute = () => {
   const isPendingEditContribution = loadedContributionStatus === "pending";
   const isResumingDraft = isEditContribution && !isResubmissionStatus && !isPendingEditContribution;
   const isResumingMarkingEditDraft = isResumingDraft && resumedEditMarkingId != null;
+  const isMarkingEditAction = isEditMarking || isResumingMarkingEditDraft;
   const copy = isPendingEditContribution
     ? {
         ...baseCopy,
@@ -386,7 +575,9 @@ const Contribute = () => {
   const [markingType, setMarkingType] = useState("");
   const [rateValue, setRateValue] = useState("");
   const [description, setDescription] = useState("");
+  const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [contributorComment, setContributorComment] = useState("");
+  const [noMarkingImage, setNoMarkingImage] = useState(false);
   // One entry in the combined image gallery: "existing" wraps an already-saved
   // image (edit-marking or draft-resume); "new" wraps a freshly-picked file.
   type MarkingGalleryItem =
@@ -435,10 +626,10 @@ const Contribute = () => {
   // cover-derived dates at read time. *Baseline holds the value prefilled on
   // edit so we send a boundary only when the user changed it (a no-touch edit
   // must not re-write the catalog's date history).
-  const [erd, setErd] = useState("");
-  const [lrd, setLrd] = useState("");
-  const [erdBaseline, setErdBaseline] = useState("");
-  const [lrdBaseline, setLrdBaseline] = useState("");
+  const [erd, setErd] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [lrd, setLrd] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [erdBaseline, setErdBaseline] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [lrdBaseline, setLrdBaseline] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
   const [fieldErrors, setFieldErrors] = useState<{
     markingType?: string;
     state?: string;
@@ -734,31 +925,40 @@ const Contribute = () => {
           setCatalogCodeTouched(true);
         }
         if (typeVal) setMarkingType(typeVal);
-        setContributorComment(getStr((sd as Record<string, unknown>).contributor_comment));
+        setDisplaySubmitterName(
+          String(submittedValue(sd, "display_submitter_name", "displaySubmitterName")) === "true",
+        );
+        setContributorComment(
+          getStr(submittedValue(sd, "contributor_comment", "contributorComment")),
+        );
+        const loadedNoMarkingImage = submittedBool(sd, "no_marking_image", "noMarkingImage");
+        setNoMarkingImage(loadedNoMarkingImage);
         setShape(shapeVal || "");
         setColor(colorVal || "");
         const wh = submittedDataToWidthHeightStrings(sd as Record<string, unknown>);
         setWidthMm(wh.width);
         setHeightMm(wh.height);
-        setIsManuscript(sd.is_manuscript === true);
+        setIsManuscript(submittedBool(sd, "is_manuscript", "isManuscript"));
         const loadedImpression = getStr(sd.impression);
         setImpression(loadedImpression || "Normal");
-        setIsIrregular(Boolean(sd.is_irreg));
-        setInscriptionText(getStr(sd.inscription_txt));
-        setDescription(getStr(sd.desc));
-        setRateValue(getStr((sd as Record<string, unknown>).rate_val));
+        setIsIrregular(submittedBool(sd, "is_irreg", "isIrreg"));
+        setInscriptionText(getStr(submittedValue(sd, "inscription_txt", "inscriptionTxt")));
+        setDescription(getStr(submittedValue(sd, "desc", "description")));
+        setRateValue(getStr(submittedValue(sd, "rate_val", "rateVal")));
         const referenceWorkIds = parseReferenceWorkIds(
-          (sd as Record<string, unknown>).reference_work_ids
+          submittedValue(sd, "reference_work_ids", "referenceWorkIds")
         );
         const referenceDetails = parseReferenceWorkDetails(
-          (sd as Record<string, unknown>).reference_work_details
+          submittedValue(sd, "reference_work_details", "referenceWorkDetails")
         );
         setPendingReferenceWorkIds(referenceWorkIds);
         setReferenceDetailsById(referenceDetails);
         if (referenceWorkIds.length === 0) {
           setSelectedReferenceWorks([]);
         }
-        const lid = sd.lettering_id ?? sd.lettering_style_id;
+        const lid =
+          submittedValue(sd, "lettering_id") ??
+          submittedValue(sd, "lettering_style_id", "letteringStyleId");
         setLetteringId(lid != null ? String(lid) : "");
         const dateFmtCode = getStr(sd.date_fmt ?? sd.dateFmt);
         if (dateFmtCode) {
@@ -780,34 +980,33 @@ const Contribute = () => {
         // Restore any ERD/LRD the contributor typed before saving the draft.
         // These ride submitted_data verbatim; no baseline (a draft has not
         // touched the catalog), so resubmitting sends them as a fresh boundary.
-        setErd(getStr(sd.marking_erd));
-        setLrd(getStr(sd.marking_lrd));
-        setErdBaseline("");
-        setLrdBaseline("");
+        setErd(markingBoundaryDateFromPayload(sd, "marking_erd"));
+        setLrd(markingBoundaryDateFromPayload(sd, "marking_lrd"));
+        setErdBaseline({ ...EMPTY_PARTIAL_DATE });
+        setLrdBaseline({ ...EMPTY_PARTIAL_DATE });
         // Load prior images as "existing" gallery items (same path used by the
         // edit-marking flow) so the remove button records removals in
         // `removedExistingImageKeys` and the contributor can reorder / set the
         // default across them and any new uploads.
-        const submittedMarkingImages = Array.isArray(sd.marking_images)
-          ? (sd.marking_images as unknown[])
-              .map((v) => (typeof v === "string" ? v.trim() : ""))
-              .filter((v) => v.length > 0)
-          : [];
+        const submittedMarkingImages = submittedArray(sd, "marking_images", "markingImages")
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .filter((v) => v.length > 0);
         let existingUrls: string[] = submittedMarkingImages;
         if (existingUrls.length === 0) {
-          const metas = Array.isArray(sd.marking_image_metas)
-            ? (sd.marking_image_metas as Array<{ storage_filename?: string }>)
-            : [];
+          const metas = submittedArray(sd, "marking_image_metas", "markingImageMetas") as Array<{
+            storage_filename?: string;
+            storageFilename?: string;
+          }>;
           const baseUrl =
             (import.meta.env.VITE_IMAGE_URL ?? "").replace(/\/+$/, "") || "/media";
           existingUrls = metas
             .map((m) => {
-              const sf = m?.storage_filename;
+              const sf = m?.storage_filename ?? m?.storageFilename;
               return sf ? `${baseUrl}/${sf.replace(/^\/+/, "")}` : "";
             })
             .filter((u) => u.length > 0);
         }
-        if (existingUrls.length > 0) {
+        if (!loadedNoMarkingImage && existingUrls.length > 0) {
           setGallery(
             existingUrls.map((url) => ({
               kind: "existing" as const,
@@ -826,25 +1025,27 @@ const Contribute = () => {
         // the marking's current images (the draft only snapshots field
         // edits, not images) and (b) we can compare its modified_date to
         // the baseline stamped in submitted_data and flag a stale draft.
-        const editMarkingIdRaw = (sd as Record<string, unknown>).edit_marking_id;
-        const editMarkingIdNum =
-          typeof editMarkingIdRaw === "number"
-            ? editMarkingIdRaw
-            : typeof editMarkingIdRaw === "string" && editMarkingIdRaw.trim() !== ""
-              ? Number(editMarkingIdRaw)
-              : NaN;
+        const editMarkingIdNum = submittedNumber(sd, "edit_marking_id", "editMarkingId");
         if (Number.isFinite(editMarkingIdNum) && editMarkingIdNum > 0) {
           setResumedEditMarkingId(editMarkingIdNum);
-          const baselineRaw = (sd as Record<string, unknown>).marking_modified_at_baseline;
+          const baselineRaw = submittedValue(
+            sd,
+            "marking_modified_at_baseline",
+            "markingModifiedAtBaseline",
+          );
           const baseline = typeof baselineRaw === "string" ? baselineRaw : null;
-          const removedRaw = (sd as Record<string, unknown>).removed_existing_image_keys;
-          if (Array.isArray(removedRaw)) {
-            setRemovedExistingImageKeys(removedRaw.map((k) => String(k)));
+          const removedKeys = submittedArray(
+            sd,
+            "removed_existing_image_keys",
+            "removedExistingImageKeys",
+          );
+          if (removedKeys.length > 0) {
+            setRemovedExistingImageKeys(removedKeys.map((k) => String(k)));
           }
           getMarkingByIdRaw(editMarkingIdNum)
             .then((m) => {
               if (cancelled || !m) return;
-              if (existingUrls.length === 0 && Array.isArray(m.images)) {
+              if (!loadedNoMarkingImage && existingUrls.length === 0 && Array.isArray(m.images)) {
                 const rows = (m.images as unknown[])
                   .map((img) => {
                     const o = img as Record<string, unknown>;
@@ -941,6 +1142,7 @@ const Contribute = () => {
             tracing: r.tracing,
           })),
         );
+        setNoMarkingImage(false);
         setRemovedExistingImageKeys([]);
 
         const modifiedDate = typeof data.modified_date === "string" ? data.modified_date : null;
@@ -980,6 +1182,7 @@ const Contribute = () => {
         setImpression(normalizedImpression ?? "Normal");
         setInscriptionText(typeof data.inscription_txt === "string" ? data.inscription_txt : "");
         setDescription(typeof data.desc === "string" ? data.desc : "");
+        setDisplaySubmitterName(Boolean(data.display_submitter_name));
         setRateValue(String(data.rate_val ?? "").trim());
 
         setLetteringId(data.lettering != null ? String(data.lettering) : "");
@@ -1000,10 +1203,18 @@ const Contribute = () => {
         // a no-touch edit never re-writes the catalog's MARKING date rows.
         const erdRaw = typeof data.earliest_seen === "string" ? data.earliest_seen : "";
         const lrdRaw = typeof data.latest_seen === "string" ? data.latest_seen : "";
-        setErd(erdRaw);
-        setLrd(lrdRaw);
-        setErdBaseline(erdRaw);
-        setLrdBaseline(lrdRaw);
+        const erdValue = partialDateInputFromDateSeen({
+          date: erdRaw,
+          granularity: typeof data.earliest_seen_granularity === "string" ? data.earliest_seen_granularity : "",
+        });
+        const lrdValue = partialDateInputFromDateSeen({
+          date: lrdRaw,
+          granularity: typeof data.latest_seen_granularity === "string" ? data.latest_seen_granularity : "",
+        });
+        setErd(erdValue);
+        setLrd(lrdValue);
+        setErdBaseline(erdValue);
+        setLrdBaseline(lrdValue);
       })
       .catch(() => {
         if (!cancelled) setRecordError("Failed to load record");
@@ -1039,6 +1250,39 @@ const Contribute = () => {
   }, [isEditMarking, editMarkingId, dateFormatOptions, shapeOptions, navigate]);
 
   const noAssignedStates = false;
+
+  const handleCancelEditing = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    const fallbackMarkingId = editMarkingId ?? resumedEditMarkingId;
+    if (fallbackMarkingId != null) {
+      navigate(`/record/${fallbackMarkingId}`);
+      return;
+    }
+    navigate("/dashboard");
+  };
+
+  const handleBackFromNewMarking = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/dashboard");
+  };
 
   const townOptions = useMemo(() => {
     const normalizedState = state.trim().toLowerCase();
@@ -1127,6 +1371,7 @@ const Contribute = () => {
       });
     }
     if (toAdd.length === 0) return;
+    setNoMarkingImage(false);
     if (fieldErrors.images) {
       setFieldErrors((prev) => ({ ...prev, images: undefined }));
     }
@@ -1181,6 +1426,31 @@ const Contribute = () => {
     if (fieldErrors.images) {
       setFieldErrors((prev) => ({ ...prev, images: undefined }));
     }
+    if (markingFileInputRef.current) markingFileInputRef.current.value = "";
+  };
+
+  const setNoMarkingImageChecked = (checked: boolean) => {
+    setNoMarkingImage(checked);
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    if (!checked) return;
+    setGallery((prev) => {
+      const removed = prev
+        .filter(
+          (item): item is Extract<MarkingGalleryItem, { kind: "existing" }> =>
+            item.kind === "existing",
+        )
+        .map((item) => item.url);
+      if (removed.length > 0) {
+        setRemovedExistingImageKeys((keys) => {
+          const next = [...keys];
+          for (const url of removed) {
+            if (!next.includes(url)) next.push(url);
+          }
+          return next;
+        });
+      }
+      return [];
+    });
     if (markingFileInputRef.current) markingFileInputRef.current.value = "";
   };
 
@@ -1285,8 +1555,8 @@ const Contribute = () => {
       // At least one image must accompany every entry. The combined gallery
       // holds both kept existing images and new uploads, so a single emptiness
       // check covers all modes (new / edit-marking / edit-contribution).
-      if (gallery.length === 0) {
-        errors.images = "At least one image is required";
+      if (gallery.length === 0 && !noMarkingImage) {
+        errors.images = "Add at least one image or confirm no image is available";
       }
 
       // Dimensions: only validated for handstamped markings. Manuscript markings
@@ -1305,12 +1575,33 @@ const Contribute = () => {
       }
     }
 
-    // ERD/LRD are optional, but if both are given the earliest must not be
-    // after the latest. (A type="date" input only yields a full ISO date or
-    // empty, so format validity is otherwise guaranteed.)
-    const erdForValidation = erd.trim();
-    const lrdForValidation = lrd.trim();
-    if (erdForValidation && lrdForValidation && erdForValidation > lrdForValidation) {
+    // Final editor submissions require each visible boundary date to be known
+    // or explicitly unknown. Drafts stay permissive, but typed draft values are
+    // still checked for shape.
+    const shouldValidateBoundaryDates = !saveAsDraft && isStateEditor;
+    const erdChanged = partialDateKey(erd) !== partialDateKey(erdBaseline);
+    const lrdChanged = partialDateKey(lrd) !== partialDateKey(lrdBaseline);
+    const erdValidation =
+      shouldValidateBoundaryDates || partialDateHasValue(erd) || erdChanged
+        ? validatePartialDate(erd)
+        : null;
+    const lrdValidation =
+      shouldValidateBoundaryDates || partialDateHasValue(lrd) || lrdChanged
+        ? validatePartialDate(lrd)
+        : null;
+    if (erdValidation?.ok === false) {
+      errors.erd = erdValidation.error;
+    }
+    if (lrdValidation?.ok === false) {
+      errors.lrd = lrdValidation.error;
+    }
+    if (
+      erdValidation?.ok === true &&
+      lrdValidation?.ok === true &&
+      erdValidation.value.legacyDate &&
+      lrdValidation.value.legacyDate &&
+      erdValidation.value.legacyDate > lrdValidation.value.legacyDate
+    ) {
       errors.lrd = "Latest date must be on or after the earliest date";
     }
 
@@ -1349,18 +1640,20 @@ const Contribute = () => {
       }
     }
     setReferenceDetailErrorsById(referenceDetailErrors);
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      scrollToFirstError(errors);
+      return;
+    }
+
     if (!saveAsDraft && Object.keys(referenceDetailErrors).length > 0) {
       toast({
         title: "Fix reference details",
         description: "Check page number and citation URL fields for selected references.",
         variant: "destructive",
       });
-      return;
-    }
-
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
-      scrollToFirstError(errors);
+      scrollToFirstReferenceDetailError(selectedReferenceWorks, referenceDetailErrors);
       return;
     }
 
@@ -1431,19 +1724,19 @@ const Contribute = () => {
         }
       }
 
-      // ERD/LRD: send a boundary only when it is non-empty, parses to a date,
-      // and differs from the value prefilled on edit. The backend sync is
-      // additive (never deletes), so an unchanged or cleared field is a no-op
-      // and the marking's existing catalog dates are preserved.
+      // ERD/LRD: send a boundary only when it has date information and differs
+      // from the value prefilled on edit. The backend sync is additive (never
+      // deletes), so an unchanged or cleared field is a no-op and existing
+      // catalog dates are preserved.
       const markingDateToSend = (
-        value: string,
-        baseline: string,
-      ): { date: string; granularity: string } | null => {
-        const trimmed = value.trim();
-        if (!trimmed || trimmed === baseline.trim()) return null;
-        const derived = deriveGranularityFromIso(trimmed);
-        if (!derived) return null;
-        return { date: derived.normalizedDate, granularity: derived.granularity };
+        value: PartialDateInput,
+        baseline: PartialDateInput,
+      ): PartialDateValue | null => {
+        if (!partialDateHasValue(value)) return null;
+        if (partialDateKey(value) === partialDateKey(baseline)) return null;
+        const parsed = validatePartialDate(value);
+        if (!parsed.ok) return null;
+        return parsed.value;
       };
       const erdToSend = markingDateToSend(erd, erdBaseline);
       const lrdToSend = markingDateToSend(lrd, lrdBaseline);
@@ -1481,6 +1774,7 @@ const Contribute = () => {
         if (description.trim()) {
           form.append("desc", description.trim());
         }
+        form.append("display_submitter_name", String(displaySubmitterName));
         if (canEditCatalogCode && catalogCodeToSend) {
           form.append("catalog_code", catalogCodeToSend);
         }
@@ -1495,12 +1789,10 @@ const Contribute = () => {
         // ERD/LRD are editor-only (issue #27): never send them from a
         // non-editor, even if stale state lingers. The server also strips them.
         if (isStateEditor && erdToSend) {
-          form.append("marking_erd", erdToSend.date);
-          form.append("marking_erd_granularity", erdToSend.granularity);
+          appendMarkingBoundaryDate(form, "marking_erd", erdToSend);
         }
         if (isStateEditor && lrdToSend) {
-          form.append("marking_lrd", lrdToSend.date);
-          form.append("marking_lrd_granularity", lrdToSend.granularity);
+          appendMarkingBoundaryDate(form, "marking_lrd", lrdToSend);
         }
         for (const file of allImageFiles) {
           form.append("marking_image", file, file.name);
@@ -1516,6 +1808,9 @@ const Contribute = () => {
         }
         if ((isEditMarking || isEditContribution) && removedExistingImageKeys.length > 0) {
           form.append("removed_existing_image_keys", JSON.stringify(removedExistingImageKeys));
+        }
+        if (noMarkingImage) {
+          form.append("no_marking_image", "true");
         }
         if (isEditMarking && existingTagMapEntries.length > 0) {
           const existingTagMap: Record<string, UploadedImageTag> =
@@ -1550,6 +1845,7 @@ const Contribute = () => {
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
           rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
+          display_submitter_name: displaySubmitterName,
           ...(canEditCatalogCode && catalogCodeToSend
             ? { catalog_code: catalogCodeToSend }
             : {}),
@@ -1560,12 +1856,13 @@ const Contribute = () => {
           lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
           ...(isStateEditor && erdToSend
-            ? { marking_erd: erdToSend.date, marking_erd_granularity: erdToSend.granularity }
+            ? markingBoundaryDatePayload("marking_erd", erdToSend)
             : {}),
           ...(isStateEditor && lrdToSend
-            ? { marking_lrd: lrdToSend.date, marking_lrd_granularity: lrdToSend.granularity }
+            ? markingBoundaryDatePayload("marking_lrd", lrdToSend)
             : {}),
           marking_image_tags: orderedNewTags,
+          ...(noMarkingImage ? { no_marking_image: true } : {}),
           ...(imageOrder.length > 0 ? { image_order: imageOrder } : {}),
           ...(trimmedComment
             ? { contributor_comment: trimmedComment, comment_for_editor: trimmedComment }
@@ -1680,6 +1977,7 @@ const Contribute = () => {
           onChange={handleImageChange}
         />
         <div
+          id="marking-images-zone"
           role="button"
           tabIndex={0}
           onClick={() => inputRef.current?.click()}
@@ -1840,9 +2138,108 @@ const Contribute = () => {
             </>
           )}
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={noMarkingImage}
+            onCheckedChange={(v) => setNoMarkingImageChecked(v === true)}
+            disabled={submitting}
+          />
+          No image is available to upload
+        </label>
       </div>
     );
   };
+
+  const renderBoundaryDateFields = (
+    title: string,
+    baseId: string,
+    value: PartialDateInput,
+    setValue: (next: PartialDateInput) => void,
+    error: string | undefined,
+  ) => (
+    <div id={baseId} className="space-y-2">
+      <Label className="text-sm font-normal">{title}</Label>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox
+          checked={value.unknown}
+          onCheckedChange={(checked) => {
+            setValue(
+              checked === true
+                ? { unknown: true, year: "", month: "", day: "" }
+                : { ...EMPTY_PARTIAL_DATE },
+            );
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting}
+        />
+        Date unknown
+      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <Select
+          value={value.month || "__none__"}
+          onValueChange={(month) => {
+            setValue({
+              ...value,
+              unknown: false,
+              month: month === "__none__" ? "" : month,
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+        >
+          <SelectTrigger
+            id={`${baseId}-month`}
+            className={error ? "border-destructive" : ""}
+          >
+            <SelectValue placeholder="Month" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">Unknown</SelectItem>
+            {DATE_MONTH_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          id={`${baseId}-day`}
+          type="text"
+          inputMode="numeric"
+          placeholder="DD"
+          value={value.day}
+          onChange={(e) => {
+            setValue({
+              ...value,
+              unknown: false,
+              day: e.target.value.replace(/\D/g, "").slice(0, 2),
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+          className={error ? "border-destructive" : ""}
+        />
+        <Input
+          id={`${baseId}-year`}
+          type="text"
+          inputMode="numeric"
+          placeholder="YYYY"
+          value={value.year}
+          onChange={(e) => {
+            setValue({
+              ...value,
+              unknown: false,
+              year: e.target.value.replace(/\D/g, "").slice(0, 4),
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+          className={error ? "border-destructive" : ""}
+        />
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </div>
+  );
 
 
   return (
@@ -1851,6 +2248,15 @@ const Contribute = () => {
 
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {mode === "new" && (
+            <div className="mb-6 flex flex-wrap items-center gap-3">
+              <Button variant="ghost" onClick={handleBackFromNewMarking} className="-ml-4">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back
+              </Button>
+            </div>
+          )}
+
           <div className="mb-8">
             <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground mb-2">
               {copy.h1}
@@ -2245,7 +2651,7 @@ const Contribute = () => {
                                 opt.name && opt.name !== opt.description ? opt.name : "";
                               return (
                                 <DropdownMenuRadioItem key={opt.id} value={value}>
-                                  {meaning ? `${code} — ${meaning}` : code}
+                                  {meaning ? `${code} - ${meaning}` : code}
                                 </DropdownMenuRadioItem>
                               );
                             })}
@@ -2260,41 +2666,25 @@ const Contribute = () => {
                     {isStateEditor && <div className="space-y-2">
                       <Label>Recorded date range</Label>
                       <p className="text-sm text-muted-foreground">
-                        Optional. Earliest (ERD) and latest (LRD) recorded dates for a
-                        marking added from another catalog. Leave blank to let the dates
-                        come from uploaded covers. Enter a year (e.g. 1845) for a year-only date.
+                        Enter the earliest (ERD) and latest (LRD) recorded date status. Use
+                        date components when known, or select Date unknown.
                       </p>
-                      <div className="grid grid-cols-2 gap-3">
-                        <div className="space-y-1">
-                          <Label htmlFor="marking-erd" className="text-sm font-normal">Earliest (ERD)</Label>
-                          <Input
-                            id="marking-erd"
-                            type="date"
-                            value={erd}
-                            onChange={(e) => {
-                              setErd(e.target.value);
-                              setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
-                            }}
-                            disabled={submitting}
-                            className={fieldErrors.erd ? "border-destructive" : ""}
-                          />
-                        </div>
-                        <div className="space-y-1">
-                          <Label htmlFor="marking-lrd" className="text-sm font-normal">Latest (LRD)</Label>
-                          <Input
-                            id="marking-lrd"
-                            type="date"
-                            value={lrd}
-                            onChange={(e) => {
-                              setLrd(e.target.value);
-                              setFieldErrors((prev) => ({ ...prev, lrd: undefined }));
-                            }}
-                            disabled={submitting}
-                            className={fieldErrors.lrd ? "border-destructive" : ""}
-                          />
-                        </div>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {renderBoundaryDateFields(
+                          "Earliest (ERD)",
+                          "marking-erd",
+                          erd,
+                          setErd,
+                          fieldErrors.erd,
+                        )}
+                        {renderBoundaryDateFields(
+                          "Latest (LRD)",
+                          "marking-lrd",
+                          lrd,
+                          setLrd,
+                          fieldErrors.lrd,
+                        )}
                       </div>
-                      {fieldErrors.lrd && <p className="text-sm text-destructive">{fieldErrors.lrd}</p>}
                     </div>}
                     <div className="space-y-2">
                       <Label htmlFor="description">Description</Label>
@@ -2690,6 +3080,15 @@ const Contribute = () => {
                       true,
                     )}
 
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={displaySubmitterName}
+                        onCheckedChange={(v) => setDisplaySubmitterName(v === true)}
+                        disabled={submitting}
+                      />
+                      Would you like your name to display as the submitter?
+                    </label>
+
                     <div className="space-y-2">
                       <Label htmlFor="contributor-comment">Comment for editor</Label>
                       <Textarea
@@ -2717,11 +3116,25 @@ const Contribute = () => {
                       )}
                       <Button
                         type="submit"
-                        className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        className={
+                          isMarkingEditAction
+                            ? "w-full sm:flex-1 bg-green-800 text-white hover:bg-green-900"
+                            : "w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        }
                         disabled={submitting || noAssignedStates}
                       >
                         {submitting ? "Submitting..." : copy.button}
                       </Button>
+                      {isMarkingEditAction && (
+                        <Button
+                          type="button"
+                          className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                          disabled={submitting}
+                          onClick={handleCancelEditing}
+                        >
+                          Cancel Editing
+                        </Button>
+                      )}
                     </div>
                     {isResumingDraft && editContributionId != null && (
                       <div className="pt-2 flex justify-end">

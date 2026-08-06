@@ -63,6 +63,13 @@ def _is_cover_payload(submitted_data: dict) -> bool:
             or ""
         ).strip()
     )
+    has_cover_date = has_cover_date or any(
+        submitted_data.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    has_cover_date = has_cover_date or str(
+        submitted_data.get("cover_date_unknown") or ""
+    ).strip().lower() in {"true", "1", "yes", "on"}
     has_town = bool(str(submitted_data.get("town") or "").strip())
     return has_parent and (has_cover_type or has_cover_date) and not has_town
 

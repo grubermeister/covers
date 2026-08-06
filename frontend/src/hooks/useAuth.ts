@@ -11,6 +11,8 @@ export function useAuth(): AuthUser | null {
     let cancelled = false;
     fetchCurrentUser().then((serverUser) => {
       if (cancelled) return;
+      const current = getStoredUser();
+      if (!current || current.id !== stored.id) return;
       if (serverUser) {
         setStoredUser(serverUser);
       } else {

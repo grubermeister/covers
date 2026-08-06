@@ -179,20 +179,6 @@ const ContributionDetail = () => {
     };
   }, []);
 
-  // Approved submissions live on the entry detail page now (it carries the
-  // comment-for-editor / editor-feedback cards plus the edit/remove buttons), so
-  // send approved contributions there. Top-level effect (not in render body) to
-  // keep hook order stable; reads the contribution state directly.
-  useEffect(() => {
-    const isCover = isCoverContributionData(contribution?.submittedData);
-    if (!isCover && contribution?.status === "approved" && contribution.markingId != null) {
-      navigate(`/record/${contribution.markingId}`, {
-        replace: true,
-        state: { fromDashboard: true, dashboardTab },
-      });
-    }
-  }, [contribution, dashboardTab, navigate]);
-
   const contributionId = contribution?.id;
   const contributionStatus = contribution?.status;
   const contributionSubmittedData = contribution?.submittedData;
@@ -299,15 +285,7 @@ const ContributionDetail = () => {
     }
   };
 
-
-  // Approved submissions are being redirected to the entry page by the effect
-  // above; show the spinner rather than flashing the contribution view first.
-  const isRedirectingToRecord =
-    !isCoverContributionData(contribution?.submittedData) &&
-    contribution?.status === "approved" &&
-    contribution.markingId != null;
-
-  if (loading || isRedirectingToRecord) {
+  if (loading) {
     return (
       <div className="min-h-screen flex flex-col">
         <Navigation />
@@ -445,8 +423,11 @@ const ContributionDetail = () => {
   let displayName = `Submission #${contribution.id}`;
   let fieldRowsError: string | null = null;
   try {
+    const fieldData = { ...sd };
+    delete fieldData.display_submitter_name;
+    delete fieldData.displaySubmitterName;
     const fieldInput = submittedDataToFieldInput(
-      sd,
+      fieldData,
       { letteringOptions, dateFormatOptions },
       { contributionId: contribution.id },
     );

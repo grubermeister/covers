@@ -47,6 +47,15 @@ export function MarkingFieldsDisplay({ rows, mode }: Props) {
                 ),
               )}
             </dd>
+          ) : row.to && hasDisplayValue(row.value) ? (
+            <dd className="text-right">
+              <Link
+                to={row.to}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                {row.value}
+              </Link>
+            </dd>
           ) : (
             <dd className="text-foreground whitespace-pre-line text-right">
               {row.value && row.value.trim() !== "" ? row.value : EMPTY}

@@ -14,6 +14,7 @@ import uuid
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
 from django.db.models import Min, Max, Q
 from django.db.models.functions import ExtractYear
@@ -866,8 +867,8 @@ class DateSeenViewSet(viewsets.ModelViewSet):
     permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "granularity"]
-    ordering_fields = ["date", "created_date"]
-    ordering = ["subject_type", "subject_id", "date"]
+    ordering_fields = ["date", "date_year", "date_month", "date_day", "created_date"]
+    ordering = ["subject_type", "subject_id", "date", "date_year", "date_month", "date_day"]
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, modified_by=self.request.user)
@@ -1671,33 +1672,13 @@ class MarkingViewSet(viewsets.ModelViewSet):
     )
 )
 class MarkingDateRangeView(APIView):
-    """Earliest and latest dates_seen.date years across the approved catalog.
-
-    Aggregates DateSeen rows that belong to approved catalog content only:
-      * subject_type='MARKING': subject_id must reference an existing Marking.
-        Draft contributions do not have a Marking row yet (Contribution.marking
-        is null until approval), so MARKING-scoped draft dates cannot exist.
-      * subject_type='COVER':  subject_id must reference a Cover that is linked
-        to at least one Marking via an APPROVED CoverMarking. Cover-scoped
-        DateSeen rows created during draft / pending / rejected reviews are
-        therefore excluded from the public catalog range.
-    """
+    """Earliest and latest observed years across the searchable catalog."""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        approved_cover_ids = CoverMarking.objects.filter(
-            review_status=CoverMarking.REVIEW_APPROVED,
-        ).values("cover_id")
-        approved_marking_ids = Marking.objects.values("pk")
-
-        qs = DateSeen.objects.filter(
-            Q(subject_type=DateSeen.SUBJECT_MARKING, subject_id__in=approved_marking_ids)
-            | Q(subject_type=DateSeen.SUBJECT_COVER, subject_id__in=approved_cover_ids)
-        )
-
-        agg = qs.aggregate(
-            earliest_year=Min(ExtractYear("date")),
-            latest_year=Max(ExtractYear("date")),
+        agg = Marking.objects.aggregate(
+            earliest_year=Min(ExtractYear("earliest_seen")),
+            latest_year=Max(ExtractYear("latest_seen")),
         )
         earliest = int(agg["earliest_year"]) if agg["earliest_year"] is not None else None
         latest = int(agg["latest_year"]) if agg["latest_year"] is not None else None
@@ -2203,6 +2184,13 @@ def _is_cover_submission_data(data) -> bool:
     parent_raw = data.get("parent_marking_id") or data.get("marking_id")
     has_parent = parent_raw not in (None, "")
     has_cover_date = bool(str(data.get("cover_date") or data.get("coverDate") or "").strip())
+    has_cover_date = has_cover_date or any(
+        data.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    has_cover_date = has_cover_date or str(
+        data.get("cover_date_unknown") or ""
+    ).strip().lower() in {"true", "1", "yes", "on"}
     if has_parent and (has_cover_type or has_cover_date) and not has_town and not has_marking_type:
         return True
     return False
@@ -2250,6 +2238,87 @@ def _resolve_collection_for_submission(
             effective_state = (r.abbrev or "").strip() or (r.name or "").strip()
 
     return region, collection, effective_state
+
+
+MARKING_DATE_BOUNDARY_KEYS = (
+    (
+        "marking_erd",
+        "marking_erd_granularity",
+        "marking_erd_unknown",
+        "marking_erd_date_year",
+        "marking_erd_date_month",
+        "marking_erd_date_day",
+    ),
+    (
+        "marking_lrd",
+        "marking_lrd_granularity",
+        "marking_lrd_unknown",
+        "marking_lrd_date_year",
+        "marking_lrd_date_month",
+        "marking_lrd_date_day",
+    ),
+)
+
+
+def _truthy_payload_bool(data: dict, key: str) -> bool:
+    value = data.get(key)
+    if value is True:
+        return True
+    if isinstance(value, int) and value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
+def _payload_has_value(data: dict, key: str) -> bool:
+    return data.get(key) not in (None, "")
+
+
+def _validate_marking_date_boundary_payload(data: dict):
+    for label, keys in (
+        ("Earliest date", MARKING_DATE_BOUNDARY_KEYS[0]),
+        ("Latest date", MARKING_DATE_BOUNDARY_KEYS[1]),
+    ):
+        date_key, _gran_key, unknown_key, year_key, month_key, day_key = keys
+        if not any(key in data for key in keys):
+            continue
+        if _truthy_payload_bool(data, unknown_key):
+            continue
+        has_component = any(
+            _payload_has_value(data, key)
+            for key in (year_key, month_key, day_key)
+        )
+        has_legacy_date = _payload_has_value(data, date_key)
+        if not has_component and not has_legacy_date:
+            return "{} must include a date component or set Date unknown.".format(label)
+        if not has_component:
+            continue
+        row = DateSeen(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=0,
+            date_year=_parse_int(data.get(year_key)),
+            date_month=_parse_int(data.get(month_key)),
+            date_day=_parse_int(data.get(day_key)),
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            return "Invalid {} components: {}".format(label.lower(), exc)
+    return None
+
+
+def _clear_replaced_marking_date_boundaries(existing_data: dict, submitted_data: dict) -> None:
+    """
+    Pending-contribution edits merge JSON into the prior submitted_data. If a
+    user changes LRD from unknown to a date, the old *_unknown=true key must not
+    survive beside the new date keys.
+    """
+    for boundary_keys in MARKING_DATE_BOUNDARY_KEYS:
+        if not any(key in submitted_data for key in boundary_keys):
+            continue
+        for key in boundary_keys:
+            existing_data.pop(key, None)
 
 
 @method_decorator(csrf_exempt, name="dispatch")
@@ -2430,6 +2499,17 @@ class ContributionSubmitView(APIView):
             submitted_data["state"] = state_value
         if routing_deferred:
             submitted_data["routing_deferred"] = True
+        if (
+            not is_cover_submission
+            and not is_draft
+            and user_can_submit_catalog_code
+        ):
+            date_boundary_error = _validate_marking_date_boundary_payload(submitted_data)
+            if date_boundary_error:
+                return Response(
+                    {"detail": date_boundary_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # Collapse duplicate marking-edit drafts. When a contributor saves a
         # draft against an existing marking (edit_marking_id) without already
@@ -2512,7 +2592,18 @@ class ContributionSubmitView(APIView):
             if not user_can_submit_catalog_code:
                 existing_sd = strip_catalog_code_keys(existing_sd)
                 existing_sd = strip_marking_date_keys(existing_sd)
+            else:
+                _clear_replaced_marking_date_boundaries(existing_sd, submitted_data)
             existing_sd.update(submitted_data)
+            if transition_to_pending:
+                image_error = _validate_final_submission_image_choice(
+                    existing_sd, is_cover_submission
+                )
+                if image_error:
+                    return Response(
+                        {"detail": image_error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             contrib.submitted_data = existing_sd
             contrib.collection = collection
             contrib.modified_by = request.user
@@ -2578,6 +2669,16 @@ class ContributionSubmitView(APIView):
                 submitted_data["cover_image_metas"] = image_metas
             submitted_data["image_metas"] = image_metas
             submitted_data["image_meta"] = image_metas[0]
+
+        if not is_draft:
+            image_error = _validate_final_submission_image_choice(
+                submitted_data, is_cover_submission
+            )
+            if image_error:
+                return Response(
+                    {"detail": image_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         contrib = Contribution.objects.create(
             contributor=request.user,
@@ -2673,6 +2774,54 @@ def _parse_removed_image_keys(raw):
     if isinstance(raw, list):
         return [str(k) for k in raw if k]
     return []
+
+
+def _submitted_payload_has_images(submitted_data, is_cover):
+    keys = (
+        ("cover_image_metas", "image_metas")
+        if is_cover
+        else ("marking_image_metas", "image_metas")
+    )
+    for key in keys:
+        value = submitted_data.get(key)
+        if isinstance(value, list) and len(value) > 0:
+            return True
+    return False
+
+
+def _submitted_payload_affirms_no_images(submitted_data, is_cover):
+    keys = (
+        ("no_cover_image", "noCoverImage", "cover_no_image", "coverNoImage")
+        if is_cover
+        else (
+            "no_marking_image",
+            "noMarkingImage",
+            "marking_no_image",
+            "markingNoImage",
+        )
+    )
+    for key in (*keys, "no_image", "noImage"):
+        value = submitted_data.get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if isinstance(value, int):
+            if value == 1:
+                return True
+            continue
+        if str(value or "").strip().lower() in {"true", "1", "yes", "on"}:
+            return True
+    return False
+
+
+def _validate_final_submission_image_choice(submitted_data, is_cover):
+    if _submitted_payload_has_images(submitted_data, is_cover):
+        return None
+    if _submitted_payload_affirms_no_images(submitted_data, is_cover):
+        return None
+    label = "cover image" if is_cover else "marking image"
+    return "Add at least one {} or confirm no image is available.".format(label)
 
 
 def _storage_filename_removed(storage_filename, removed_set):

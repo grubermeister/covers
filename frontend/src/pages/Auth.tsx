@@ -10,10 +10,11 @@ import { ForgotPasswordForm } from "@/components/ForgotPasswordForm";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Formik, Form, Field, FormikHelpers } from "formik";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { getStoredUser, setStoredUser } from "@/lib/auth";
 import apiClient, { ensureCsrfToken } from "@/lib/api";
+import { getRedirectPath } from "@/lib/authRedirect";
 
 interface AuthValues {
   email: string;
@@ -41,13 +42,15 @@ const Auth = () => {
   const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
+  const redirectPath = getRedirectPath(location.state);
 
   useEffect(() => {
     if (getStoredUser()) {
-      navigate("/");
+      navigate(redirectPath, { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, redirectPath]);
 
   const handleSubmit = async (
     values: AuthValues,
@@ -78,7 +81,7 @@ const Auth = () => {
         title: "Welcome back!",
         description: "You have successfully signed in.",
       });
-      navigate("/");
+      navigate(redirectPath, { replace: true });
     } catch (err) {
       toast({
         title: "Sign in failed",

@@ -888,6 +888,7 @@ class MarkingMarkingResource(PortableTimestampedResource):
             "rate_val",
             "post_office_key",
             "is_reviewed",
+            "display_submitter_name",
             "created_date",
             "modified_date",
             "created_by",
@@ -1419,12 +1420,22 @@ class MarkingDateSeenResource(PolymorphicPortableResource):
             "subject_id",
             "date",
             "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
             "created_date",
             "modified_date",
             "created_by",
             "modified_by",
         )
-        import_id_fields = ("subject_type", "subject_id", "date", "granularity")
+        import_id_fields = (
+            "subject_type",
+            "subject_id",
+            "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
+        )
 
 
 class MarkingImageResource(PolymorphicPortableResource):
