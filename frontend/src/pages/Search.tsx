@@ -185,9 +185,8 @@ function getPaginationPages(currentPage: number, totalPages: number): (number | 
 
 /**
  * Filter label with hover-revealed up/down arrows that drive the multi-column
- * catalogSort list. Clicking the active arrow toggles the entry off; clicking
- * the opposite arrow flips it; clicking an inactive field appends a new entry
- * at the lowest priority (insertion order = sort priority).
+ * catalogSort list. The active direction is visible but inert; clicking the
+ * opposite arrow flips the direction and makes this field primary.
  */
 function SortableLabel({
   htmlFor,
@@ -214,12 +213,13 @@ function SortableLabel({
             type="button"
             aria-label={`Sort by ${label} ascending`}
             aria-pressed={isAsc}
+            disabled={isAsc}
             onClick={() => onToggle(field, "asc")}
             className={cn(
-              "p-0.5 rounded hover:bg-muted transition-opacity",
+              "p-0.5 rounded transition-opacity disabled:cursor-default disabled:hover:bg-transparent",
               isAsc
                 ? "text-foreground opacity-100"
-                : "text-muted-foreground opacity-0 group-hover:opacity-100 focus:opacity-100",
+                : "text-muted-foreground opacity-0 hover:bg-muted group-hover:opacity-100 focus:opacity-100",
             )}
           >
             <ArrowUp className="h-3 w-3" />
@@ -233,12 +233,13 @@ function SortableLabel({
             type="button"
             aria-label={`Sort by ${label} descending`}
             aria-pressed={isDesc}
+            disabled={isDesc}
             onClick={() => onToggle(field, "desc")}
             className={cn(
-              "p-0.5 rounded hover:bg-muted transition-opacity",
+              "p-0.5 rounded transition-opacity disabled:cursor-default disabled:hover:bg-transparent",
               isDesc
                 ? "text-foreground opacity-100"
-                : "text-muted-foreground opacity-0 group-hover:opacity-100 focus:opacity-100",
+                : "text-muted-foreground opacity-0 hover:bg-muted group-hover:opacity-100 focus:opacity-100",
             )}
           >
             <ArrowDown className="h-3 w-3" />
@@ -303,16 +304,14 @@ const Search = () => {
     parseSortParam(searchParams.get("order")),
   );
 
-  // Apply an up/down arrow click on a filter label. Same direction toggles
-  // the entry off; opposite direction flips it; inactive appends at the end.
+  // Apply an up/down arrow click on a filter label. The clicked field becomes
+  // the primary sort; clicking the already-active direction leaves it alone.
   const toggleSort = (field: SortField, dir: SortDir) => {
     setCatalogSort((prev) => {
       const idx = prev.findIndex((e) => e.field === field);
-      if (idx === -1) return [...prev, { field, dir }];
-      if (prev[idx].dir === dir) return prev.filter((_, i) => i !== idx);
-      const next = prev.slice();
-      next[idx] = { field, dir };
-      return next;
+      if (idx === -1) return [{ field, dir }, ...prev];
+      if (prev[idx].dir === dir) return prev;
+      return [{ field, dir }, ...prev.filter((_, i) => i !== idx)];
     });
   };
 
@@ -564,10 +563,8 @@ const Search = () => {
       catalogSortKey,
     ],
     queryFn: async () => {
-      const normalizedFrom =
-        debouncedBeginYear.trim().length === 4 ? debouncedBeginYear.trim() : undefined;
-      const normalizedTo =
-        debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : undefined;
+      const normalizedFrom = normalizedBeginYear || undefined;
+      const normalizedTo = normalizedEndYear || undefined;
 
       const { results, count, count_capped } = await getMarkingsPage(
         currentPage,

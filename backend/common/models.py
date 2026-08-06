@@ -1,11 +1,12 @@
 import hashlib
 import uuid
+from datetime import date as date_cls
 from django.db import models
-from django.db.models import Q, Min, Max, OuterRef, Subquery, F, Case, When, CharField
-from django.db.models.functions import Coalesce, Least, Greatest
+from django.db.models import Q, F
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
+from django.utils.dateparse import parse_date
 from colorfield.fields import ColorField
 
 class TimestampedModel(models.Model):
@@ -50,109 +51,11 @@ class MarkingType(models.TextChoices):
 
 
 class MarkingQuerySet(models.QuerySet):
-    def with_date_range(self):
-        """
-        Annotate each Marking with the min/max date_seen.date values aggregated
-        from two sources:
-          1. DateSeen rows attached directly to the marking
-             (subject_type='MARKING', subject_id=marking.id)
-          2. DateSeen rows attached to covers that bear the marking via
-             cover_markings (subject_type='COVER', subject_id=cover.id)
-        Exposed to serializers as `earliest_seen` / `latest_seen`, plus
-        matching granularity annotations from the row that supplied each
-        boundary date.
-
-        Uses subqueries against DateSeen so the two sources can be unioned
-        without producing a Cartesian explosion between cover_markings and
-        directly-attached DateSeen rows.
-        """
-        direct_qs = DateSeen.objects.filter(
-            subject_type='MARKING',
-            subject_id=OuterRef('pk'),
-        )
-        # The CoverMarking lookup sits TWO subqueries deep: the outermost
-        # query is Marking, the cover_qs Subquery (DateSeen) is one level in,
-        # and the CoverMarking filter that follows is two levels in. A bare
-        # `OuterRef('pk')` resolves only one level out -- it would join
-        # CoverMarking.marking_id against DateSeen.pk, which is gibberish and
-        # decorrelates the result so every Marking row gets the same span.
-        # Django's documented idiom for two-level nesting is
-        # `OuterRef(OuterRef('pk'))`; the outer wrapper hops past DateSeen
-        # back up to the Marking queryset.
-        cover_qs = DateSeen.objects.filter(
-            subject_type='COVER',
-            subject_id__in=CoverMarking.objects.filter(
-                marking_id=OuterRef(OuterRef('pk')),
-            ).values('cover_id'),
-        )
-        return self.annotate(
-            earliest_seen_direct=Subquery(direct_qs.order_by('date', 'pk').values('date')[:1]),
-            latest_seen_direct=Subquery(direct_qs.order_by('-date', '-pk').values('date')[:1]),
-            earliest_seen_via_cover=Subquery(cover_qs.order_by('date', 'pk').values('date')[:1]),
-            latest_seen_via_cover=Subquery(cover_qs.order_by('-date', '-pk').values('date')[:1]),
-            earliest_seen_direct_granularity=Subquery(
-                direct_qs.order_by('date', 'pk').values('granularity')[:1],
-            ),
-            latest_seen_direct_granularity=Subquery(
-                direct_qs.order_by('-date', '-pk').values('granularity')[:1],
-            ),
-            earliest_seen_via_cover_granularity=Subquery(
-                cover_qs.order_by('date', 'pk').values('granularity')[:1],
-            ),
-            latest_seen_via_cover_granularity=Subquery(
-                cover_qs.order_by('-date', '-pk').values('granularity')[:1],
-            ),
-        ).annotate(
-            # MySQL's GREATEST/LEAST return NULL if any argument is NULL, so we
-            # wrap in Coalesce to fall back to whichever source has a value when
-            # the other source is empty. Order of fallbacks does not affect
-            # correctness because Coalesce returns the first non-null arg.
-            earliest_seen=Coalesce(
-                Least('earliest_seen_direct', 'earliest_seen_via_cover'),
-                F('earliest_seen_direct'),
-                F('earliest_seen_via_cover'),
-            ),
-            latest_seen=Coalesce(
-                Greatest('latest_seen_direct', 'latest_seen_via_cover'),
-                F('latest_seen_direct'),
-                F('latest_seen_via_cover'),
-            ),
-        ).annotate(
-            # Tie policy: prefer direct MARKING DateSeen rows over cover-derived
-            # rows when both sources share the same boundary date.
-            earliest_seen_granularity=Case(
-                When(
-                    earliest_seen_direct__isnull=True,
-                    then=F('earliest_seen_via_cover_granularity'),
-                ),
-                When(
-                    earliest_seen_via_cover__isnull=True,
-                    then=F('earliest_seen_direct_granularity'),
-                ),
-                When(
-                    earliest_seen_direct__lte=F('earliest_seen_via_cover'),
-                    then=F('earliest_seen_direct_granularity'),
-                ),
-                default=F('earliest_seen_via_cover_granularity'),
-                output_field=CharField(),
-            ),
-            latest_seen_granularity=Case(
-                When(
-                    latest_seen_direct__isnull=True,
-                    then=F('latest_seen_via_cover_granularity'),
-                ),
-                When(
-                    latest_seen_via_cover__isnull=True,
-                    then=F('latest_seen_direct_granularity'),
-                ),
-                When(
-                    latest_seen_direct__gte=F('latest_seen_via_cover'),
-                    then=F('latest_seen_direct_granularity'),
-                ),
-                default=F('latest_seen_via_cover_granularity'),
-                output_field=CharField(),
-            ),
-        )
+    # earliest_seen / latest_seen are real columns maintained by
+    # common.date_range (issue #59); the former with_date_range()
+    # correlated-subquery annotation is gone. The subclass remains so
+    # future marking-specific queryset methods have a home.
+    pass
 
 
 class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
@@ -163,7 +66,7 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
     itself -- see MarkingRecycleBin. Code that must see removed markings
     (recycle-bin endpoints, restore, audit) uses Marking.all_objects.
 
-    Keeps the MarkingQuerySet methods (e.g. with_date_range) via from_queryset.
+    Keeps the MarkingQuerySet methods via from_queryset.
     """
     def get_queryset(self):
         return super().get_queryset().filter(recycle_bin_entry__isnull=True)
@@ -171,6 +74,7 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
 
 MARKING_DATE_FMT_CHOICES = [('MD', 'MD'), ('MDD', 'MDD'), ('YD', 'YD'), ('YMD', 'YMD'), ('YMDD', 'YMDD')]
 MARKING_IMPRESSION_CHOICES = [('Normal', 'Normal'), ('Stencil', 'Stencil'), ('Negative', 'Negative')]
+DATE_RANGE_GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
 
 
 class Marking(TimestampedModel):
@@ -202,6 +106,23 @@ class Marking(TimestampedModel):
     rate_val = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Non-negative rate amount; most common on RATEMARK and integrated-rate TOWNMARK rows')
     post_office = models.ForeignKey('PostOffice', on_delete=models.PROTECT, related_name='markings')
     is_reviewed = models.BooleanField(default=False, help_text='A state editor has personally vetted this record (Issue #22).')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public marking detail page")
+
+    # Derived cache of the use range (issue #59): min/max over the marking's
+    # own DateSeen rows plus DateSeen rows of covers linked via CoverMarking,
+    # with direct rows supplying the granularity on boundary-date ties.
+    # dates_seen stays the source of truth; common.date_range recomputes these
+    # whenever that evidence changes. Never write these fields directly.
+    earliest_seen = models.DateField(null=True, blank=True, editable=False)
+    earliest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
+    latest_seen = models.DateField(null=True, blank=True, editable=False)
+    latest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
 
     # objects: default manager, EXCLUDES recycle-binned markings.
     # all_objects: unfiltered, INCLUDES recycle-binned markings.
@@ -217,6 +138,10 @@ class Marking(TimestampedModel):
         verbose_name_plural = 'Markings'
         ordering = ['id']
         base_manager_name = 'all_objects'
+        indexes = [
+            models.Index(fields=['earliest_seen'], name='marking_earliest_seen_idx'),
+            models.Index(fields=['latest_seen'], name='marking_latest_seen_idx'),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=Q(type__in=[c[0] for c in MarkingType.choices]),
@@ -1018,12 +943,33 @@ class DateSeen(TimestampedModel):
     SUBJECT_MARKING = 'MARKING'
     SUBJECT_TYPE_CHOICES = [(SUBJECT_COVER, 'Cover'), (SUBJECT_MARKING, 'Marking')]
 
-    GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
+    GRANULARITY_YEAR = 'YEAR'
+    GRANULARITY_MONTH = 'MONTH'
+    GRANULARITY_DAY = 'DAY'
+    GRANULARITY_MONTH_ONLY = 'MONTH_ONLY'
+    GRANULARITY_DAY_ONLY = 'DAY_ONLY'
+    GRANULARITY_YEAR_DAY = 'YEAR_DAY'
+    GRANULARITY_MONTH_DAY = 'MONTH_DAY'
+
+    GRANULARITY_CHOICES = [
+        (GRANULARITY_DAY, 'Day'),
+        (GRANULARITY_MONTH, 'Month'),
+        (GRANULARITY_YEAR, 'Year'),
+        (GRANULARITY_MONTH_ONLY, 'Month only'),
+        (GRANULARITY_DAY_ONLY, 'Day only'),
+        (GRANULARITY_YEAR_DAY, 'Year and day'),
+        (GRANULARITY_MONTH_DAY, 'Month and day'),
+    ]
+    GRANULARITY_VALUES = {value for value, _label in GRANULARITY_CHOICES}
 
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField(help_text='PK of the dated Cover or Marking')
-    date = models.DateField(help_text='Calendar date of the observed use')
-    granularity = models.CharField(max_length=5, choices=GRANULARITY_CHOICES)
+    date = models.DateField(null=True, blank=True, help_text='Sortable calendar date when known date parts form one')
+    granularity = models.CharField(max_length=10, choices=GRANULARITY_CHOICES)
+    date_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_key = models.CharField(max_length=20, editable=False)
 
     class Meta:
         db_table = 'dates_seen'
@@ -1039,10 +985,142 @@ class DateSeen(TimestampedModel):
                 name='dates_seen_subject_type_valid',
             ),
             models.UniqueConstraint(
-                fields=['subject_type', 'subject_id', 'date', 'granularity'],
-                name='dates_seen_subject_date_granularity_unique',
+                fields=['subject_type', 'subject_id', 'granularity', 'date_key'],
+                name='dates_seen_subject_parts_unique',
             ),
         ]
+
+    @staticmethod
+    def _int_or_none(value):
+        if value in (None, ''):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError('Date components must be integers.')
+        return parsed
+
+    @staticmethod
+    def _legacy_date(value):
+        if value in (None, ''):
+            return None
+        if isinstance(value, date_cls):
+            return value
+        parsed = parse_date(str(value)[:10])
+        if parsed is None:
+            raise ValidationError('date must be a valid ISO date.')
+        return parsed
+
+    @staticmethod
+    def _max_day(year, month):
+        if month in (1, 3, 5, 7, 8, 10, 12):
+            return 31
+        if month in (4, 6, 9, 11):
+            return 30
+        if month == 2:
+            if year is None:
+                return 29
+            if year % 400 == 0 or (year % 4 == 0 and year % 100 != 0):
+                return 29
+            return 28
+        return 31
+
+    @classmethod
+    def granularity_for_parts(cls, year, month, day):
+        has_year = year is not None
+        has_month = month is not None
+        has_day = day is not None
+        if has_year and has_month and has_day:
+            return cls.GRANULARITY_DAY
+        if has_year and has_month:
+            return cls.GRANULARITY_MONTH
+        if has_year and has_day:
+            return cls.GRANULARITY_YEAR_DAY
+        if has_month and has_day:
+            return cls.GRANULARITY_MONTH_DAY
+        if has_year:
+            return cls.GRANULARITY_YEAR
+        if has_month:
+            return cls.GRANULARITY_MONTH_ONLY
+        if has_day:
+            return cls.GRANULARITY_DAY_ONLY
+        raise ValidationError('At least one date component is required.')
+
+    @classmethod
+    def generated_date_for_parts(cls, year, month, day, granularity):
+        if granularity == cls.GRANULARITY_YEAR:
+            return date_cls(year, 1, 1)
+        if granularity == cls.GRANULARITY_MONTH:
+            return date_cls(year, month, 1)
+        if granularity == cls.GRANULARITY_DAY:
+            return date_cls(year, month, day)
+        return None
+
+    @staticmethod
+    def key_for_parts(year, month, day):
+        parts = []
+        if year is not None:
+            parts.append('Y{:04d}'.format(year))
+        if month is not None:
+            parts.append('M{:02d}'.format(month))
+        if day is not None:
+            parts.append('D{:02d}'.format(day))
+        return '-'.join(parts)
+
+    def normalize_date_parts(self):
+        self.date_year = self._int_or_none(self.date_year)
+        self.date_month = self._int_or_none(self.date_month)
+        self.date_day = self._int_or_none(self.date_day)
+
+        legacy = self._legacy_date(self.date)
+        if self.date_year is None and self.date_month is None and self.date_day is None:
+            if legacy is not None:
+                granularity = (self.granularity or self.GRANULARITY_DAY).strip().upper()
+                if granularity == self.GRANULARITY_YEAR:
+                    self.date_year = legacy.year
+                elif granularity == self.GRANULARITY_MONTH:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                elif granularity == self.GRANULARITY_DAY:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                    self.date_day = legacy.day
+                else:
+                    raise ValidationError('Partial date granularities require component fields.')
+
+        if self.date_year is not None and not (1 <= self.date_year <= 9999):
+            raise ValidationError({'date_year': 'Year must be between 1 and 9999.'})
+        if self.date_month is not None and not (1 <= self.date_month <= 12):
+            raise ValidationError({'date_month': 'Month must be between 1 and 12.'})
+        if self.date_day is not None and not (1 <= self.date_day <= 31):
+            raise ValidationError({'date_day': 'Day must be between 1 and 31.'})
+        if self.date_month is not None and self.date_day is not None:
+            max_day = self._max_day(self.date_year, self.date_month)
+            if self.date_day > max_day:
+                raise ValidationError({'date_day': 'Day is not valid for the selected month.'})
+
+        expected = self.granularity_for_parts(self.date_year, self.date_month, self.date_day)
+        supplied = (self.granularity or expected).strip().upper()
+        if supplied not in self.GRANULARITY_VALUES:
+            raise ValidationError({'granularity': 'Invalid date granularity.'})
+        if supplied != expected:
+            raise ValidationError({'granularity': 'Granularity does not match known date components.'})
+        self.granularity = expected
+        self.date = self.generated_date_for_parts(
+            self.date_year,
+            self.date_month,
+            self.date_day,
+            self.granularity,
+        )
+        self.date_key = self.key_for_parts(self.date_year, self.date_month, self.date_day)
+
+    def clean(self):
+        super().clean()
+        self.normalize_date_parts()
+
+    def save(self, *args, **kwargs):
+        self.normalize_date_parts()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.subject_type} #{self.subject_id} -- {self.date} ({self.granularity})'

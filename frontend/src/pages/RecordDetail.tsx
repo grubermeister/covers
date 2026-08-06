@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, MoveRight, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, Pencil, Plus, Replace, Star, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -134,7 +134,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: AssociatedDateSeen): string {
-  return formatDateSeen(d.date, d.granularity) || d.date || "";
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 function associatedCoverDatesDisplay(
@@ -506,11 +510,7 @@ const RecordDetail = () => {
   const fromDashboard = locationState?.fromDashboard === true;
   const dashboardTab = locationState?.dashboardTab;
   const handleBack = () => {
-    if (fromDashboard) {
-      navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
-    } else {
-      navigate(-1);
-    }
+    navigate("/search");
   };
 
   if (loading) {
@@ -543,12 +543,14 @@ const RecordDetail = () => {
   // contributor or an editor, so a non-empty string is already authorized to show.
   const commentForEditor = record.commentForEditor?.trim() ?? "";
   const editorFeedback = record.editorFeedback?.trim() ?? "";
+  const submitterName = record.submitterName?.trim() ?? "";
   const galleryImages = buildGalleryImages(record);
   const typeLabel = markingTypeLabel(record.type) || "Townmark";
 
   const goEdit = () =>
     navigate(`/edit/${record.id}?mode=suggestion`, {
       state: {
+        from: location.pathname + location.search,
         fromSearch: location.state?.fromSearch,
         fromDashboard,
         dashboardTab,
@@ -662,6 +664,14 @@ const RecordDetail = () => {
   const dimensionsValue = dimensionsDisplay(record) || EMPTY;
   const earliestValue = formatDateSeen(record.earliestSeen, record.earliestSeenGranularity);
   const latestValue = formatDateSeen(record.latestSeen, record.latestSeenGranularity);
+  const earliestSeenTo =
+    record.earliestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.earliestSeenCoverId}`
+      : undefined;
+  const latestSeenTo =
+    record.latestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.latestSeenCoverId}`
+      : undefined;
   const datesSeenValue = formatDatesSeenList(record.datesSeen);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
@@ -705,7 +715,9 @@ const RecordDetail = () => {
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
+      earliestSeenTo,
       latestSeen: latestValue,
+      latestSeenTo,
       datesSeen: datesSeenValue,
       shapeName: record.shapeName,
       rateValFormatted: formatRateValue(record.rateVal),
@@ -1064,7 +1076,7 @@ const RecordDetail = () => {
                                       setMoveImageError(null);
                                     }}
                                   >
-                                    <MoveRight className="h-3 w-3" />
+                                    <Replace className="h-3 w-3" />
                                   </Button>
                                 )}
                                 <Button
@@ -1339,6 +1351,15 @@ const RecordDetail = () => {
                   <CardHeader><CardTitle className="font-heading text-lg">Description</CardTitle></CardHeader>
                   <CardContent>
                     <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{record.desc}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {submitterName && (
+                <Card className="shadow-archival-md">
+                  <CardHeader><CardTitle className="font-heading text-lg">Submitted by</CardTitle></CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">{submitterName}</p>
                   </CardContent>
                 </Card>
               )}

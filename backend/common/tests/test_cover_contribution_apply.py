@@ -197,6 +197,9 @@ class CoverContributionApplyFunctionTests(TestCase):
         # DateSeen child (COVER subject)
         ds = DateSeen.objects.get(subject_type="COVER", subject_id=cover.pk)
         self.assertEqual(ds.granularity, "DAY")
+        self.assertEqual(ds.date_year, 1850)
+        self.assertEqual(ds.date_month, 6)
+        self.assertEqual(ds.date_day, 1)
 
         # Image child (COVER subject) with a cover-valid view
         img = Image.objects.get(subject_type="COVER", subject_id=cover.pk)
@@ -207,6 +210,40 @@ class CoverContributionApplyFunctionTests(TestCase):
             Citation.objects.filter(subject_type="COVER", subject_id=cover.pk).count(),
             1,
         )
+
+    def test_no_cover_image_affirmation_allows_no_image_rows(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+            no_cover_image="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+
+        self.assertFalse(
+            Image.objects.filter(
+                subject_type=Image.SUBJECT_COVER,
+                subject_id=cover.pk,
+            ).exists()
+        )
+
+    def test_missing_cover_image_without_affirmation_is_rejected(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        with self.assertRaisesMessage(
+            ContributionApplyError,
+            "Submission has no images; at least one image is required.",
+        ):
+            apply_cover_contribution_to_catalog(contrib)
 
     def test_display_submitter_name_opt_in_flows_to_cover(self):
         # The submitter's opt-in choice rides submitted_data and must land on
@@ -222,6 +259,62 @@ class CoverContributionApplyFunctionTests(TestCase):
         contrib = _make_cover_contribution(self.user, sd, self.collection)
         cover = apply_cover_contribution_to_catalog(contrib)["cover"]
         self.assertFalse(cover.display_submitter_name)
+
+    def test_unknown_cover_date_creates_no_date_seen(self):
+        sd = _cover_submitted_data(
+            self.parent,
+            cover_date="",
+            cover_granularity="",
+            cover_date_unknown="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+
+        self.assertFalse(
+            DateSeen.objects.filter(
+                subject_type=DateSeen.SUBJECT_COVER,
+                subject_id=cover.pk,
+            ).exists()
+        )
+
+    def test_partial_cover_date_components_materialize(self):
+        cases = [
+            ({"cover_date_year": "1850"}, "YEAR", "1850-01-01", 1850, None, None),
+            ({"cover_date_year": "1850", "cover_date_month": "6"}, "MONTH", "1850-06-01", 1850, 6, None),
+            (
+                {"cover_date_year": "1850", "cover_date_month": "6", "cover_date_day": "14"},
+                "DAY",
+                "1850-06-14",
+                1850,
+                6,
+                14,
+            ),
+            ({"cover_date_month": "6"}, "MONTH_ONLY", None, None, 6, None),
+            ({"cover_date_day": "14"}, "DAY_ONLY", None, None, None, 14),
+            ({"cover_date_year": "1850", "cover_date_day": "14"}, "YEAR_DAY", None, 1850, None, 14),
+            ({"cover_date_month": "6", "cover_date_day": "14"}, "MONTH_DAY", None, None, 6, 14),
+        ]
+
+        for fields, granularity, stored_date, year, month, day in cases:
+            with self.subTest(granularity=granularity):
+                sd = _cover_submitted_data(
+                    self.parent,
+                    cover_date="",
+                    cover_granularity="",
+                    **fields,
+                )
+                contrib = _make_cover_contribution(self.user, sd, self.collection)
+                cover = apply_cover_contribution_to_catalog(contrib)["cover"]
+                ds = DateSeen.objects.get(
+                    subject_type=DateSeen.SUBJECT_COVER,
+                    subject_id=cover.pk,
+                )
+                self.assertEqual(ds.granularity, granularity)
+                self.assertEqual(ds.date.isoformat() if ds.date else None, stored_date)
+                self.assertEqual(ds.date_year, year)
+                self.assertEqual(ds.date_month, month)
+                self.assertEqual(ds.date_day, day)
 
     def test_description_flows_to_cover(self):
         # #39: the submitter's free-text description rides submitted_data and
@@ -889,12 +982,52 @@ class CoverSubmitterNameSerializerTests(TestCase):
         self.assertEqual(data["submitter_name"], "nameless")
 
 
-class MarkingErdLrdApplyTests(TestCase):
-    """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking.
+class MarkingSubmitterNameSerializerTests(TestCase):
+    """MarkingSerializer exposes the submitter name ONLY when opted in."""
 
-    The boundaries land as MARKING-subject DateSeen rows; the apply path must be
-    additive so editing a catalog marking never destroys its imported dates.
-    """
+    def _marking(self, user, display):
+        collection = _make_collection(user)
+        marking = _make_parent_marking(user, collection.region)
+        marking.display_submitter_name = display
+        marking.save(update_fields=["display_submitter_name"])
+        return marking
+
+    def test_name_returned_when_opted_in(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(
+            username="jsmith-marking",
+            password="pw",
+            first_name="Jane",
+            last_name="Smith",
+        )
+        data = MarkingSerializer(self._marking(user, True)).data
+        self.assertTrue(data["display_submitter_name"])
+        self.assertEqual(data["submitter_name"], "Jane Smith")
+
+    def test_name_hidden_when_opted_out(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(
+            username="hidden-marking",
+            password="pw",
+            first_name="Jane",
+            last_name="Smith",
+        )
+        data = MarkingSerializer(self._marking(user, False)).data
+        self.assertFalse(data["display_submitter_name"])
+        self.assertIsNone(data["submitter_name"])
+
+    def test_falls_back_to_username_without_full_name(self):
+        from common.api.v2.serializers import MarkingSerializer
+
+        user = User.objects.create_user(username="nameless-marking", password="pw")
+        data = MarkingSerializer(self._marking(user, True)).data
+        self.assertEqual(data["submitter_name"], "nameless-marking")
+
+
+class MarkingErdLrdApplyTests(TestCase):
+    """Issue #21 Group C: manual ERD/LRD on Submit New / Edit Marking."""
 
     def setUp(self):
         self.user = _make_user("erd-contributor")
@@ -938,9 +1071,88 @@ class MarkingErdLrdApplyTests(TestCase):
             self._direct_dates(marking.pk),
             [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR")],
         )
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 1, 1))
         self.assertEqual(annotated.latest_seen, date(1851, 1, 1))
+
+    def test_display_submitter_name_opt_in_flows_to_marking(self):
+        sd = self._marking_sd(display_submitter_name="true")
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+        self.assertTrue(marking.display_submitter_name)
+
+    def test_display_submitter_name_defaults_false_when_absent(self):
+        sd = self._marking_sd()
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+        self.assertFalse(marking.display_submitter_name)
+
+    def test_no_marking_image_affirmation_allows_no_image_rows(self):
+        sd = self._marking_sd(
+            marking_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+            no_marking_image="true",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertFalse(
+            Image.objects.filter(
+                subject_type=Image.SUBJECT_MARKING,
+                subject_id=marking.pk,
+            ).exists()
+        )
+
+    def test_missing_marking_image_without_affirmation_is_rejected(self):
+        sd = self._marking_sd(
+            marking_image_metas=[],
+            image_metas=[],
+            image_meta=None,
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+
+        with self.assertRaisesMessage(
+            ContributionApplyError,
+            "Submission has no images; at least one image is required.",
+        ):
+            apply_contribution_to_catalog(contrib)
+
+    def test_new_marking_records_partial_erd_and_lrd_components(self):
+        sd = self._marking_sd(
+            marking_erd_date_month="12",
+            marking_erd_date_day="1",
+            marking_lrd_date_year="1851",
+            marking_lrd_date_day="14",
+        )
+        contrib = _make_cover_contribution(self.user, sd, self.collection)
+        marking = apply_contribution_to_catalog(contrib)
+
+        rows = sorted(
+            DateSeen.objects.filter(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking.pk,
+            ).values_list(
+                "date",
+                "granularity",
+                "date_year",
+                "date_month",
+                "date_day",
+            ),
+            key=lambda row: row[1],
+        )
+
+        self.assertEqual(
+            rows,
+            [
+                (None, "MONTH_DAY", None, 12, 1),
+                (None, "YEAR_DAY", 1851, None, 14),
+            ],
+        )
+        marking.refresh_from_db()
+        self.assertIsNone(marking.earliest_seen)
+        self.assertIsNone(marking.latest_seen)
 
     def test_invalid_erd_raises(self):
         sd = self._marking_sd(marking_erd="not-a-date")
@@ -1001,8 +1213,38 @@ class MarkingErdLrdApplyTests(TestCase):
             self._direct_dates(marking.pk),
             [(date(1845, 1, 1), "YEAR"), (date(1851, 1, 1), "YEAR"), (date(1860, 1, 1), "YEAR")],
         )
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.latest_seen, date(1860, 1, 1))
+
+    def test_edit_unknown_dates_clear_direct_marking_history(self):
+        marking = apply_contribution_to_catalog(
+            _make_cover_contribution(
+                self.user,
+                self._marking_sd(
+                    marking_erd="1845-01-01",
+                    marking_erd_granularity="YEAR",
+                    marking_lrd="1851-01-01",
+                    marking_lrd_granularity="YEAR",
+                ),
+                self.collection,
+            )
+        )
+
+        edit_sd = self._marking_sd(
+            edit_marking_id=marking.pk,
+            marking_erd_unknown=True,
+            marking_lrd_unknown=True,
+        )
+        apply_contribution_to_catalog(
+            _make_cover_contribution(self.user, edit_sd, self.collection)
+        )
+
+        self.assertEqual(self._direct_dates(marking.pk), [])
+        marking.refresh_from_db()
+        self.assertIsNone(marking.earliest_seen)
+        self.assertIsNone(marking.earliest_seen_granularity)
+        self.assertIsNone(marking.latest_seen)
+        self.assertIsNone(marking.latest_seen_granularity)
 
     def test_manual_erd_merges_with_earlier_cover_date(self):
         # Michael's model: a catalog ERD is later corrected by real covers. A
@@ -1027,5 +1269,5 @@ class MarkingErdLrdApplyTests(TestCase):
             modified_by=self.user,
         )
 
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        annotated = Marking.objects.get(pk=marking.pk)
         self.assertEqual(annotated.earliest_seen, date(1845, 6, 14))

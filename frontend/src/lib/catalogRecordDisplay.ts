@@ -1,7 +1,10 @@
 import type { MarkingRecord } from "@/services/markings";
 import { getMarkingListImageUrl, normalizeImageUrl } from "@/services/markings";
 import { formatRateValue } from "@/lib/rateDisplay";
-import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
+import {
+  formatDateSeenLike,
+  type DateSeenGranularity,
+} from "@/lib/partialDate";
 
 /** Shown when a catalog field has no value (Catalog Search / Record Detail contract). */
 export const CATALOG_FIELD_EMPTY = "-";
@@ -45,8 +48,6 @@ export function formatCatalogDate(value: string | null | undefined): string {
   return s;
 }
 
-export type DateSeenGranularity = "DAY" | "MONTH" | "YEAR";
-
 const DATE_SEEN_MONTH_LABELS = [
   "JAN",
   "FEB",
@@ -80,7 +81,33 @@ function normalizeDateSeenGranularity(
 export function formatDateSeen(
   value: string | null | undefined,
   granularity: string | null | undefined,
+  parts?: {
+    dateYear?: number | null;
+    dateMonth?: number | null;
+    dateDay?: number | null;
+  },
 ): string {
+  if (
+    parts &&
+    (parts.dateYear != null || parts.dateMonth != null || parts.dateDay != null)
+  ) {
+    return formatDateSeenLike({
+      date: value,
+      granularity,
+      dateYear: parts.dateYear,
+      dateMonth: parts.dateMonth,
+      dateDay: parts.dateDay,
+    });
+  }
+  const rawGranularity = String(granularity ?? "").trim().toUpperCase();
+  if (
+    rawGranularity === "MONTH_ONLY" ||
+    rawGranularity === "DAY_ONLY" ||
+    rawGranularity === "YEAR_DAY" ||
+    rawGranularity === "MONTH_DAY"
+  ) {
+    return formatDateSeenLike({ date: value, granularity });
+  }
   const s = value != null ? String(value).trim() : "";
   if (!s) return "";
   const g = normalizeDateSeenGranularity(granularity);
@@ -104,12 +131,22 @@ export function formatDateSeen(
  * decides where to render it; this helper is pure so it can be unit-tested.
  */
 export function formatDatesSeenList(
-  rows: ReadonlyArray<{ date: string | null; granularity: string | null }>,
+  rows: ReadonlyArray<{
+    date: string | null;
+    granularity: string | null;
+    dateYear?: number | null;
+    dateMonth?: number | null;
+    dateDay?: number | null;
+  }>,
 ): string {
   const seen = new Set<string>();
   const formatted: string[] = [];
   for (const row of rows) {
-    const label = formatDateSeen(row.date, row.granularity);
+    const label = formatDateSeen(row.date, row.granularity, {
+      dateYear: row.dateYear,
+      dateMonth: row.dateMonth,
+      dateDay: row.dateDay,
+    });
     if (label && !seen.has(label)) {
       seen.add(label);
       formatted.push(label);

@@ -56,6 +56,11 @@ IMPRESSION_BY_TOKEN = {
     'negative': 'Negative',
     'stencil': 'Stencil',
 }
+IMPRESSION_PREFIX_RE = re.compile(r'^(negative|stencil)\s+', re.IGNORECASE)
+IMPRESSION_BY_TOKEN = {
+    'negative': 'Negative',
+    'stencil': 'Stencil',
+}
 
 ROMAN_RE = re.compile(r'^[IVXLDM]+$')
 

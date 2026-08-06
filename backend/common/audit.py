@@ -69,7 +69,13 @@ def build_marking_snapshot(marking: Marking | None) -> dict[str, Any]:
     dates_seen = DateSeen.objects.filter(
         subject_type=DateSeen.SUBJECT_MARKING,
         subject_id=marking.pk,
-    ).order_by("date", "granularity").values("date", "granularity")
+    ).order_by("date", "date_year", "date_month", "date_day", "granularity").values(
+        "date",
+        "granularity",
+        "date_year",
+        "date_month",
+        "date_day",
+    )
 
     return _json_safe(
         {
@@ -276,8 +282,8 @@ def build_cover_snapshot(cover: Cover | None) -> dict[str, Any]:
     )
     dates_seen = (
         DateSeen.objects.filter(subject_type="COVER", subject_id=cover.pk)
-        .order_by("date")
-        .values("date", "granularity")
+        .order_by("date", "date_year", "date_month", "date_day", "granularity")
+        .values("date", "granularity", "date_year", "date_month", "date_day")
     )
     citations = (
         Citation.objects.filter(subject_type="COVER", subject_id=cover.pk)

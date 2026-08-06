@@ -23,7 +23,7 @@ class MarkingDateRangeTests(TestCase):
             modified_by=self.user,
         )
 
-    def test_with_date_range_includes_boundary_granularities(self):
+    def test_date_range_columns_include_boundary_granularities(self):
         marking = Marking.objects.create(
             type="TOWNMARK",
             inscription_txt="RICHMOND VA",
@@ -61,12 +61,14 @@ class MarkingDateRangeTests(TestCase):
             modified_by=self.user,
         )
 
-        annotated = Marking.objects.with_date_range().get(pk=marking.pk)
+        # Columns are maintained by the DateSeen/CoverMarking signal receivers
+        # (issue #59); a plain re-read sees the cached range.
+        marking.refresh_from_db()
 
-        self.assertEqual(annotated.earliest_seen.isoformat(), "1860-01-01")
-        self.assertEqual(annotated.earliest_seen_granularity, "YEAR")
-        self.assertEqual(annotated.latest_seen.isoformat(), "1865-08-14")
-        self.assertEqual(annotated.latest_seen_granularity, "DAY")
+        self.assertEqual(marking.earliest_seen.isoformat(), "1860-01-01")
+        self.assertEqual(marking.earliest_seen_granularity, "YEAR")
+        self.assertEqual(marking.latest_seen.isoformat(), "1865-08-14")
+        self.assertEqual(marking.latest_seen_granularity, "DAY")
 
     def _make_marking(self, inscription):
         return Marking.objects.create(
@@ -123,6 +125,72 @@ class MarkingDateRangeTests(TestCase):
 
         with self.assertRaises(IntegrityError):
             self._add_date(DateSeen.SUBJECT_MARKING, marking.pk, "1850-01-01", "YEAR")
+
+    def test_partial_dates_without_generated_date_do_not_affect_range(self):
+        marking = self._make_marking("PETERSBURG VA")
+        cover = Cover.objects.create(
+            code="C-10",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        CoverMarking.objects.create(
+            cover=cover,
+            marking=marking,
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        DateSeen.objects.create(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking.pk,
+            date="1850-01-01",
+            granularity="YEAR",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        DateSeen.objects.create(
+            subject_type=DateSeen.SUBJECT_COVER,
+            subject_id=cover.pk,
+            date_year=1840,
+            date_day=12,
+            granularity="YEAR_DAY",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+        DateSeen.objects.create(
+            subject_type=DateSeen.SUBJECT_COVER,
+            subject_id=cover.pk,
+            date_month=6,
+            date_day=12,
+            granularity="MONTH_DAY",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        marking.refresh_from_db()
+
+        self.assertEqual(marking.earliest_seen.isoformat(), "1850-01-01")
+        self.assertEqual(marking.latest_seen.isoformat(), "1850-01-01")
+
+    def test_partial_date_components_are_unique(self):
+        marking = self._make_marking("NORFOLK VA")
+        DateSeen.objects.create(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=marking.pk,
+            date_month=6,
+            granularity="MONTH_ONLY",
+            created_by=self.user,
+            modified_by=self.user,
+        )
+
+        with self.assertRaises(IntegrityError):
+            DateSeen.objects.create(
+                subject_type=DateSeen.SUBJECT_MARKING,
+                subject_id=marking.pk,
+                date_month=6,
+                granularity="MONTH_ONLY",
+                created_by=self.user,
+                modified_by=self.user,
+            )
 
     def test_region_code_is_unique(self):
         Region.objects.create(

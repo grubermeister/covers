@@ -4,7 +4,7 @@
  *
  * Single source for the contribution transport that used to be copy-pasted as
  * raw fetch() across ContributionDetail, CoverContributionDetail, Dashboard,
- * Contribute, CoverEdit, and EditSubmissionDialog. Each of those sites manually
+ * Contribute, and CoverEdit. Each of those sites manually
  * re-read VITE_API_URL, read the CSRF cookie, hand-built headers, parsed res.ok,
  * and re-implemented camelCase/snake_case normalization. All of that lives here
  * now and goes through the configured apiClient.

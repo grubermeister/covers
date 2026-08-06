@@ -330,7 +330,7 @@ class CoverResource(TimestampedModelResource):
 class DateSeenResource(PolymorphicSubjectResourceMixin, TimestampedModelResource):
     class Meta(TimestampedModelResource.Meta):
         model = DateSeen
-        import_id_fields = ['subject_type', 'subject_id', 'date', 'granularity']
+        import_id_fields = ['subject_type', 'subject_id', 'granularity', 'date_year', 'date_month', 'date_day']
 
 
 class CoverValuationResource(TimestampedModelResource):
@@ -486,7 +486,7 @@ class CoverMarkingInline(admin.TabularInline):
 @admin.register(Marking)
 class MarkingAdmin(InlineRevisionMixin, TimestampedModelAdmin):
     resource_class = MarkingResource
-    list_display = ['id', 'code', 'type', 'post_office', 'color', 'shape', 'is_manuscript']
+    list_display = ['id', 'code', 'type', 'post_office', 'color', 'shape', 'is_manuscript', 'display_submitter_name']
     list_filter = ['type', 'is_manuscript', 'color', 'shape']
     search_fields = ['code', 'catalog_txt', 'inscription_txt', 'desc', 'post_office__name']
     raw_id_fields = ['post_office', 'shape', 'lettering', 'color']
@@ -504,6 +504,9 @@ class MarkingAdmin(InlineRevisionMixin, TimestampedModelAdmin):
         }),
         ('Text', {
             'fields': ('catalog_txt', 'inscription_txt', 'desc'),
+        }),
+        ('Attribution', {
+            'fields': ('display_submitter_name',),
         }),
         ('Metadata', {
             'fields': ('created_date', 'modified_date', 'created_by', 'modified_by'),
@@ -604,10 +607,10 @@ class CoverAdmin(TimestampedModelAdmin):
 @admin.register(DateSeen)
 class DateSeenAdmin(TimestampedModelAdmin):
     resource_class = DateSeenResource
-    list_display = ['subject_type', 'subject_id', 'date', 'granularity']
+    list_display = ['subject_type', 'subject_id', 'date', 'granularity', 'date_year', 'date_month', 'date_day']
     list_filter = ['granularity', 'subject_type']
     search_fields = ['subject_id']
-    ordering = ['subject_type', 'subject_id', 'date']
+    ordering = ['subject_type', 'subject_id', 'date', 'date_year', 'date_month', 'date_day']
 
 
 @admin.register(CoverValuation)

@@ -27,6 +27,7 @@ import v1_massachusetts
 import ascc_data_munger
 from munger.relationships import roll_up_catalog_text
 from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
+from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
 
 
 AUDIT = {
