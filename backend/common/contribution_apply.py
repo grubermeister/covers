@@ -1226,7 +1226,6 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
                 date_day=row.date_day,
                 defaults={
                     "date": row.date,
-                    "date_key": row.date_key,
                     "created_by": actor,
                     "modified_by": actor,
                 },
@@ -1267,7 +1266,6 @@ def _sync_marking_dates_seen(marking_id, payload: dict, actor) -> None:
             date_day=row.date_day,
             defaults={
                 "date": row.date,
-                "date_key": row.date_key,
                 "created_by": actor,
                 "modified_by": actor,
             },

@@ -14,29 +14,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { getStoredUser, setStoredUser } from "@/lib/auth";
 import apiClient, { ensureCsrfToken } from "@/lib/api";
+import { getRedirectPath } from "@/lib/authRedirect";
 
 interface AuthValues {
   email: string;
   password: string;
-}
-
-type AuthLocationState = {
-  from?: string | {
-    pathname?: string;
-    search?: string;
-    hash?: string;
-  };
-};
-
-function getRedirectPath(state: unknown): string {
-  const from = (state as AuthLocationState | null)?.from;
-  if (typeof from === "string") {
-    return from.startsWith("/") && !from.startsWith("//") ? from : "/";
-  }
-  if (!from || typeof from !== "object") return "/";
-  const pathname = from.pathname || "/";
-  if (!pathname.startsWith("/") || pathname.startsWith("//")) return "/";
-  return `${pathname}${from.search || ""}${from.hash || ""}`;
 }
 
 const validateAuth = (values: AuthValues): Partial<Record<keyof AuthValues, string>> => {

@@ -104,8 +104,7 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 
   const requestVersion = authStateVersion;
   const url = getApiBase() ? `${getApiBase()}/me/` : (import.meta.env.VITE_API_BASE_URL || "/api/v2") + "/me/";
-  let request: Promise<AuthUser | null>;
-  request = (async () => {
+  const request: Promise<AuthUser | null> = (async () => {
     try {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) return null;
