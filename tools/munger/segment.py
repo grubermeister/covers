@@ -71,7 +71,7 @@ def classify_entry_form(row):
     return 'no_paren'
 
 TRAILING_VALUE_RE = re.compile(
-    r'(\d[\d,]*(?:\.\d+)?(?:/\d[\d,]*(?:\.\d+)?)*|---?)\s*$'
+    r'(\d[\d,]*(?:\.\d+)?-|\d[\d,]*(?:\.\d+)?(?:/\d[\d,]*(?:\.\d+)?)*|---?)(?:\.)?\s*$'
 )
 
 def segment_entry(row):
@@ -130,10 +130,12 @@ def split_paren_fields(row):
 
 TAIL_VALUE_RE = re.compile(
     r'('
+    r'\d[\d,]*(?:\.\d+)?-'       # dangling-dash value: 7-
+    r'|'
     r'\d[\d,]*(?:\.\d+)?'        # first number: 125, 1,200, 3500.00
     r'(?:[-/]\d[\d,]*(?:\.\d+)?)*'  # optional slash tiers or range: /15, -200
     r'|---?'                      # dashes: -- or ---
-    r')\s*$'
+    r')(?:\.)?\s*$'
 )
 
 def decompose_tail(row):
@@ -161,7 +163,7 @@ def decompose_tail(row):
 
     valuation = m.group(1)
     annotation = tail[:m.start()].strip()
-    if annotation in ('', '.', '*'):
+    if annotation in ('', '.', '*', '+'):
         annotation = None
     return pd.Series({
         'tail_annotation': annotation,

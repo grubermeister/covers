@@ -23,6 +23,7 @@ if str(TOOLS_DIR) not in sys.path:
 import v1_bundle_overlay
 import v1_attach_images
 import v1_catalog_rows
+import v1_massachusetts
 import ascc_data_munger
 from munger.relationships import roll_up_catalog_text
 from v1_synthetic_listing import color_tokens, synthetic_desc_lines, synthetic_listing
@@ -167,11 +168,13 @@ class V1PipelineTests(unittest.TestCase):
         cases = [
             ("Same/Wis.", "WATERTOWN/Wis.", "WATERTOWN/Wis."),
             ("(1)Same/Wis.", "(1)WATERTOWN/Wis.", "WATERTOWN/Wis."),
+            ("Same/ILL.", "CHICAGO/Ill.", "CHICAGO/ILL."),
+            ("Same/ILL. and /Ill.", "ALTON/ILL.", "ALTON/ILL. and /Ill."),
             ("Same", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
             ("The same", "DETROIT / Mich.", "DETROIT / Mich."),
-            ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
-            ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA./5"),
-            ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA./5"),
+            ("Same VA./5", "WINCHESTER.VA", "WINCHESTER VA."),
+            ("*Same VA./5", "*WINCHESTER.VA", "WINCHESTER VA."),
+            ("Same *VA./5", "WINCHESTER.VA", "WINCHESTER VA."),
             ("Same C.H. VA.", "KANAWHA CH. VA", "KANAWHA CH. VA."),
             ("Same C.H./Va.", "KANAWHA CH. VA.", "KANAWHA CH./Va."),
             ("(1)BETHANY/Va.", "", "BETHANY/Va."),
@@ -180,6 +183,8 @@ class V1PipelineTests(unittest.TestCase):
             ("(L)", "ALEXANDRIA", ""),
             ("Same(E)", "CABOTVILLE / Ms.", "CABOTVILLE / Ms."),
             ("The same(L)", "DETROIT / Mich.", "DETROIT / Mich."),
+            ("Same/Ills.(thin letters)", "QUINCY/Ills.(thick letters)", "QUINCY/Ills."),
+            ("Same(Green)", "QUINCY/Ills.", "QUINCY/Ills."),
         ]
         for inscription, parent_text, expected in cases:
             with self.subTest(inscription=inscription):
@@ -203,6 +208,268 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(
             v1_bundle_overlay.strip_inscription_markers("BETHANY/Va.*"),
             "BETHANY/Va.",
+        )
+
+    def test_v1_overlay_strips_town_head_notes_from_inscription_text(self):
+        cases = [
+            ("CHICAGO/Ills.(thick letters)", "CHICAGO/Ills."),
+            ("CHICAGO/Ills(thin letters)", "CHICAGO/Ills"),
+            ('COLUMBIA/Ten("COLUMBIA" italics)', "COLUMBIA/Ten"),
+            ("Caho(Cahokia)", "Caho"),
+            ("Charleston (Peoria)", "Charleston"),
+            ("Warren(s)ville", "Warren(s)ville"),
+            ("CHICAGO/PAID 6", "CHICAGO"),
+            ("CHICAGO/6 PAID", "CHICAGO"),
+            ("CHICAGO/5", "CHICAGO"),
+            ("CHICAGO/ILL", "CHICAGO/ILL"),
+            ("BOSTON(87)", "BOSTON(87)"),
+        ]
+        for raw, expected in cases:
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    v1_bundle_overlay.strip_inscription_markers(raw),
+                    expected,
+                )
+
+    def test_v1_overlay_collects_removed_inscription_notes_for_desc(self):
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "Caho(Cahokia)",
+                "txtPostmark": "",
+            }),
+            ["Cahokia"],
+        )
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "QUINCY/Ills.",
+                "txtPostmark": "Same(Green)",
+            }),
+            [],
+        )
+        self.assertEqual(
+            v1_bundle_overlay.inscription_note_lines({
+                "txtTownPostmark": "QUINCY/Ills.(sans serif letters)",
+                "txtPostmark": "",
+            }),
+            [],
+        )
+
+    def test_v1_overlay_removes_note_when_writing_inscription_and_desc(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "CHICAGO/Ills.",
+                "desc": "Existing",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "Caho(Cahokia)",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "159",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["M1"]["inscription_txt"], "Caho")
+        self.assertEqual(markings_by_id["M1"]["desc"], "Existing\nCahokia")
+
+    def test_v1_overlay_uses_sans_serif_note_as_lettering(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "QUINCY/Ills.",
+                "desc": "Existing",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+                "lettering": "",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "QUINCY/Ills.(sans serif letters)",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "13420",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {"shapes": {}, "letterings": {"SANS-SERIF": "Sans-serif"}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["M1"]["inscription_txt"], "QUINCY/Ills.")
+        self.assertEqual(markings_by_id["M1"]["lettering"], "Sans-serif")
+        self.assertEqual(markings_by_id["M1"]["desc"], "Existing")
+
+    def test_v1_overlay_keeps_munger_circle_for_legacy_sl_bare_diameter(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-DC-M1335",
+                "type": "TOWNMARK",
+                "inscription_txt": "G P.OFFICE/.DEAD LETTER",
+                "desc": "",
+                "post_office": "USA-DC1-52",
+                "is_manuscript": "False",
+                "shape": "C - Circle",
+                "width": "30",
+                "height": "30",
+            },
+        }
+        raw_row = {
+            "txtRawStateData": "G P.OFFICE/.DEAD LETTER(1818-36;30;Red) 100",
+            "txtTownPostmark": "G P.OFFICE/.DEAD LETTER",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtSizes": "30",
+            "nWidth": "30.0",
+            "nHeight": "",
+            "txtTownmarkShape": "Straight line",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+        warnings = []
+
+        v1_bundle_overlay.apply_row_fields(
+            "11904",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {
+                "shapes": {"C": "C - Circle", "SL": "SL - Straight Line"},
+                "letterings": {},
+            },
+            {},
+            warnings,
+        )
+
+        self.assertEqual(markings_by_id["M1"]["shape"], "C - Circle")
+        self.assertEqual(markings_by_id["M1"]["width"], "30")
+        self.assertEqual(markings_by_id["M1"]["height"], "30")
+        self.assertEqual(
+            {row["issue"] for row in warnings},
+            {"legacy_sl_shape_ignored"},
+        )
+
+    def test_v1_overlay_still_applies_explicit_sl_size_shape(self):
+        markings_by_id = {
+            "M1": {
+                "code": "ASCC6-DC-M1999",
+                "type": "TOWNMARK",
+                "inscription_txt": "WASHINGTON",
+                "desc": "",
+                "post_office": "USA-DC1-52",
+                "is_manuscript": "False",
+                "shape": "C - Circle",
+                "width": "30",
+                "height": "30",
+            },
+        }
+        raw_row = {
+            "txtRawStateData": "WASHINGTON(1818-36;SL-30;Red) 100",
+            "txtTownPostmark": "WASHINGTON",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtSizes": "SL-30",
+            "nWidth": "30.0",
+            "nHeight": "",
+            "txtTownmarkShape": "Straight line",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+        warnings = []
+
+        v1_bundle_overlay.apply_row_fields(
+            "11905",
+            raw_row,
+            markings_by_id,
+            ["M1"],
+            ["M1"],
+            [],
+            {
+                "shapes": {"C": "C - Circle", "SL": "SL - Straight Line"},
+                "letterings": {},
+            },
+            {},
+            warnings,
+        )
+
+        self.assertEqual(markings_by_id["M1"]["shape"], "SL - Straight Line")
+        self.assertEqual(warnings, [])
+
+    def test_v1_overlay_applies_rate_note_to_split_ratemark_desc(self):
+        markings_by_id = {
+            "TM1": {
+                "code": "ASCC6-IL-M1001",
+                "type": "TOWNMARK",
+                "inscription_txt": "CHICAGO/PAID 3",
+                "desc": "",
+                "post_office": "USA-IL1-1",
+                "is_manuscript": "False",
+            },
+            "RM1": {
+                "code": "ASCC6-IL-M1001/RM0",
+                "type": "RATEMARK",
+                "inscription_txt": "CHICAGO PAID 3",
+                "desc": "Existing rate",
+                "rate_val": "3.0",
+            },
+        }
+        raw_row = {
+            "txtTownPostmark": "CHICAGO/PAID 3",
+            "txtPostmark": "",
+            "txtTown": "",
+            "txtRates": "Use on #U10 envelope",
+            "txtOther": "Town note",
+            "memNotes": "",
+            "txtTownmarkShape": "",
+            "txtTownmarkLettering": "",
+            "txtTownmarkDateFormat": "",
+        }
+
+        v1_bundle_overlay.apply_row_fields(
+            "13067",
+            raw_row,
+            markings_by_id,
+            ["TM1", "RM1"],
+            ["TM1"],
+            ["RM1"],
+            {"shapes": {}, "letterings": {}},
+            {},
+            [],
+        )
+
+        self.assertEqual(markings_by_id["TM1"]["inscription_txt"], "CHICAGO")
+        self.assertEqual(markings_by_id["TM1"]["desc"], "Town note")
+        self.assertEqual(
+            markings_by_id["RM1"]["desc"],
+            "Existing rate\nRate note: Use on #U10 envelope",
         )
 
     def test_v1_overlay_same_uses_immediate_previous_row_text(self):
@@ -270,6 +537,89 @@ class V1PipelineTests(unittest.TestCase):
             markings_by_id["M1"]["inscription_txt"],
             "ABINGDON/*VA.*",
         )
+
+    def test_v1_overlay_keeps_unknown_post_office_for_no_town_text(self):
+        cases = [
+            (
+                {
+                    "txtTown": "(No Town Marking)",
+                    "txtTownPostmark": "(No town marking)",
+                    "txtPostmark": "(No town marking)",
+                },
+                "(No town marking)",
+            ),
+            (
+                {
+                    "txtTown": "Mobile",
+                    "txtTownPostmark": "ADVERTISED",
+                    "txtPostmark": "ADVERTISED",
+                },
+                "ADVERTISED",
+            ),
+            (
+                {
+                    "txtTown": "Mobile",
+                    "txtTownPostmark": "REGISTERED/NO____",
+                    "txtPostmark": "REGISTERED/NO____",
+                },
+                "REGISTERED/NO____",
+            ),
+        ]
+        for raw_row, expected_inscription in cases:
+            with self.subTest(raw_row=raw_row):
+                markings_by_id = {
+                    "M1": {
+                        "code": "ASCC6-AL-M1051",
+                        "type": "TOWNMARK",
+                        "inscription_txt": "",
+                        "post_office": "USA-AL1-999",
+                        "is_manuscript": "False",
+                    },
+                }
+                post_offices = [
+                    stamped({"name": "UNKNOWN", "code": "USA-AL1-999"}),
+                    stamped({"name": "MOBILE", "code": "USA-AL1-326"}),
+                ]
+                post_office_regions = [
+                    stamped({"post_office": "USA-AL1-999", "region": "USA-AL1"}),
+                    stamped({"post_office": "USA-AL1-326", "region": "USA-AL1"}),
+                ]
+                raw_row = {
+                    **raw_row,
+                    "txtTownmarkShape": "",
+                    "txtTownmarkLettering": "",
+                    "txtTownmarkDateFormat": "",
+                }
+
+                v1_bundle_overlay.apply_row_fields(
+                    "10447",
+                    raw_row,
+                    markings_by_id,
+                    ["M1"],
+                    ["M1"],
+                    [],
+                    {"shapes": {}, "letterings": {}},
+                    {
+                        "post_offices": post_offices,
+                        "post_office_fields": ["name", "code", *AUDIT],
+                        "post_office_regions": post_office_regions,
+                        "post_office_region_fields": [
+                            "post_office",
+                            "region",
+                            *AUDIT,
+                        ],
+                        "regions": [{"code": "USA-AL1", "name": "Alabama"}],
+                        "audit": AUDIT,
+                    },
+                    [],
+                )
+
+                self.assertEqual(markings_by_id["M1"]["post_office"], "USA-AL1-999")
+                self.assertEqual(markings_by_id["M1"]["inscription_txt"], expected_inscription)
+                self.assertNotIn(
+                    "(NO TOWN MARKING)",
+                    {row["name"] for row in post_offices},
+                )
 
     def test_catalog_rows_include_approve_deleted_when_not_deleted(self):
         with tempfile.TemporaryDirectory() as td:
@@ -459,6 +809,124 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(
             [row["chunk_number"] for row in catalog_rows],
             ["109453", "109453"],
+        )
+
+    def test_massachusetts_boston_catalog_rows_strip_bpm_markup(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            slice_out = root / "slice.csv"
+            catalog_out = root / "catalog_rows.csv"
+            write_csv(
+                slice_out,
+                [
+                    "nRawStateDataID",
+                    "txtRawStateData",
+                    "txtTown",
+                    "txtPostmark",
+                    "txtTownPostmark",
+                    "txtRatesText",
+                ],
+                [
+                    {
+                        "nRawStateDataID": "17621",
+                        "txtRawStateData": (
+                            "BOSTON(87)(1788-89;SL-28x5;FREE[BPM 103];Black,Brown) 100"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "BOSTON(87)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "FREE[BPM 103]",
+                    },
+                    {
+                        "nRawStateDataID": "17625",
+                        "txtRawStateData": (
+                            "Same(125,132,136)(1789-91;SL-18.5x3,MDD;PAID[BPM 129];Black) 80"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "Same(125,132,136)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "PAID[BPM 129]",
+                    },
+                    {
+                        "nRawStateDataID": "17634",
+                        "txtRawStateData": (
+                            "BOSTON Ms.(202)(5 stars at bottom)(1805-09;27.5;Black,Red) 30"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+                        "txtTownPostmark": "BOSTON Ms.",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "17702",
+                        "txtRawStateData": (
+                            "(493) 3 O'CLOCK/DELIVERY(1854-56;oval-34;Red) 15"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "(493) 3 O'CLOCK/DELIVERY",
+                        "txtTownPostmark": "3 O'CLOCK/DELIVERY",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "17415",
+                        "txtRawStateData": (
+                            "B(1 and others)(E)(April 1703;Ms;Black) See Ocean Mail --"
+                        ),
+                        "txtTown": "Boston",
+                        "txtPostmark": "B(1 and others)(E)",
+                        "txtTownPostmark": "B",
+                        "txtRatesText": "",
+                    },
+                    {
+                        "nRawStateDataID": "90001",
+                        "txtRawStateData": "BOSTON(67)(1850;Black) 10",
+                        "txtTown": "East Boston",
+                        "txtPostmark": "BOSTON(67)",
+                        "txtTownPostmark": "BOSTON",
+                        "txtRatesText": "",
+                    },
+                ],
+            )
+
+            rows_written, raw_ids = v1_catalog_rows.write_v1_catalog_rows(
+                slice_out,
+                catalog_out,
+                state="MA",
+            )
+            catalog_rows = read_csv(catalog_out)
+
+        self.assertEqual(rows_written, 6)
+        self.assertEqual(
+            [row["listing_text"] for row in catalog_rows],
+            [
+                "BOSTON(1788-89;SL-28x5;FREE;Black,Brown) 100",
+                "BOSTON(1789-91;SL-18.5x3,MDD;PAID;Black) 80",
+                "BOSTON Ms.(5 stars at bottom)(1805-09;27.5;Black,Red) 30",
+                "3 O'CLOCK/DELIVERY(1854-56;oval-34;Red) 15",
+                "B(E)(April 1703;Ms;Black) See Ocean Mail --",
+                "BOSTON(67)(1850;Black) 10",
+            ],
+        )
+        self.assertEqual(
+            raw_ids,
+            ["17621", "17625", "17634", "17702", "17415", "90001"],
+        )
+        self.assertEqual(
+            v1_massachusetts.boston_head_description_lines({
+                "txtRawStateData": "(L)(March 19, 1787) 300",
+                "txtPostmark": "(L)(March 19, 1787)",
+            }),
+            [],
+        )
+        self.assertEqual(
+            v1_massachusetts.boston_head_description_lines({
+                "txtRawStateData": (
+                    "BOSTON Ms.(202)(5 stars at bottom)"
+                    "(1805-09;27.5;Black,Red) 30"
+                ),
+                "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+            }),
+            ["5 stars at bottom"],
         )
 
     def test_blank_raw_rows_are_synthesized_and_image_refs_included(self):
@@ -729,6 +1197,18 @@ class V1PipelineTests(unittest.TestCase):
 
         self.assertEqual(color_tokens(row), ["BLUE", "BLACK"])
         self.assertEqual(synthetic_desc_lines(row), [])
+
+    def test_size_echo_in_rate_column_is_not_rate_note(self):
+        row = {
+            "txtSizes": "31,32",
+            "txtRates": "(31,32)",
+        }
+
+        self.assertEqual(synthetic_desc_lines(row), [])
+        self.assertEqual(
+            v1_bundle_overlay.parsed_dimensions(row),
+            ("31", "31"),
+        )
 
     def test_non_color_rate_note_still_preserved_as_desc(self):
         row = {
@@ -1769,6 +2249,159 @@ class V1PipelineTests(unittest.TestCase):
         self.assertEqual(images[0]["subject_id"], townmarks[0]["code"])
         self.assertTrue(media_exists)
         self.assertIn("unsupported_column", {r["issue"] for r in report})
+
+    def test_overlay_adds_boston_bpm2_citations_and_description(self):
+        raw_rows = {
+            "17621": {
+                "nRawStateDataID": "17621",
+                "txtRawStateData": (
+                    "BOSTON(87)(1788-89;SL-28x5;FREE[BPM 103];Black,Brown) 100"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON(87)",
+                "txtTownPostmark": "BOSTON",
+                "txtRatesText": "FREE[BPM 103]",
+            },
+            "17706": {
+                "nRawStateDataID": "17706",
+                "txtRawStateData": (
+                    "BOSTON./52(652,3,4)(Also 55,58 & 59)"
+                    "(1852-59;C-32.5;Black) On reverse 100"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON./52(652,3,4)(Also 55,58 & 59)",
+                "txtTownPostmark": "BOSTON./52",
+                "txtRatesText": "",
+            },
+            "17634": {
+                "nRawStateDataID": "17634",
+                "txtRawStateData": (
+                    "BOSTON Ms.(202)(5 stars at bottom)(1805-09;27.5;Black,Red) 30"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON Ms.(202)(5 stars at bottom)",
+                "txtTownPostmark": "BOSTON Ms.",
+                "txtRatesText": "",
+            },
+            "17710": {
+                "nRawStateDataID": "17710",
+                "txtRawStateData": "BOSTON(1837;Black) 10",
+                "txtTown": "Boston",
+                "txtPostmark": "BOSTON",
+                "txtTownPostmark": "BOSTON",
+                "txtRatesText": "",
+            },
+            "17415": {
+                "nRawStateDataID": "17415",
+                "txtRawStateData": (
+                    "B(1 and others)(E)(April 1703;Ms;Black) See Ocean Mail --"
+                ),
+                "txtTown": "Boston",
+                "txtPostmark": "B(1 and others)(E)",
+                "txtTownPostmark": "B",
+                "txtRatesText": "",
+            },
+        }
+        source_map_rows = [
+            {
+                "chunk": "17621",
+                "marking_code": "TM1",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17621",
+                "marking_code": "AX1",
+                "marking_type": "AUXMARK",
+            },
+            {
+                "chunk": "17706",
+                "marking_code": "TM2",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17634",
+                "marking_code": "TM5",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17710",
+                "marking_code": "TM3",
+                "marking_type": "TOWNMARK",
+            },
+            {
+                "chunk": "17415",
+                "marking_code": "TM4",
+                "marking_type": "TOWNMARK",
+            },
+        ]
+        markings_by_id = {
+            "TM1": {"code": "TM1", "type": "TOWNMARK", "inscription_txt": "BOSTON(87)", "desc": ""},
+            "AX1": {"code": "AX1", "type": "AUXMARK", "inscription_txt": "BOSTON FREE", "desc": ""},
+            "TM2": {"code": "TM2", "type": "TOWNMARK", "inscription_txt": "BOSTON./52", "desc": "On reverse"},
+            "TM5": {"code": "TM5", "type": "TOWNMARK", "inscription_txt": "BOSTON Ms.", "desc": ""},
+            "TM3": {"code": "TM3", "type": "TOWNMARK", "inscription_txt": "BOSTON", "desc": ""},
+            "TM4": {"code": "TM4", "type": "TOWNMARK", "inscription_txt": "B", "desc": ""},
+        }
+        citations = [
+            stamped({
+                "reference_work": "ASCC6",
+                "subject_type": "MARKING",
+                "subject_id": "TM1",
+                "citation_detail": "",
+            }),
+            stamped({
+                "reference_work": "ASCC6",
+                "subject_type": "MARKING",
+                "subject_id": "AX1",
+                "citation_detail": "",
+            }),
+        ]
+        warnings = []
+
+        out = v1_bundle_overlay.append_massachusetts_bpm_metadata(
+            "MA",
+            raw_rows,
+            source_map_rows,
+            markings_by_id,
+            citations,
+            [{"code": "ASCC6"}, {"code": "BPM2"}],
+            AUDIT,
+            warnings,
+        )
+
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17621"]), "BOSTON")
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17706"]), "BOSTON./52")
+        self.assertEqual(v1_massachusetts.boston_catalog_head(raw_rows["17415"]), "B")
+        self.assertEqual(markings_by_id["TM1"]["desc"], "BPM illustration: 87")
+        self.assertEqual(markings_by_id["AX1"]["desc"], "BPM illustration: 103")
+        self.assertEqual(
+            markings_by_id["TM2"]["desc"],
+            "On reverse\nBPM illustrations: 652,3,4; Also 55,58 & 59",
+        )
+        self.assertEqual(
+            markings_by_id["TM5"]["desc"],
+            "5 stars at bottom\nBPM illustration: 202",
+        )
+        observed = {
+            (
+                row["reference_work"],
+                row["subject_id"],
+                row["citation_detail"],
+            )
+            for row in out
+        }
+        self.assertIn(("ASCC6", "TM1", ""), observed)
+        self.assertIn(("ASCC6", "AX1", ""), observed)
+        self.assertIn(("BPM2", "TM1", "illustration 87"), observed)
+        self.assertIn(("BPM2", "AX1", "illustration 103"), observed)
+        self.assertIn(
+            ("BPM2", "TM2", "illustrations 652,3,4; Also 55,58 & 59"),
+            observed,
+        )
+        self.assertIn(("BPM2", "TM5", "illustration 202"), observed)
+        self.assertIn(("BPM2", "TM3", ""), observed)
+        self.assertIn(("BPM2", "TM4", "illustrations 1 and others"), observed)
+        self.assertEqual(warnings, [])
 
     def test_attach_images_does_not_copy_refs_to_color_fanout_townmarks(self):
         with tempfile.TemporaryDirectory() as td:

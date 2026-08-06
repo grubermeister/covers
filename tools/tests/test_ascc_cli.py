@@ -297,6 +297,31 @@ class AsccCliTests(unittest.TestCase):
         self.assertFalse(by_name["v1 image root"]["required"])
         self.assertFalse(by_name["database"]["required"])
 
+    def test_v1_doctor_requires_bpm2_for_massachusetts(self):
+        with tempfile.TemporaryDirectory() as td:
+            with _PatchedRoots(td):
+                for name in ("regions.csv", "tblStates.csv", "tblRawStateData.csv", "tblTownmarkImages.csv"):
+                    (ascc_cli.WIP_IN / name).write_text("", encoding="utf-8")
+                ref_path = ascc_cli.WIP_IN / "reference_works.csv"
+                ref_path.write_text("code\nASCC6\n", encoding="utf-8")
+                with patch.object(ascc_cli, "check_db", return_value=(False, "not available")):
+                    missing_checks = ascc_cli.v1_doctor_checks(
+                        "ma",
+                        ascc_cli.WIP_IN / "missing-images",
+                        allow_missing_images=True,
+                    )
+                    ref_path.write_text("code\nASCC6\nBPM2\n", encoding="utf-8")
+                    present_checks = ascc_cli.v1_doctor_checks(
+                        "ma",
+                        ascc_cli.WIP_IN / "missing-images",
+                        allow_missing_images=True,
+                    )
+
+        missing = {check["name"]: check for check in missing_checks}
+        present = {check["name"]: check for check in present_checks}
+        self.assertFalse(missing["reference work BPM2"]["ok"])
+        self.assertTrue(present["reference work BPM2"]["ok"])
+
     def test_v1_image_root_defaults_to_backup_state_folder(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

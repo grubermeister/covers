@@ -135,4 +135,18 @@ describe("submittedDataToFieldInput", () => {
     expect(fieldInput.state).toBe("VA");
     expect(fieldInput.town).toBe("Richmond");
   });
+
+  it("does not display ARC semi-circle dimensions as a diameter", () => {
+    const fieldInput = submittedDataToFieldInput(
+      {
+        shape: "ARC - Arc or Semi-circle",
+        width_mm: "32",
+        height_mm: "19",
+      },
+      lookups,
+      { contributionId: 57 },
+    );
+
+    expect(fieldInput.dimensions).toBe("32x19 mm");
+  });
 });

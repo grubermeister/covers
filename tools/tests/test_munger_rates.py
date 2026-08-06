@@ -15,7 +15,12 @@ if str(TOOLS_DIR) not in sys.path:
     sys.path.insert(0, str(TOOLS_DIR))
 
 from munger.fields import classify_paren_field, subparse_fields
-from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
+from munger.fields.rates import (
+    RATE_BRACKET_RE,
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
 from munger.rate_assembly import parse_rate_amount
 
 
@@ -89,6 +94,29 @@ class TestRateParsing(unittest.TestCase):
         parsed = subparse_fields(row)
         self.assertEqual(parsed['parsed_rates'][0][0]['rate_amount_raw'], '5')
         self.assertEqual(parsed['parsed_rates'][0][0]['rate_bracket'], 'C')
+
+    def test_inline_rate_splits_from_town_inscription(self):
+        cases = [
+            ('CHICAGO/PAID 6', 'CHICAGO', 'PAID', '6'),
+            ('CHICAGO/6 PAID', 'CHICAGO', 'PAID', '6'),
+            ('CHICAGO/5', 'CHICAGO', None, '5'),
+            ('CHICAGO.lll./PAID/3Cts', 'CHICAGO.lll.', 'PAID', '3'),
+            ('ALEXANDRIA VA./5', 'ALEXANDRIA VA.', None, '5'),
+        ]
+        for raw, expected_head, expected_keyword, expected_amount in cases:
+            with self.subTest(raw=raw):
+                head, tokens = split_inline_rate_from_inscription(raw)
+                self.assertEqual(head, expected_head)
+                self.assertEqual(len(tokens), 1)
+                self.assertEqual(tokens[0]['rate_keyword'], expected_keyword)
+                self.assertEqual(tokens[0]['rate_amount_raw'], expected_amount)
+
+    def test_inline_rate_does_not_split_state_suffixes(self):
+        for raw in ('CHICAGO/Ill.', 'CHICAGO/ILL', 'BETHANY/Va.'):
+            with self.subTest(raw=raw):
+                head, tokens = split_inline_rate_from_inscription(raw)
+                self.assertEqual(head, raw)
+                self.assertEqual(tokens, [])
 
 
 if __name__ == '__main__':

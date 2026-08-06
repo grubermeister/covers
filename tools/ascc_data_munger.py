@@ -34,9 +34,20 @@ from munger.export import AUDIT_TAIL, AUDIT_USER_ID, INT_COLS, _by_listing, _cas
 from munger.fields import _split_ms_date_token, classify_all_fields, classify_paren_field, subparse_fields, triage_other_field
 from munger.fields.colors import parse_color_field
 from munger.fields.dates import is_approximate_date, parse_date_field
-from munger.fields.rates import RATE_BRACKET_RE, parse_rate_token, split_rate_tokens
+from munger.fields.rates import (
+    RATE_BRACKET_RE,
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
 from munger.fields.sizes import parse_size_field
-from munger.head import parse_head, parse_manuscript_row
+from munger.head import (
+    head_note_desc_lines,
+    head_note_has_lettering_note,
+    head_note_lettering_name,
+    parse_head,
+    parse_manuscript_row,
+)
 from munger.images import (
     MEDIA_ROOT,
     image_filename,
@@ -52,7 +63,7 @@ from munger.io import (
 from munger.rate_assembly import BRACKET_DIM_RE, BRACKET_SHAPE_MAP, _date_cls, _tm_codes_by_listing, parse_rate_amount
 from munger.relationships import OR_ALIAS_RE, TOWN_HEADING_RE, _is_abbrev_of, _norm_for_alias, resolve_relationships, roll_up_catalog_text
 from munger.segment import classify_entry_form, decompose_tail, segment_entry, split_paren_fields, split_valuation_tiers
-from munger.text_utils import strip_dot_leaders
+from munger.text_utils import normalize_post_office_town_text, strip_dot_leaders
 
 TOOLS_DIR = Path(__file__).resolve().parent
 WIP_DIR = TOOLS_DIR / "wip"
@@ -82,57 +93,6 @@ def format_dates_seen_desc(raw_text):
     if not tokens:
         return None
     return "Dates Seen " + ", ".join(tokens)
-
-
-def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
-                       other_fields, parsed_sizes=None, frank_notes=None):
-    """Assemble desc note lines for one listing row.
-
-    Order: paren annotations (Backstamp, letter-position notes), See-clause,
-    frank privilege notes, approximate dates
-    ("Date(s) seen: 1850s", "Date(s) seen: c1850"),
-    any unresolved 'other' paren fields recorded verbatim as errata notes
-    (e.g. APALACHICOLA "fancy lined X"), then NOR or bracketed size-field
-    annotations, with bracket delimiters stripped
-    ("SL-42x5,MDD[separate hdstp]" -> "separate hdstp").
-    Unbracketed size qualifiers like the positional "below" in
-    "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
-    are dropped, first occurrence wins. Returns a list of str lines
-    (possibly empty).
-    """
-    lines = list(paren_annotations_desc or [])
-    if see_clause and isinstance(see_clause, str) and see_clause.strip():
-        lines.append(see_clause.strip())
-    for note in (frank_notes or []):
-        line = str(note).strip()
-        if line and line not in lines:
-            lines.append(line)
-    approximate_dates = []
-    for d in (parsed_dates or []):
-        if not is_approximate_date(d):
-            continue
-        raw = str(d.get('date_raw') or '').strip()
-        if raw and raw not in approximate_dates:
-            approximate_dates.append(raw)
-    if approximate_dates:
-        lines.append("Date(s) seen: " + ", ".join(approximate_dates))
-    for f in (other_fields or []):
-        line = str(f).strip()
-        if line and line not in lines:
-            lines.append(line)
-    for s in (parsed_sizes or []):
-        q = str(s.get('size_qualifier') or '').strip()
-        if not q:
-            continue
-        if q.upper() == 'NOR':
-            line = 'NOR'
-        elif q[0] in '[{|':
-            line = q.strip('[]{}|').strip()
-        else:
-            continue
-        if line and line not in lines:
-            lines.append(line)
-    return lines
 
 
 FRANK_WORD_RE = re.compile(r'\bfranks?\b', re.IGNORECASE)
@@ -174,17 +134,107 @@ def frank_rate_desc_notes(parsed_rates):
     return notes
 
 
-_POST_OFFICE_APOSTROPHE_RE = re.compile(r"[\u2019']")
-_POST_OFFICE_QUOTE_RE = re.compile(r"[\u201c\u201d\u201e\u201f\"]")
-_POST_OFFICE_AMP_RE = re.compile(r"\s*&\s*")
-_POST_OFFICE_STRIP_PUNCT_RE = re.compile(r"[,/=()\[\]:;_`*?]")
-_POST_OFFICE_DOUBLE_DASH_RE = re.compile(r"-{2,}")
-_POST_OFFICE_MULTI_SPACE_RE = re.compile(r"\s+")
-_POST_OFFICE_EDGE_TRIM_RE = re.compile(r"^[\s.\-]+|[\s.,\-]+$")
-_POST_OFFICE_ATTACHED_YEAR_TAIL_RE = re.compile(
-    r"(?<=[A-Z])C?\d{3,4}(?:'?[S])?(?:[,-]\d{1,4}(?:'?[S])?)*(?:\s+.*)?$"
+def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
+                       other_fields, parsed_sizes=None, frank_notes=None):
+    """Assemble desc note lines for one listing row.
+
+    Order: paren annotations (Backstamp, letter-position notes), See-clause,
+    frank privilege notes, approximate dates
+    ("Date(s) seen: 1850s", "Date(s) seen: c1850"),
+    any unresolved 'other' paren fields recorded verbatim as errata notes
+    (e.g. APALACHICOLA "fancy lined X"), best-effort size descriptor notes
+    (e.g. "framed arc-32x19" -> "framed arc"), then NOR or bracketed
+    size-field annotations, with bracket delimiters stripped
+    ("SL-42x5,MDD[separate hdstp]" -> "separate hdstp").
+    Unbracketed size qualifiers like the positional "below" in
+    "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
+    are dropped, first occurrence wins. The desc field is intentionally the
+    dumping ground for weird catalog side cases when structured parsing can
+    only be best effort, not exhaustive. Returns a list of str lines (possibly
+    empty).
+    """
+    lines = list(paren_annotations_desc or [])
+    if see_clause and isinstance(see_clause, str) and see_clause.strip():
+        lines.append(see_clause.strip())
+    for note in (frank_notes or []):
+        line = str(note).strip()
+        if line and line not in lines:
+            lines.append(line)
+    approximate_dates = []
+    for d in (parsed_dates or []):
+        if not is_approximate_date(d):
+            continue
+        raw = str(d.get('date_raw') or '').strip()
+        if raw and raw not in approximate_dates:
+            approximate_dates.append(raw)
+    if approximate_dates:
+        lines.append("Date(s) seen: " + ", ".join(approximate_dates))
+    for f in (other_fields or []):
+        line = str(f).strip()
+        if line and line not in lines:
+            lines.append(line)
+    for s in (parsed_sizes or []):
+        note = str(s.get('size_desc_note') or '').strip()
+        if note and note not in lines:
+            lines.append(note)
+        q = str(s.get('size_qualifier') or '').strip()
+        if not q:
+            continue
+        if q.upper() == 'NOR':
+            line = 'NOR'
+        elif q[0] in '[{|':
+            line = q.strip('[]{}|').strip()
+        else:
+            continue
+        if line and line not in lines:
+            lines.append(line)
+    return lines
+
+
+def merge_desc_lines(*groups):
+    lines = []
+    for group in groups:
+        for value in (group or []):
+            line = str(value).strip()
+            if line and line not in lines:
+                lines.append(line)
+    return lines
+
+
+_SEE_PAREN_RE = re.compile(r'\(\s*(See\b[^)]*)\)', re.IGNORECASE)
+_SEE_TRAILING_VALUE_TOKEN = (
+    r'(?:'
+    r'\d[\d,]*(?:\.\d+)?-'
+    r'|'
+    r'\d[\d,]*(?:\.\d+)?(?:[-/]\d[\d,]*(?:\.\d+)?)*'
+    r'|---?'
+    r')'
 )
-_POST_OFFICE_DIGIT_TOKEN_TAIL_RE = re.compile(r"\s+\S*\d\S*.*$")
+_SEE_BARE_RE = re.compile(
+    r'\b(See\b[^;)]*?)(?='
+    r'\s+' + _SEE_TRAILING_VALUE_TOKEN + r'(?:\.)?\s*$'
+    r'|\s*(?:--|\.{2,}|;|$)'
+    r')',
+    re.IGNORECASE,
+)
+_MULTI_WS_RE = re.compile(r'\s{2,}')
+
+
+def extract_and_strip_see_clause(text):
+    """Return (see_clause, text_without_clause), preserving any tail value."""
+    s = str(text or '')
+    clause = None
+    m = _SEE_PAREN_RE.search(s)
+    if m:
+        clause = m.group(1).strip()
+        s = _SEE_PAREN_RE.sub('', s, count=1)
+    else:
+        m = _SEE_BARE_RE.search(s)
+        if m:
+            clause = m.group(1).strip()
+            s = _SEE_BARE_RE.sub('', s, count=1)
+    s = _MULTI_WS_RE.sub(' ', s).strip()
+    return clause, s
 
 
 def normalize_post_office_town(raw_town):
@@ -198,19 +248,7 @@ def normalize_post_office_town(raw_town):
     """
     if raw_town is None or pd.isna(raw_town):
         return pd.NA
-    town = str(raw_town).upper()
-    town = _POST_OFFICE_APOSTROPHE_RE.sub("", town)
-    town = _POST_OFFICE_QUOTE_RE.sub("", town)
-    town = _POST_OFFICE_AMP_RE.sub(" AND ", town)
-    town = _POST_OFFICE_STRIP_PUNCT_RE.sub(" ", town)
-    town = _POST_OFFICE_DOUBLE_DASH_RE.sub("-", town)
-    town = _POST_OFFICE_MULTI_SPACE_RE.sub(" ", town)
-    # v1 descriptive entries glue dates and prose to the town name.
-    # Strip whitespace-delimited date tokens before attached date suffixes.
-    town = _POST_OFFICE_DIGIT_TOKEN_TAIL_RE.sub("", town)
-    town = _POST_OFFICE_ATTACHED_YEAR_TAIL_RE.sub("", town)
-    town = _POST_OFFICE_EDGE_TRIM_RE.sub("", town)
-    return town or pd.NA
+    return normalize_post_office_town_text(raw_town) or pd.NA
 
 
 def assign_post_office_codes(post_offices_df, region_code):
@@ -405,27 +443,6 @@ def main(argv=None):
     # Without this, head parsing pollutes inscription/town with the See
     # fragment ("FREDERICKSBURGSee Colonial listing" -> creates a new bogus
     # post_office) and "(L) See State" rows lose their relationship marker.
-    _SEE_PAREN_RE = re.compile(r'\(\s*(See\b[^)]*)\)', re.IGNORECASE)
-    # Bare-See regex: stop the lazy capture before '--' (the no-valuation tail
-    # marker), '...', ';', or end-of-string. The '--' alternative is critical:
-    # otherwise the lazy match extends through it (no other terminator before
-    # $) and the tail marker gets eaten, breaking later tail decomposition.
-    _SEE_BARE_RE  = re.compile(r'\b(See\b[^;)]*?)(?=\s*(?:--|\.{2,}|;|$))', re.IGNORECASE)
-    _MULTI_WS_RE  = re.compile(r'\s{2,}')
-    def _extract_and_strip_see(text):
-        s = str(text or '')
-        clause = None
-        m = _SEE_PAREN_RE.search(s)
-        if m:
-            clause = m.group(1).strip()
-            s = _SEE_PAREN_RE.sub('', s, count=1)
-        else:
-            m = _SEE_BARE_RE.search(s)
-            if m:
-                clause = m.group(1).strip()
-                s = _SEE_BARE_RE.sub('', s, count=1)
-        s = _MULTI_WS_RE.sub(' ', s).strip()
-        return clause, s
     _see_clauses = []
     _cleaned_texts = []
     # Bare-rel-marker pattern: '(L) --', '(E) --', etc. with nothing else.
@@ -439,7 +456,7 @@ def main(argv=None):
     _BARE_REL_RE = re.compile(r'^\s*[(\[{][LE][)\]}]\s*--\s*$', re.IGNORECASE)
     for _, _row in df.iterrows():
         if _row['s2_cross_ref']:
-            _c, _s = _extract_and_strip_see(_row['clean_text'])
+            _c, _s = extract_and_strip_see_clause(_row['clean_text'])
             _see_clauses.append(_c)
             if _s:
                 if _BARE_REL_RE.match(_s):
@@ -811,9 +828,18 @@ def main(argv=None):
     # ======================================================================
     head_parts = listings.apply(parse_head, axis=1)
     listings = pd.concat([listings, head_parts], axis=1)
+    listings['paren_annotations_desc'] = listings.apply(
+        lambda row: merge_desc_lines(
+            row.get('paren_annotations_desc'),
+            head_note_desc_lines(row.get('head_annotation_notes')),
+        ),
+        axis=1,
+    )
+    head_note_count = sum(len(notes) for notes in listings['head_annotation_notes'])
     print(f'Step 4: Head parsing applied to {len(listings)} listings')
     print(f'  Leading-star markers: {listings["head_has_leading_star"].sum()}')
     print(f'  Relationship indicators: {listings["head_rel_type"].notna().sum()}')
+    print(f'  Head annotation notes: {head_note_count}')
     has_name = listings['head_name_body'].notna()
     print(f'  Entries with name body: {has_name.sum()} ({has_name.sum()/len(listings)*100:.1f}%)')
     has_ann = listings['head_annotations'].apply(lambda a: len(a) > 0)
@@ -1086,6 +1112,11 @@ def main(argv=None):
     assert r['size_shape_code'] == 'ARC'
     r = parse_size_field('arc-46x26')
     assert r['size_shape_code'] == 'ARC'
+    r = parse_size_field('framed arc-32x19')
+    assert r['size_shape_code'] == 'ARC'
+    assert r['size_dim1'] == 32.0
+    assert r['size_dim2'] == 19.0
+    assert r['size_desc_note'] == 'framed arc'
     r = parse_size_field('stencil C-31')
     assert r['size_shape_code'] == 'C'
     assert r['size_dim1'] == 31.0
@@ -1142,6 +1173,20 @@ def main(argv=None):
     print('Other-field triage self-tests passed')
     parsed = listings.apply(subparse_fields, axis=1)
     listings = pd.concat([listings, parsed], axis=1)
+    listings['lettering_name'] = listings.apply(
+        lambda row: (
+            row.get('head_lettering_name')
+            if isinstance(row.get('head_lettering_name'), str)
+            and row.get('head_lettering_name').strip()
+            else head_note_lettering_name(row.get('other_fields'))
+        ),
+        axis=1,
+    )
+    listings['lettering_is_explicit'] = listings.apply(
+        lambda row: bool(row.get('head_has_lettering_note'))
+        or head_note_has_lettering_note(row.get('other_fields')),
+        axis=1,
+    )
     print('Step 6: Field-level sub-parsing applied')
     print(f'  Listings processed: {len(listings)}')
     print(f'  Manuscript entries: {listings["is_manuscript"].sum()}')
@@ -1215,6 +1260,26 @@ def main(argv=None):
         print(f'  [{idx}] {field!r}')
         print(f'    raw: {raw}')
         print()
+    inline_head_rate_groups = 0
+    inline_head_rate_tokens = 0
+    for idx, row in listings.iterrows():
+        head_name = row.get('head_name_body')
+        if not isinstance(head_name, str) or not head_name.strip():
+            continue
+        clean_head, rate_tokens = split_inline_rate_from_inscription(head_name)
+        if not rate_tokens:
+            continue
+        listings.at[idx, 'head_name_body'] = clean_head
+        parsed_rates = row.get('parsed_rates')
+        parsed_rates = list(parsed_rates) if isinstance(parsed_rates, list) else []
+        parsed_rates.append(rate_tokens)
+        listings.at[idx, 'parsed_rates'] = parsed_rates
+        inline_head_rate_groups += 1
+        inline_head_rate_tokens += len(rate_tokens)
+    print('Step 6.7: Inline head rate extraction')
+    print(f'  Listings split:      {inline_head_rate_groups}')
+    print(f'  Rate tokens added:   {inline_head_rate_tokens}')
+    print()
     all_dates = [d for dlist in listings['parsed_dates'] for d in dlist]
     if all_dates:
         gran_counts = pd.Series([d['date_granularity'] for d in all_dates]).value_counts()
@@ -1316,6 +1381,7 @@ def main(argv=None):
     inherited_color_count = 0
     inherited_size_count = 0
     inherited_dates_count = 0
+    inherited_lettering_count = 0
     # Walk in catalog order. Source is the preceding sibling under the same
     # parent (or the parent itself, for first children) -- prev_sibling_idx
     # encodes both cases. Because earlier siblings have already been mutated
@@ -1354,12 +1420,25 @@ def main(argv=None):
             if src['parsed_dates']:
                 listings.iat[pos, listings.columns.get_loc('parsed_dates')] = src['parsed_dates'].copy()
                 inherited_dates_count += 1
+
+        # lettering_name
+        row_lettering = row.get('lettering_name')
+        src_lettering = src.get('lettering_name')
+        if (
+            (not isinstance(row_lettering, str) or not row_lettering.strip())
+            and not bool(row.get('lettering_is_explicit'))
+            and isinstance(src_lettering, str)
+            and src_lettering.strip()
+        ):
+            listings.iat[pos, listings.columns.get_loc('lettering_name')] = src_lettering
+            inherited_lettering_count += 1
     print()
     print('Step 7.1b: Attribute inheritance (from preceding sibling)')
     print(f'  is_manuscript inherited:  {inherited_ms_count}')
     print(f'  parsed_colors inherited:  {inherited_color_count}')
     print(f'  parsed_sizes inherited:   {inherited_size_count}')
     print(f'  parsed_dates inherited:   {inherited_dates_count}')
+    print(f'  lettering inherited:      {inherited_lettering_count}')
     canonical_by_alias = {}
     for rt in listings['resolved_town'].dropna().unique():
         m = OR_ALIAS_RE.match(str(rt))
@@ -1629,6 +1708,13 @@ def main(argv=None):
     for alias, canonical in _lettering_aliases.items():
         if canonical in lettering_lookup:
             lettering_lookup[alias] = lettering_lookup[canonical]
+    listings['lettering_id'] = listings['lettering_name'].apply(
+        lambda name: (
+            lettering_lookup.get(str(name).strip().lower())
+            if isinstance(name, str) and str(name).strip()
+            else None
+        )
+    )
     print(f'Value tables constructed:')
     print(f'  Shapes:     {len(shapes_df)} seeds')
     print(f'  Colors:     {len(colors_df)} discovered')
@@ -3168,8 +3254,10 @@ def main(argv=None):
     # Per-listing desc text, looked up at townmark emission time. Combines
     # the parenthetical annotation lines (Backstamp, No town cds, ...), the
     # See-clause for cross-reference rows, desc-only frank shorthands,
-    # approximate dates, and unresolved 'other' paren fields kept verbatim as
-    # errata notes.
+    # approximate dates, unresolved 'other' paren fields kept verbatim as
+    # errata notes, and best-effort size descriptor notes. This is the
+    # intentional desc dumping ground for catalog side cases that should not
+    # block structured parsing.
     desc_by_listing = {}
     for _lidx, _lrow in listings.iterrows():
         _lines = listing_desc_lines(

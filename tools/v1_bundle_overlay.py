@@ -35,16 +35,34 @@ from pathlib import Path
 from PIL import Image as PILImage
 
 from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_field
-from munger.fields.rates import split_rate_tokens, parse_rate_token
+from munger.fields.rates import (
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
 from munger.fields.sizes import parse_size_field
+from munger.head import (
+    head_note_desc_lines,
+    head_note_lettering_name,
+    split_head_annotation_notes,
+)
 from munger.rate_assembly import parse_rate_amount
-from munger.text_utils import strip_trailing_state_suffix
+from munger.text_utils import normalize_post_office_town_text, strip_trailing_state_suffix
 from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
 from v1_synthetic_listing import (
     DATE_SENTINEL_YEARS,
     color_tokens as v1_color_tokens,
     has_synthetic_listing_evidence,
     synthetic_desc_lines,
+)
+from v1_massachusetts import (
+    BPM_REFERENCE_CODE,
+    boston_bpm_details,
+    boston_catalog_head,
+    boston_head_description_lines,
+    format_bpm_citation_detail,
+    format_bpm_description,
+    is_boston_row,
 )
 
 
@@ -144,18 +162,67 @@ def strip_unambiguous_star_marker(text: str) -> str:
     return re.sub(r"^\s*\*|\*\s*$", "", text).strip()
 
 
-def strip_inscription_markers(inscription: object) -> str:
+def strip_inscription_markers(
+    inscription: object,
+    include_attached_notes: bool = True,
+) -> str:
     """Remove catalog-only markers from inscription text."""
     value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription)).strip()
+    value, _notes = split_head_annotation_notes(
+        value,
+        include_attached_note=include_attached_notes,
+    )
+    value, _tokens = split_inline_rate_from_inscription(value)
     value = strip_unambiguous_star_marker(value)
     while value:
         stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
         stripped = TRAILING_INSCRIPTION_MARKER_RE.sub("", stripped, count=1).strip()
+        stripped, _notes = split_head_annotation_notes(
+            stripped,
+            include_attached_note=include_attached_notes,
+        )
+        stripped, _tokens = split_inline_rate_from_inscription(stripped)
         stripped = strip_unambiguous_star_marker(stripped)
         if stripped == value:
             return clean(stripped)
         value = stripped
     return ""
+
+
+def inscription_notes(raw_row: dict[str, str]) -> list[str]:
+    """Return parenthetical notes removed from v1 inscription text."""
+    notes = []
+    for column in ("txtTownPostmark", "txtPostmark"):
+        value = clean(raw_row.get(column))
+        if not value:
+            continue
+        postmark_is_same = column == "txtPostmark" and bool(
+            SAME_PREFIX_RE.match(
+                strip_inscription_markers(
+                    value,
+                    include_attached_notes=False,
+                )
+            )
+        )
+        _cleaned, found = split_head_annotation_notes(
+            value,
+            require_keyword=postmark_is_same,
+            include_attached_note=not postmark_is_same,
+        )
+        for note in found:
+            if note not in notes:
+                notes.append(note)
+    return notes
+
+
+def inscription_note_lines(raw_row: dict[str, str]) -> list[str]:
+    """Return townmark desc notes removed from v1 inscription text."""
+    return head_note_desc_lines(inscription_notes(raw_row))
+
+
+def inscription_lettering_name(raw_row: dict[str, str]) -> str | None:
+    """Return lettering implied by v1 inscription notes."""
+    return head_note_lettering_name(inscription_notes(raw_row))
 
 
 def split_location_state_suffix(text: object) -> tuple[str, str]:
@@ -228,6 +295,21 @@ def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
     if town:
         return town
     return townmark_text_stem(townmark_text).upper()
+
+
+def overlay_post_office_town(raw_row: dict[str, str]) -> str:
+    """Return v1 txtTown only when the townmark text has a real town."""
+    town = clean(raw_row.get("txtTown"))
+    if not town:
+        return ""
+    for value in (
+        townmark_text_stem(raw_row.get("txtTownPostmark")),
+        townmark_text_stem(raw_row.get("txtPostmark")),
+        town,
+    ):
+        if clean(value) and normalize_post_office_town_text(value) is None:
+            return ""
+    return town
 
 
 def overlay_row_inscription(
@@ -481,6 +563,39 @@ def parsed_dimensions(row: dict[str, str]) -> tuple[str, str]:
         height = decimal_text(dim2 if dim2 is not None else dim1)
         return width, height
     return "", ""
+
+
+def v1_size_is_bare_diameter(row: dict[str, str]) -> bool:
+    raw_sizes = clean(row.get("txtSizes"))
+    if not raw_sizes:
+        return False
+    tokens = [token.strip() for token in re.split(r"[;|]+", raw_sizes) if token.strip()]
+    if len(tokens) != 1:
+        return False
+    parsed = parse_size_field(tokens[0])
+    if parsed.get("size_error"):
+        return False
+    return (
+        parsed.get("size_dim1") is not None
+        and parsed.get("size_dim2") is None
+        and not parsed.get("size_shape_code")
+    )
+
+
+def should_keep_munger_circle_shape(
+    raw_row: dict[str, str],
+    townmark_rows: list[dict[str, str]],
+    shape_code: str,
+) -> bool:
+    if shape_code != "SL":
+        return False
+    if not v1_size_is_bare_diameter(raw_row):
+        return False
+    return any(
+        not truthy(row.get("is_manuscript"))
+        and normalized_shape_code(row.get("shape")) == "C"
+        for row in townmark_rows
+    )
 
 
 def split_date_tokens(value: object) -> list[str]:
@@ -793,13 +908,16 @@ def apply_row_fields(
     tables: dict[str, object],
     warnings: list[dict[str, str]],
     carry_state: dict[str, str] | None = None,
+    state: str = "",
 ) -> None:
     townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
+    ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
     marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
-    if nonblank(raw_row.get("txtTown")) and marking_rows:
+    overlay_town = overlay_post_office_town(raw_row)
+    if overlay_town and marking_rows:
         first_po = clean(marking_rows[0].get("post_office"))
         new_po = ensure_post_office(
-            raw_row.get("txtTown"),
+            overlay_town,
             first_po,
             tables["post_offices"],
             tables["post_office_fields"],
@@ -810,7 +928,11 @@ def apply_row_fields(
         )
         for row in marking_rows:
             row["post_office"] = new_po
-    inscription = overlay_row_inscription(raw_row, carry_state)
+    boston_row = is_boston_row(state, raw_row)
+    if boston_row:
+        inscription = boston_catalog_head(raw_row)
+    else:
+        inscription = overlay_row_inscription(raw_row, carry_state)
     if inscription:
         for row in townmark_rows:
             row["inscription_txt"] = inscription
@@ -823,14 +945,24 @@ def apply_row_fields(
                 row["height"] = height
     shape_code = normalized_shape_code(raw_row.get("txtTownmarkShape"))
     if shape_code:
-        shape_id = lookups["shapes"].get(shape_code)
-        if shape_id:
-            for row in townmark_rows:
-                if not truthy(row.get("is_manuscript")):
-                    row["shape"] = shape_id
+        if should_keep_munger_circle_shape(raw_row, townmark_rows, shape_code):
+            add_warning(
+                warnings,
+                raw_id,
+                "legacy_sl_shape_ignored",
+                "txtTownmarkShape is Straight line but txtSizes is a bare diameter",
+            )
         else:
-            add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
+            shape_id = lookups["shapes"].get(shape_code)
+            if shape_id:
+                for row in townmark_rows:
+                    if not truthy(row.get("is_manuscript")):
+                        row["shape"] = shape_id
+            else:
+                add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
     lettering_key = clean(raw_row.get("txtTownmarkLettering")).upper()
+    if not lettering_key:
+        lettering_key = clean(inscription_lettering_name(raw_row)).upper()
     if lettering_key:
         lettering_id = lookups["letterings"].get(lettering_key)
         if lettering_id:
@@ -869,16 +1001,20 @@ def apply_row_fields(
             if not row.get("is_irreg"):
                 row["is_irreg"] = "False"
     desc_lines = [
+        *([] if boston_row else inscription_note_lines(raw_row)),
         raw_row.get("txtOther", ""),
         raw_row.get("memNotes", ""),
-        *synthetic_desc_lines(raw_row),
     ]
     if any(nonblank(value) for value in desc_lines):
         for row in townmark_rows:
             row["desc"] = append_desc(row.get("desc"), desc_lines)
+    rate_desc_lines = synthetic_desc_lines(raw_row)
+    if any(nonblank(value) for value in rate_desc_lines):
+        desc_targets = ratemark_rows if ratemark_rows else townmark_rows
+        for row in desc_targets:
+            row["desc"] = append_desc(row.get("desc"), rate_desc_lines)
     if nonblank(raw_row.get("txtRatesText")):
         rate_values = parsed_rate_values(raw_row.get("txtRatesText"))
-        ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
         # A single v1 value may only correct a uniform set of ratemarks.
         # When the bundle already carries distinct values (e.g. X=10 and
         # PAID 3=3 from the same listing), stamping the one v1 value over
@@ -962,6 +1098,142 @@ def rebuild_citations(
         row.update(audit)
         rows.append(row)
     return rows
+
+
+def reference_work_has_code(rows: list[dict[str, str]], code: str) -> bool:
+    return any(clean(row.get("code")) == code for row in rows)
+
+
+def keyword_matches_marking(marking: dict[str, str], keyword: str) -> bool:
+    if not keyword:
+        return True
+    text = "{0} {1} {2}".format(
+        marking.get("inscription_txt", ""),
+        marking.get("catalog_txt", ""),
+        marking.get("desc", ""),
+    ).upper()
+    return bool(re.search(r"\b{0}\b".format(re.escape(keyword.upper())), text))
+
+
+def append_massachusetts_bpm_metadata(
+    state: str,
+    raw_rows: dict[str, dict[str, str]],
+    source_map_rows: list[dict[str, str]],
+    markings_by_id: dict[str, dict[str, str]],
+    citations: list[dict[str, str]],
+    reference_works: list[dict[str, str]],
+    audit: dict[str, str],
+    warnings: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    boston_raw_ids = [
+        raw_id for raw_id, raw_row in raw_rows.items()
+        if is_boston_row(state, raw_row)
+    ]
+    if not boston_raw_ids:
+        return citations
+    if not reference_work_has_code(reference_works, BPM_REFERENCE_CODE):
+        raise RuntimeError(
+            "error: Massachusetts Boston overlay requires reference work {0}".format(
+                BPM_REFERENCE_CODE
+            )
+        )
+
+    rows_by_raw = defaultdict(list)
+    for source_map_row in source_map_rows:
+        raw_id = clean(source_map_row.get("chunk"))
+        marking_code = clean(
+            source_map_row.get("marking_code") or source_map_row.get("marking_id")
+        )
+        if raw_id and marking_code:
+            rows_by_raw[raw_id].append(source_map_row)
+
+    out = list(citations)
+    seen_citations = {
+        (
+            clean(row.get("reference_work")),
+            clean(row.get("subject_type")),
+            clean(row.get("subject_id")),
+            clean(row.get("citation_detail")),
+        )
+        for row in out
+    }
+
+    for raw_id in boston_raw_ids:
+        raw_row = raw_rows[raw_id]
+        source_rows = rows_by_raw.get(raw_id, [])
+        if not source_rows:
+            continue
+        codes = []
+        townmark_codes = []
+        non_townmark_codes = []
+        for row in source_rows:
+            code = clean(row.get("marking_code") or row.get("marking_id"))
+            if not code:
+                continue
+            codes.append(code)
+            if clean(row.get("marking_type")).upper() == "TOWNMARK":
+                townmark_codes.append(code)
+            else:
+                non_townmark_codes.append(code)
+
+        explicit_details: dict[str, list[str]] = defaultdict(list)
+        head_details, inline_refs = boston_bpm_details(raw_row)
+        head_desc_lines = boston_head_description_lines(raw_row)
+        if head_desc_lines:
+            for code in townmark_codes or codes:
+                marking = markings_by_id.get(code)
+                if marking:
+                    marking["desc"] = append_desc(marking.get("desc"), head_desc_lines)
+
+        if head_details:
+            for code in townmark_codes or codes:
+                explicit_details[code].extend(head_details)
+
+        for inline_ref in inline_refs:
+            candidates = [
+                code for code in non_townmark_codes
+                if keyword_matches_marking(markings_by_id.get(code, {}), inline_ref.keyword)
+            ]
+            if not candidates:
+                candidates = non_townmark_codes
+                if inline_ref.keyword:
+                    add_warning(
+                        warnings,
+                        raw_id,
+                        "bpm_inline_target",
+                        "could not match {0} to a non-townmark".format(
+                            inline_ref.keyword
+                        ),
+                    )
+            if not candidates:
+                candidates = codes
+            for code in candidates:
+                explicit_details[code].append(inline_ref.detail)
+
+        for code, details in explicit_details.items():
+            marking = markings_by_id.get(code)
+            if not marking:
+                continue
+            desc = format_bpm_description(details)
+            if desc:
+                marking["desc"] = append_desc(marking.get("desc"), [desc])
+
+        for code in codes:
+            details = explicit_details.get(code, [])
+            detail = format_bpm_citation_detail(details)
+            key = (BPM_REFERENCE_CODE, "MARKING", code, detail)
+            if key in seen_citations:
+                continue
+            seen_citations.add(key)
+            row = {
+                "reference_work": BPM_REFERENCE_CODE,
+                "subject_type": "MARKING",
+                "subject_id": code,
+                "citation_detail": detail,
+            }
+            row.update(audit)
+            out.append(row)
+    return out
 
 
 def resolve_image_source(root: Path, source_filename: str) -> Path | None:
@@ -1205,6 +1477,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
             tables,
             warnings,
             carry_state,
+            state=state,
         )
 
     by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
@@ -1221,6 +1494,16 @@ def apply_overlay(args: argparse.Namespace) -> int:
         reference_work_id = clean(reference_works[0].get("code"))
     reference_work_id = reference_work_id or "ASCC"
     citations = rebuild_citations(source_map_rows, reference_work_id, audit)
+    citations = append_massachusetts_bpm_metadata(
+        state,
+        raw_rows,
+        source_map_rows,
+        markings_by_id,
+        citations,
+        reference_works,
+        audit,
+        warnings,
+    )
     if args.preserve_images:
         images = reconcile_preserved_images(existing_images, deleted_ids)
     else:

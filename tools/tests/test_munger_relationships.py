@@ -68,9 +68,11 @@ class ResolveRelationshipsTests(unittest.TestCase):
         cases = [
             ("WHITE-WATER/Wis.", "/Wis.", "WHITE-WATER/Wis."),
             ("(1)WHITE-WATER/Wis.", "/Wis.", "WHITE-WATER/Wis."),
-            ("WINCHESTER.VA", "VA./5", "WINCHESTER VA./5"),
-            ("*WINCHESTER.VA", "VA./5", "WINCHESTER VA./5"),
-            ("WINCHESTER.VA", "*VA./5", "WINCHESTER VA./5"),
+            ("CHICAGO/Ill.", "/ILL.", "CHICAGO/ILL."),
+            ("ALTON/ILL.", "/ILL. and /Ill.", "ALTON/ILL. and /Ill."),
+            ("WINCHESTER.VA", "VA./5", "WINCHESTER VA."),
+            ("*WINCHESTER.VA", "VA./5", "WINCHESTER VA."),
+            ("WINCHESTER.VA", "*VA./5", "WINCHESTER VA."),
         ]
         for parent_text, suffix, expected in cases:
             with self.subTest(parent_text=parent_text, suffix=suffix):
@@ -198,8 +200,8 @@ class ResolveRelationshipsTests(unittest.TestCase):
 
         resolved = resolve_relationships(listings)
 
-        self.assertEqual(resolved.loc[1, "resolved_inscription"], "ALEXANDRIA VA./5")
-        self.assertEqual(resolved.loc[2, "resolved_inscription"], "ALEXANDRIA VA./VA.")
+        self.assertEqual(resolved.loc[1, "resolved_inscription"], "ALEXANDRIA VA.")
+        self.assertEqual(resolved.loc[2, "resolved_inscription"], "ALEXANDRIA/VA.")
 
     def test_rollup_dedupes_identical_parent_and_child_text(self):
         listings = pd.DataFrame(

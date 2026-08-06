@@ -2,16 +2,12 @@ import { History, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { MarkingChangelogEvent } from "@/services/markings";
-import { formatDiffValue } from "./historyDiffFormatting";
+import { formatDiffValue, humanizeFieldKey } from "./historyDiffFormatting";
 
 const HISTORY_COLLAPSED_LIMIT = 3;
 const HISTORY_EXPANDED_LIMIT = 10;
 // Cap the per-event field-change list so a large edit does not flood the card.
 const DIFF_FIELD_LIMIT = 6;
-
-function humanizeFieldKey(key: string): string {
-  return key.replace(/_/g, " ");
-}
 
 function formatHistoryTimestamp(raw: string | null | undefined): string {
   if (!raw) return "";

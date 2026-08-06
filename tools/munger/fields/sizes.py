@@ -57,6 +57,24 @@ _AMP_SHAPE_RE = re.compile(
     re.IGNORECASE
 )
 
+EMBEDDED_SHAPE_SIZE_RE = re.compile(
+    r'(?<![A-Za-z])'
+    r'(?P<shape>' + SHAPE_CODE_PAT + r')'
+    r'(?![A-Za-z])'
+    r'(?P<alts>(?:\s*&\s*[A-Za-z]+)*)'
+    r'(?P<sep>[\s\-,]*)'
+    r'(?P<dim>\d+\.?\d*(?:\s*x\s*\d+\.?\d*)?|--?)'
+    r'(?P<suffix>\s*,\s*.+)?$',
+    re.IGNORECASE
+)
+
+COMMA_DIAMETER_MIN_MM = 13.0
+
+COMMA_DIAMETER_LIST_RE = re.compile(
+    r'^\d+\.?\d*(?:\s*,\s*\d+\.?\d*)+$',
+    re.IGNORECASE
+)
+
 def _collapse_ampersand_shape(t):
     """If t looks like '<shape_a> & <shape_b> [& ...] <rest>', return
     '<first valid shape> <rest>'. Otherwise return t unchanged.
@@ -86,6 +104,51 @@ def _collapse_ampersand_shape(t):
             return cand + rest
     return t
 
+def _embedded_shape_size_candidate(t):
+    """Return (normal_size_text, desc_note) for modified size fields.
+
+    ASCC size fields sometimes carry prose before the shape-size signature,
+    such as "framed arc-32x19". Treat the parse as best effort: keep the
+    recognized shape/dimensions for structured fields, and send the source
+    descriptor before the dimensions to desc as the catalog dumping ground.
+    """
+    m = EMBEDDED_SHAPE_SIZE_RE.search(t)
+    if not m:
+        return None
+
+    desc_note = t[:m.start('dim')].strip(' \t-,')
+    if not desc_note:
+        return None
+
+    dim = m.group('dim')
+    suffix = m.group('suffix') or ''
+    size_text = (
+        m.group('shape')
+        + (m.group('alts') or '')
+        + ('' if dim.startswith('-') else '-')
+        + dim
+        + suffix
+    )
+    return size_text, desc_note
+
+def is_comma_diameter_list(t):
+    if not COMMA_DIAMETER_LIST_RE.match(t):
+        return False
+    try:
+        dims = [float(part.strip()) for part in t.split(',') if part.strip()]
+    except ValueError:
+        return False
+    return len(dims) >= 2 and all(dim >= COMMA_DIAMETER_MIN_MM for dim in dims)
+
+def _comma_diameter_list_candidate(t):
+    """Return the first diameter plus a desc note for "31,32" style sizes."""
+    if not is_comma_diameter_list(t):
+        return None
+    dims = [part.strip() for part in t.split(',') if part.strip()]
+    if len(dims) < 2:
+        return None
+    return dims[0], "Sizes: " + ",".join(dims)
+
 def parse_size_field(text):
     """Decompose a size-classified paren field into components."""
     raw = text.strip()
@@ -102,18 +165,40 @@ def parse_size_field(text):
         return {
             'size_shape_code': None, 'size_dim1': None, 'size_dim2': None,
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_impression': size_impression,
+            'size_qualifier': None, 'size_desc_note': None,
+            'size_impression': size_impression,
             'size_raw': raw, 'size_error': None,
         }
 
     # Collapse ampersand-joined shape lists ("arc & SL-46x26" -> "arc-46x26")
     # before matching; size_raw below still records the original text.
-    m = SIZE_PARSE_RE.match(_collapse_ampersand_shape(t))
+    size_desc_note = None
+    if COMMA_DIAMETER_LIST_RE.match(t) and not is_comma_diameter_list(t):
+        return {
+            'size_shape_code': None, 'size_dim1': None, 'size_dim2': None,
+            'size_dateformat': None, 'size_is_irregular': False,
+            'size_qualifier': None, 'size_desc_note': None,
+            'size_impression': size_impression,
+            'size_raw': raw, 'size_error': f'unparsed size: {raw!r}',
+        }
+    comma_diams = _comma_diameter_list_candidate(t)
+    if comma_diams:
+        size_text, size_desc_note = comma_diams
+        m = SIZE_PARSE_RE.match(size_text)
+    else:
+        m = SIZE_PARSE_RE.match(_collapse_ampersand_shape(t))
+    if not m:
+        size_desc_note = None
+        embedded = _embedded_shape_size_candidate(t)
+        if embedded:
+            size_text, size_desc_note = embedded
+            m = SIZE_PARSE_RE.match(_collapse_ampersand_shape(size_text))
     if not m:
         return {
             'size_shape_code': None, 'size_dim1': None, 'size_dim2': None,
             'size_dateformat': None, 'size_is_irregular': False,
-            'size_qualifier': None, 'size_impression': size_impression,
+            'size_qualifier': None, 'size_desc_note': None,
+            'size_impression': size_impression,
             'size_raw': raw, 'size_error': f'unparsed size: {raw!r}',
         }
 
@@ -162,6 +247,7 @@ def parse_size_field(text):
         'size_dateformat': dateformat,
         'size_is_irregular': is_irregular,
         'size_qualifier': qualifier,
+        'size_desc_note': size_desc_note,
         'size_impression': size_impression,
         'size_raw': raw,
         'size_error': None,

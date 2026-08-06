@@ -47,9 +47,11 @@ def detect_fragment(text):
 
 TRAILING_VALUE_PATTERN = re.compile(
     r'(?:'
+    r'\d[\d,]*(?:\.\d+)?-'  # dangling-dash value: 7-
+    r'|'
     r'\d[\d,]*(?:\.\d+)?'  # number: 3500.00 or 1,500 or 50
     r'|---?'                # dashes: -- or ---
-    r')\s*$'
+    r')(?:\.)?\s*$'
 )
 
 def detect_structural_anatomy(text):

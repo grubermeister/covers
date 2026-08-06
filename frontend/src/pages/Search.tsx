@@ -28,9 +28,9 @@ import { useMarkingYearRange } from "@/hooks/useMarkingYearRange";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 
 const DEBOUNCE_MS = 800;
-const CIRCLE_SHAPE_CODES = ["C", "DC", "DLC", "DLDC"] as const;
 
 type SubmissionQueueSortOption = "newest" | "oldest";
 
@@ -391,8 +391,7 @@ const Search = () => {
     const opts = Array.isArray(shapeOptions) ? shapeOptions : [];
     const selected = opts.find((s) => s.value === shapeFilter);
     if (!selected) return false;
-    const code = selected.label.split(" - ", 1)[0].trim().toUpperCase();
-    return (CIRCLE_SHAPE_CODES as readonly string[]).includes(code);
+    return isTrueCircleShapeName(selected.label);
   }, [shapeFilter, shapeOptions]);
   // While the circle UI is showing, keep widthFilter mirrored to heightFilter so
   // the API sees height == width and the URL persistence stays symmetric.
