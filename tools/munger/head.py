@@ -129,7 +129,10 @@ HEAD_SANS_SERIF_NOTE_RE = re.compile(
     r'\bsans[-\s]+serifs?\b',
     re.IGNORECASE,
 )
-HEAD_SERIF_NOTE_RE = re.compile(r'\bserif(?:s|fed)?\b', re.IGNORECASE)
+HEAD_SERIF_NOTE_RE = re.compile(
+    r'(?<!sans[-\s])\bserif(?:s|fed)?\b',
+    re.IGNORECASE,
+)
 HEAD_THICK_NOTE_RE = re.compile(r'\bthick\b', re.IGNORECASE)
 HEAD_THIN_NOTE_RE = re.compile(r'\bthin\b', re.IGNORECASE)
 HEAD_SMALL_NOTE_RE = re.compile(r'\b(?:small|smaller|tiny)\b', re.IGNORECASE)

@@ -78,6 +78,8 @@ def is_bpm_locator_content(value: object) -> bool:
     lower = text.lower()
     if "star" in lower:
         return False
+    # Bare four-digit values are years, even though the locator regex can
+    # otherwise match numeric locator pieces.
     if re.fullmatch(r"\d{4}", text):
         return False
     return bool(
@@ -287,17 +289,23 @@ def _is_single_detail(detail: str) -> bool:
     return True
 
 
-def format_bpm_description(details: list[str]) -> str:
+def _bpm_label_and_details(details: list[str]) -> tuple[str, str]:
     details = _dedupe(details)
     if not details:
-        return ""
+        return "", ""
     label = "illustration" if len(details) == 1 and _is_single_detail(details[0]) else "illustrations"
-    return "BPM {0}: {1}".format(label, "; ".join(details))
+    return label, "; ".join(details)
+
+
+def format_bpm_description(details: list[str]) -> str:
+    label, joined = _bpm_label_and_details(details)
+    if not joined:
+        return ""
+    return "BPM {0}: {1}".format(label, joined)
 
 
 def format_bpm_citation_detail(details: list[str]) -> str:
-    details = _dedupe(details)
-    if not details:
+    label, joined = _bpm_label_and_details(details)
+    if not joined:
         return ""
-    label = "illustration" if len(details) == 1 and _is_single_detail(details[0]) else "illustrations"
-    return "{0} {1}".format(label, "; ".join(details))
+    return "{0} {1}".format(label, joined)

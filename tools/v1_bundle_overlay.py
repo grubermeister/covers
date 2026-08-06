@@ -1132,7 +1132,7 @@ def append_massachusetts_bpm_metadata(
     if not boston_raw_ids:
         return citations
     if not reference_work_has_code(reference_works, BPM_REFERENCE_CODE):
-        sys.exit(
+        raise RuntimeError(
             "error: Massachusetts Boston overlay requires reference work {0}".format(
                 BPM_REFERENCE_CODE
             )
@@ -1163,21 +1163,18 @@ def append_massachusetts_bpm_metadata(
         source_rows = rows_by_raw.get(raw_id, [])
         if not source_rows:
             continue
-        codes = [
-            clean(row.get("marking_code") or row.get("marking_id"))
-            for row in source_rows
-            if clean(row.get("marking_code") or row.get("marking_id"))
-        ]
-        townmark_codes = [
-            clean(row.get("marking_code") or row.get("marking_id"))
-            for row in source_rows
-            if clean(row.get("marking_type")).upper() == "TOWNMARK"
-        ]
-        non_townmark_codes = [
-            clean(row.get("marking_code") or row.get("marking_id"))
-            for row in source_rows
-            if clean(row.get("marking_type")).upper() != "TOWNMARK"
-        ]
+        codes = []
+        townmark_codes = []
+        non_townmark_codes = []
+        for row in source_rows:
+            code = clean(row.get("marking_code") or row.get("marking_id"))
+            if not code:
+                continue
+            codes.append(code)
+            if clean(row.get("marking_type")).upper() == "TOWNMARK":
+                townmark_codes.append(code)
+            else:
+                non_townmark_codes.append(code)
 
         explicit_details: dict[str, list[str]] = defaultdict(list)
         head_details, inline_refs = boston_bpm_details(raw_row)

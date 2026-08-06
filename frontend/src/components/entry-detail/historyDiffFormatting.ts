@@ -1,4 +1,4 @@
-function humanizeFieldKey(key: string): string {
+export function humanizeFieldKey(key: string): string {
   return key.replace(/_/g, " ");
 }
 

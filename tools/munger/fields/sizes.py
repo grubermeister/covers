@@ -12,12 +12,6 @@ SIZE_IMPRESSION_BY_TOKEN = {
     'stencil': 'Stencil',
 }
 
-SIZE_IMPRESSION_PREFIX_RE = re.compile(r'^(negative|stencil)\s+', re.IGNORECASE)
-SIZE_IMPRESSION_BY_TOKEN = {
-    'negative': 'Negative',
-    'stencil': 'Stencil',
-}
-
 SIZE_FIELD_RE = re.compile(
     r'(?:'
     + r'(?:(?:negative|stencil)\s+)?' + SHAPE_CODE_PAT + r'[\-\s]?\d'

@@ -157,6 +157,13 @@ class TestParseHeadPeel(unittest.TestCase):
         self.assertEqual(head_note_lettering_name(thick), "Thick")
         self.assertEqual(head_note_lettering_name(thin), "Thin")
 
+    def test_sans_serif_head_notes_do_not_assign_serif(self):
+        self.assertEqual(
+            head_note_lettering_name(["sans serif letters"]),
+            "Sans-serif",
+        )
+        self.assertIsNone(head_note_lettering_name(["sans-seriffed letters"]))
+
     def test_embedded_name_variant_is_not_description_note(self):
         self.assertEqual(_parsed_name("Aquia(s) 1811"), "Aquia")
         self.assertEqual(_parsed_head_notes("Aquia(s) 1811"), [])

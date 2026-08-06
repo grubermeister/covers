@@ -95,57 +95,6 @@ def format_dates_seen_desc(raw_text):
     return "Dates Seen " + ", ".join(tokens)
 
 
-def listing_desc_lines(paren_annotations_desc, see_clause, parsed_dates,
-                       other_fields, parsed_sizes=None, frank_notes=None):
-    """Assemble desc note lines for one listing row.
-
-    Order: paren annotations (Backstamp, letter-position notes), See-clause,
-    frank privilege notes, approximate dates
-    ("Date(s) seen: 1850s", "Date(s) seen: c1850"),
-    any unresolved 'other' paren fields recorded verbatim as errata notes
-    (e.g. APALACHICOLA "fancy lined X"), then NOR or bracketed size-field
-    annotations, with bracket delimiters stripped
-    ("SL-42x5,MDD[separate hdstp]" -> "separate hdstp").
-    Unbracketed size qualifiers like the positional "below" in
-    "SL-45x4,YMDD below" are NOT desc notes and stay out. Duplicate lines
-    are dropped, first occurrence wins. Returns a list of str lines
-    (possibly empty).
-    """
-    lines = list(paren_annotations_desc or [])
-    if see_clause and isinstance(see_clause, str) and see_clause.strip():
-        lines.append(see_clause.strip())
-    for note in (frank_notes or []):
-        line = str(note).strip()
-        if line and line not in lines:
-            lines.append(line)
-    approximate_dates = []
-    for d in (parsed_dates or []):
-        if not is_approximate_date(d):
-            continue
-        raw = str(d.get('date_raw') or '').strip()
-        if raw and raw not in approximate_dates:
-            approximate_dates.append(raw)
-    if approximate_dates:
-        lines.append("Date(s) seen: " + ", ".join(approximate_dates))
-    for f in (other_fields or []):
-        line = str(f).strip()
-        if line and line not in lines:
-            lines.append(line)
-    for s in (parsed_sizes or []):
-        q = str(s.get('size_qualifier') or '').strip()
-        if not q:
-            continue
-        if q.upper() == 'NOR':
-            line = 'NOR'
-        elif q[0] in '[{|':
-            line = q.strip('[]{}|').strip()
-        else:
-            continue
-        if line and line not in lines:
-            lines.append(line)
-    return lines
-
-
 FRANK_WORD_RE = re.compile(r'\bfranks?\b', re.IGNORECASE)
 FRANK_MS_PAREN_RE = re.compile(r'\(\s*ms\.?\s*\)', re.IGNORECASE)
 
@@ -286,45 +235,6 @@ def extract_and_strip_see_clause(text):
             s = _SEE_BARE_RE.sub('', s, count=1)
     s = _MULTI_WS_RE.sub(' ', s).strip()
     return clause, s
-
-
-FRANK_WORD_RE = re.compile(r'\bfranks?\b', re.IGNORECASE)
-FRANK_MS_PAREN_RE = re.compile(r'\(\s*ms\.?\s*\)', re.IGNORECASE)
-
-
-def frank_rate_desc_note(token):
-    """Return a townmark desc note for no-amount frank rate tokens.
-
-    PM frank and similar tokens are catalog shorthand for a franking
-    privilege. They do not specify a struck auxmark inscription, so the raw
-    shorthand belongs on the parent townmark desc instead of creating an
-    auxmark with a fabricated inscription like FRANK.
-    """
-    if not isinstance(token, dict):
-        return None
-    if token.get('rate_amount_raw'):
-        return None
-    raw = str(token.get('rate_raw') or '').strip()
-    if not raw:
-        return None
-    note = RATE_BRACKET_RE.sub('', raw).strip()
-    note = FRANK_MS_PAREN_RE.sub('', note).strip()
-    if not FRANK_WORD_RE.search(note):
-        return None
-    note = re.sub(r'\s+', ' ', note)
-    return note or None
-
-
-def frank_rate_desc_notes(parsed_rates):
-    """Return deduped townmark desc notes from parsed rate groups."""
-    notes = []
-    for group in (parsed_rates or []):
-        tokens = group if isinstance(group, list) else [group]
-        for token in tokens:
-            note = frank_rate_desc_note(token)
-            if note and note not in notes:
-                notes.append(note)
-    return notes
 
 
 def normalize_post_office_town(raw_town):
