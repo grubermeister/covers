@@ -177,12 +177,15 @@ class ImageSerializer(serializers.ModelSerializer):
             "uploaded_by",
             "image_url",
             "created_date",
+            # Set only by the crop action (issue #77); never client-supplied.
+            "cropped_from",
         ]
         read_only_fields = [
             "image_id",
             "created_date",
             "modified_date",
             "uploaded_by",
+            "cropped_from",
         ]
         # These are always filled server-side when `file` is uploaded. DRF would
         # otherwise require them on the incoming payload before `create()` runs.

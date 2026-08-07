@@ -86,10 +86,47 @@ IMAGE_REF_COLUMNS = [
     "image_description",
     "is_tracing",
 ]
+# Emitted by write_image_refs but not required by readers, so refs CSVs written
+# before subject-type routing existed still load. Consumers that do not find the
+# column fall back to MARKING, which is what they did unconditionally before.
+IMAGE_REF_OPTIONAL_COLUMNS = ["subject_type"]
+IMAGE_REF_WRITE_COLUMNS = IMAGE_REF_COLUMNS + IMAGE_REF_OPTIONAL_COLUMNS
 
 TYPE_VALUE = "LISTING"
-IMAGE_VIEW_VALUE = "FULL"
 IS_TRACING_VALUE = "False"
+
+# v1 txtView -> (v2 subject_type, v2 image_view).
+#
+# v1 had no cover records: every image hung off the catalog row, and txtView was
+# the only field distinguishing a scan of a whole cover from a closeup of the
+# marking itself. Front/Back are COVER views in v2's vocabulary
+# (common.models.IMAGE_COVER_VIEW_CHOICES); Details is a marking closeup.
+#
+# Blank txtView -- 10,408 of 11,083 rows in the v1 export -- carries no signal at
+# all, so it keeps the historical MARKING/FULL default. Guessing at those would
+# silently reclassify most of the catalog; they are triaged by hand instead
+# (issue #78).
+V1_VIEW_ROUTING = {
+    "front": ("COVER", "FRONT"),
+    "back": ("COVER", "BACK"),
+    "details": ("MARKING", "DETAIL"),
+}
+DEFAULT_VIEW_ROUTING = ("MARKING", "FULL")
+
+
+def route_v1_view(txt_view: str) -> tuple[str, str]:
+    """Map a v1 txtView value to a (subject_type, image_view) pair.
+
+    Matching is case-insensitive and whitespace-tolerant because the v1 export
+    is hand-entered: 'Front', 'front', and ' Front ' all occur.
+
+    >>> route_v1_view("Front")
+    ('COVER', 'FRONT')
+    >>> route_v1_view("")
+    ('MARKING', 'FULL')
+    """
+    key = (txt_view or "").strip().lower()
+    return V1_VIEW_ROUTING.get(key, DEFAULT_VIEW_ROUTING)
 
 
 def normalize_listing(text: str) -> str:
@@ -220,10 +257,16 @@ def write_image_refs(
       "source_filename": "Marking-71-3891.jpg",
       "storage_filename": "va/Marking-71-3891.jpg",
       "display_order": "1",
+      "subject_type": "MARKING",
       "image_view": "FULL",
       "image_description": "",
       "is_tracing": "False"
     }
+
+    subject_type and image_view come from route_v1_view(txtView), so a v1 image
+    the cataloguer marked 'Front' or 'Back' emits subject_type=COVER and is
+    attached to a cover by the bundle overlay rather than to the marking. See
+    V1_VIEW_ROUTING for why blank txtView stays on the marking.
     """
     source_set = set(source_row_ids)
     source_order = {raw_id: pos for pos, raw_id in enumerate(source_row_ids)}
@@ -260,6 +303,8 @@ def write_image_refs(
                     )
                 )
             basename = os.path.basename(source_filename)
+            txt_view = (row.get(IMG_VIEW_COL) or "").strip()
+            subject_type, image_view = route_v1_view(txt_view)
             rows.append(
                 {
                     "source_row_id": raw_id,
@@ -269,8 +314,12 @@ def write_image_refs(
                         region_abbrev.lower(), basename
                     ),
                     "display_order": "",
-                    "image_view": IMAGE_VIEW_VALUE,
-                    "image_description": (row.get(IMG_VIEW_COL) or "").strip(),
+                    "subject_type": subject_type,
+                    "image_view": image_view,
+                    # txtView is also kept verbatim as the description: it is the
+                    # only provenance for how the routing above was decided, and
+                    # rows already imported are identified by it (issue #78).
+                    "image_description": txt_view,
                     "is_tracing": IS_TRACING_VALUE,
                     "_sort_source": source_order.get(raw_id, len(source_order)),
                     "_sort_order": int_or_zero(row.get(IMG_ORDER_COL)),
@@ -281,12 +330,12 @@ def write_image_refs(
     per_source_count = Counter()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", newline="", encoding="utf-8") as fh:
-        writer = csv.DictWriter(fh, fieldnames=IMAGE_REF_COLUMNS)
+        writer = csv.DictWriter(fh, fieldnames=IMAGE_REF_WRITE_COLUMNS)
         writer.writeheader()
         for row in rows:
             per_source_count[row["source_row_id"]] += 1
             row["display_order"] = str(per_source_count[row["source_row_id"]])
-            writer.writerow({col: row[col] for col in IMAGE_REF_COLUMNS})
+            writer.writerow({col: row[col] for col in IMAGE_REF_WRITE_COLUMNS})
     return len(rows)
 
 

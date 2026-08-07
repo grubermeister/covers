@@ -104,6 +104,18 @@ CITATION_COLUMNS = [
     "citation_detail",
     *AUDIT_TAIL,
 ]
+COVER_COLUMNS = [
+    "code",
+    "color",
+    "type",
+    "has_adhesive",
+    "height",
+    "is_institutional",
+    "width",
+    "display_submitter_name",
+    "description",
+    *AUDIT_TAIL,
+]
 COVER_MARKING_COLUMNS = [
     "cover",
     "marking",
@@ -1249,6 +1261,85 @@ def resolve_image_source(root: Path, source_filename: str) -> Path | None:
     return None
 
 
+def cover_row(code: str, audit: dict[str, str]) -> dict[str, object]:
+    """A minimal Cover for a v1 image that turned out to be a whole-cover scan.
+
+    Every descriptive field is left empty on purpose: v1 recorded nothing about
+    the cover itself, only that the image showed one. is_institutional is False
+    -- unlike the munger's covers, which exist precisely because a listing was
+    starred as institutional.
+    """
+    row = {
+        "code": code,
+        "color": "",
+        "type": "",
+        "has_adhesive": "False",
+        "height": "",
+        "is_institutional": "False",
+        "width": "",
+        "display_submitter_name": "False",
+        "description": "",
+    }
+    row.update(audit)
+    return row
+
+
+def cover_marking_row(
+    cover: str,
+    marking: str,
+    audit: dict[str, str],
+) -> dict[str, object]:
+    """Link a v1-derived cover to the marking its image was catalogued under."""
+    row = {
+        "cover": cover,
+        "marking": marking,
+        "is_backstamp": "False",
+        "placement": "",
+        "contributor_comment": "",
+        # Matches the munger's institutional covers: this is catalog data being
+        # restated, not a contributor submission awaiting moderation.
+        "review_status": "approved",
+        "reviewer": "",
+        "review_notes": "",
+        "reviewed_at": "",
+    }
+    row.update(audit)
+    return row
+
+
+def cover_code_prefix(marking_codes: list[str]) -> str:
+    """Derive the '<RW>-<ST>-' prefix that cover codes share with marking codes.
+
+    Marking codes look like 'ASCC6-VA-M1301'; covers built by the munger use
+    'ASCC6-VA-C1001'. Mirrors next_post_office_code's approach of reading the
+    prefix off an existing code rather than reconstructing it from arguments.
+    """
+    for code in marking_codes:
+        code = clean(code)
+        if code.count("-") >= 2:
+            return code.rsplit("-", 1)[0] + "-"
+    return "V1-"
+
+
+def next_cover_serial(covers: list[dict[str, str]], prefix: str) -> int:
+    """Highest existing '<prefix>C<n>' serial, or 1000 if there are none.
+
+    Starting at 1000 means the first allocated code is C1001, matching the
+    munger's institutional-cover series so the two are visually consistent.
+    """
+    max_serial = 1000
+    marker = prefix + "C"
+    for row in covers:
+        code = clean(row.get("code"))
+        if not code.startswith(marker):
+            continue
+        try:
+            max_serial = max(max_serial, int(code[len(marker):]))
+        except ValueError:
+            continue
+    return max_serial
+
+
 def build_images(
     state: str,
     image_refs: list[dict[str, str]],
@@ -1258,10 +1349,35 @@ def build_images(
     allow_missing: bool,
     audit: dict[str, str],
     warnings: list[dict[str, str]],
-) -> list[dict[str, object]]:
+    existing_covers: list[dict[str, str]] | None = None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    """Build image rows from v1 refs, plus any covers those images require.
+
+    Returns (images, covers, cover_markings).
+
+    A ref whose subject_type is COVER (v1 txtView was Front or Back -- see
+    v1_to_v2_catalog_format.V1_VIEW_ROUTING) is a scan of a whole cover, not a
+    closeup of the marking. v1 had no cover records, so one is created here and
+    linked to the marking the image was catalogued under.
+
+    Deliberately conservative: **one Cover per cover-view image**, never pairing
+    a Front with a Back. In the v1 export only 11 raw rows are a clean
+    (front, back) pair, while 31 carry two Fronts and 4 carry four -- those are
+    separate physical covers, so pairing by position would merge distinct covers.
+    Splitting a wrongly-merged cover is harder than merging two with the existing
+    move-image endpoint (issue #48), so the error is taken in the safe direction.
+    Raw rows that yield more than one cover emit a warning for human review.
+    """
     media_dir.mkdir(parents=True, exist_ok=True)
     rows = []
+    cover_rows: list[dict[str, object]] = []
+    cover_marking_rows: list[dict[str, object]] = []
     display_order = defaultdict(int)
+    prefix = cover_code_prefix(
+        [code for codes in tm_by_raw.values() for code in codes]
+    )
+    cover_serial = next_cover_serial(existing_covers or [], prefix)
+    covers_per_raw = defaultdict(int)
     for ref in image_refs:
         raw_id = clean(ref.get("source_row_id"))
         subject_ids = tm_by_raw.get(raw_id, [])
@@ -1284,10 +1400,25 @@ def build_images(
             image_width, image_height = image.size
         # Color fan-out can map one raw row to several townmarks. The source
         # image belongs only to the first generated townmark.
-        subject_id = subject_ids[0]
+        marking_code = subject_ids[0]
+        # Refs written before subject-type routing existed have no subject_type
+        # column; MARKING is what they were treated as unconditionally.
+        subject_type = clean(ref.get("subject_type")).upper() or "MARKING"
+        if subject_type == "COVER":
+            cover_serial += 1
+            covers_per_raw[raw_id] += 1
+            subject_id = "{0}C{1}".format(prefix, cover_serial)
+            cover_rows.append(cover_row(subject_id, audit))
+            cover_marking_rows.append(
+                cover_marking_row(subject_id, marking_code, audit)
+            )
+            default_view = "FRONT"
+        else:
+            subject_id = marking_code
+            default_view = "FULL"
         display_order[subject_id] += 1
         row = {
-            "subject_type": "MARKING",
+            "subject_type": subject_type,
             "subject_id": subject_id,
             "original_filename": basename,
             "storage_filename": "{0}/{1}".format(state.lower(), basename),
@@ -1296,7 +1427,7 @@ def build_images(
             "image_width": str(image_width),
             "image_height": str(image_height),
             "file_size_bytes": str(len(data)),
-            "image_view": clean(ref.get("image_view")) or "FULL",
+            "image_view": clean(ref.get("image_view")) or default_view,
             "image_description": clean(ref.get("image_description")),
             "is_tracing": clean(ref.get("is_tracing")) or "False",
             "display_order": str(display_order[subject_id]),
@@ -1304,7 +1435,16 @@ def build_images(
         }
         row.update(audit)
         rows.append(row)
-    return rows
+    for raw_id, count in sorted(covers_per_raw.items()):
+        if count > 1:
+            add_warning(
+                warnings,
+                raw_id,
+                "multiple_covers_from_one_row",
+                "{0} cover-view images became {0} separate covers; "
+                "review whether any are two views of one cover".format(count),
+            )
+    return rows, cover_rows, cover_marking_rows
 
 
 def reconcile_preserved_images(
@@ -1382,13 +1522,14 @@ def apply_overlay(args: argparse.Namespace) -> int:
         "letterings": bundle_dir / "letterings.csv",
         "shapes": bundle_dir / "shapes.csv",
         "dates": bundle_dir / "dates_seen.csv",
+        "covers": bundle_dir / "covers.csv",
         "cover_markings": bundle_dir / "cover_markings.csv",
         "citations": bundle_dir / "citations.csv",
         "images": bundle_dir / "images.csv",
         "reference_works": bundle_dir / "reference_works.csv",
     }
     for label, path in paths.items():
-        if label in {"images", "cover_markings"}:
+        if label in {"images", "covers", "cover_markings"}:
             continue
         if not path.is_file():
             sys.exit("error: missing bundle CSV: {0}".format(path))
@@ -1402,6 +1543,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
     lettering_fields, letterings = read_csv(paths["letterings"])
     shape_fields, shapes = read_csv(paths["shapes"])
     date_fields, dates = read_csv(paths["dates"])
+    cover_fields, covers = (
+        read_csv(paths["covers"])
+        if paths["covers"].is_file()
+        else (COVER_COLUMNS, [])
+    )
     cover_marking_fields, cover_markings = (
         read_csv(paths["cover_markings"])
         if paths["cover_markings"].is_file()
@@ -1507,7 +1653,7 @@ def apply_overlay(args: argparse.Namespace) -> int:
     if args.preserve_images:
         images = reconcile_preserved_images(existing_images, deleted_ids)
     else:
-        images = build_images(
+        images, new_covers, new_cover_markings = build_images(
             state,
             image_refs,
             tm_by_raw,
@@ -1516,7 +1662,13 @@ def apply_overlay(args: argparse.Namespace) -> int:
             bool(args.allow_missing_v1_images),
             audit_from(existing_images or markings),
             warnings,
+            covers,
         )
+        # Appended, not merged: these codes are freshly allocated above the
+        # highest serial already present, so they cannot collide with the
+        # munger's institutional covers.
+        covers = covers + new_covers
+        cover_markings = cover_markings + new_cover_markings
 
     write_csv(paths["markings"], markings_fields, markings)
     write_csv(paths["source_map"], source_map_fields, source_map_rows)
@@ -1524,7 +1676,11 @@ def apply_overlay(args: argparse.Namespace) -> int:
     write_csv(paths["post_office_regions"], por_fields or POST_OFFICE_REGION_COLUMNS, post_office_regions)
     write_csv(paths["colors"], color_fields, colors)
     write_csv(paths["dates"], date_fields or DATE_COLUMNS, dates)
-    if paths["cover_markings"].is_file():
+    # Written when the file already existed OR when routing produced rows for
+    # it -- a bundle with no cover side until now gains one here.
+    if covers or paths["covers"].is_file():
+        write_csv(paths["covers"], cover_fields or COVER_COLUMNS, covers)
+    if cover_markings or paths["cover_markings"].is_file():
         write_csv(
             paths["cover_markings"],
             cover_marking_fields or COVER_MARKING_COLUMNS,
@@ -1537,7 +1693,9 @@ def apply_overlay(args: argparse.Namespace) -> int:
     print("v1 overlay rows: {0}".format(len(raw_rows)))
     print("markings: {0}".format(len(markings)))
     print("dates_seen: {0}".format(len(dates)))
-    if paths["cover_markings"].is_file():
+    if covers or paths["covers"].is_file():
+        print("covers: {0}".format(len(covers)))
+    if cover_markings or paths["cover_markings"].is_file():
         print("cover_markings: {0}".format(len(cover_markings)))
     print("citations: {0}".format(len(citations)))
     image_note = " (preserved)" if args.preserve_images else ""
