@@ -31,6 +31,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
+import { CoverReviewBanner } from "@/components/CoverReviewBanner";
 import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { COVER_SUBMISSION_GUIDELINES } from "@/labels/guidelines";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
@@ -254,11 +255,25 @@ export default function CoverEdit() {
   const [draftLoadError, setDraftLoadError] = useState<string | null>(null);
   const [coverRow, setCoverRow] = useState<AssociatedCover | null>(null);
   const [markingRecord, setMarkingRecord] = useState<MarkingRecord | null>(null);
+  // Review state of a contribution resumed via ?edit=<id>. `mode` is "edit" only when the
+  // route carries a coverId, but the dashboard sends a needs-revision cover to
+  // /record/:id/cover/new?edit=<id> — i.e. create mode — so coverRow is never loaded on
+  // the one path contributors actually take. Without this, the editor's feedback is
+  // invisible to the person being asked to act on it.
+  const [draftReview, setDraftReview] = useState<{
+    status: string;
+    reviewNotes: string | null;
+  } | null>(null);
 
   const initial = useMemo(
     () => (mode === "edit" ? buildEditState(coverRow) : null),
     [mode, coverRow],
   );
+
+  // Review banners must work on both routes into this page: /cover/:coverId/edit (coverRow)
+  // and /cover/new?edit=<contributionId> (draftReview).
+  const reviewStatus = mode === "edit" ? coverRow?.reviewStatus ?? null : draftReview?.status ?? null;
+  const reviewNotes = mode === "edit" ? coverRow?.reviewNotes ?? null : draftReview?.reviewNotes ?? null;
 
   const [type, setType] = useState(mode === "create" ? "" : DEFAULT_COVER_TYPE);
   const [isInstitutional, setIsInstitutional] = useState(false);
@@ -318,6 +333,7 @@ export default function CoverEdit() {
     if (editContributionId == null || mode !== "create") {
       setDraftLoadDone(true);
       setDraftLoadError(null);
+      setDraftReview(null);
       return;
     }
     let cancelled = false;
@@ -326,6 +342,12 @@ export default function CoverEdit() {
     void (async () => {
       try {
         const contribution = await getContribution(editContributionId);
+        if (!cancelled) {
+          setDraftReview({
+            status: String(contribution.status ?? "").toLowerCase(),
+            reviewNotes: contribution.reviewNotes ?? null,
+          });
+        }
         const sd = contribution.submittedData as Record<string, unknown> | undefined;
         if (!sd || typeof sd !== "object" || !isCoverContributionData(sd)) {
           if (!cancelled) {
@@ -1003,28 +1025,15 @@ export default function CoverEdit() {
                   <CardTitle className="font-heading text-xl">
                     {mode === "create"
                       ? editContributionId != null
-                        ? "Continue Cover Draft"
+                        ? reviewStatus === "needs_revision"
+                          ? "Revise Cover Submission"
+                          : "Continue Cover Draft"
                         : "Submit New Cover"
                       : "Edit Cover"}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  {mode === "edit" && coverRow?.reviewStatus === "pending" && (
-                    <p className="text-sm rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-900 dark:text-amber-100">
-                      This cover is <strong>pending editor review</strong>. It is only visible to you and assigned
-                      editors until it is approved.
-                    </p>
-                  )}
-                  {mode === "edit" && coverRow?.reviewStatus === "needs_revision" && (
-                    <div className="text-sm rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 space-y-1">
-                      <p className="font-medium text-foreground">Editor requested changes</p>
-                      {(coverRow.reviewNotes ?? "").trim().length > 0 ? (
-                        <p className="text-muted-foreground whitespace-pre-wrap">{coverRow.reviewNotes}</p>
-                      ) : (
-                        <p className="text-muted-foreground">Update the cover below, then save to send it back.</p>
-                      )}
-                    </div>
-                  )}
+                  <CoverReviewBanner status={reviewStatus} notes={reviewNotes} />
 
                   <form onSubmit={handleFormSubmit} className="space-y-6" noValidate>
                     <div className="space-y-2">
