@@ -30,6 +30,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
+import { CoverReviewBanner } from "@/components/CoverReviewBanner";
+import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { COVER_SUBMISSION_GUIDELINES } from "@/labels/guidelines";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import {
@@ -252,11 +255,25 @@ export default function CoverEdit() {
   const [draftLoadError, setDraftLoadError] = useState<string | null>(null);
   const [coverRow, setCoverRow] = useState<AssociatedCover | null>(null);
   const [markingRecord, setMarkingRecord] = useState<MarkingRecord | null>(null);
+  // Review state of a contribution resumed via ?edit=<id>. `mode` is "edit" only when the
+  // route carries a coverId, but the dashboard sends a needs-revision cover to
+  // /record/:id/cover/new?edit=<id> — i.e. create mode — so coverRow is never loaded on
+  // the one path contributors actually take. Without this, the editor's feedback is
+  // invisible to the person being asked to act on it.
+  const [draftReview, setDraftReview] = useState<{
+    status: string;
+    reviewNotes: string | null;
+  } | null>(null);
 
   const initial = useMemo(
     () => (mode === "edit" ? buildEditState(coverRow) : null),
     [mode, coverRow],
   );
+
+  // Review banners must work on both routes into this page: /cover/:coverId/edit (coverRow)
+  // and /cover/new?edit=<contributionId> (draftReview).
+  const reviewStatus = mode === "edit" ? coverRow?.reviewStatus ?? null : draftReview?.status ?? null;
+  const reviewNotes = mode === "edit" ? coverRow?.reviewNotes ?? null : draftReview?.reviewNotes ?? null;
 
   const [type, setType] = useState(mode === "create" ? "" : DEFAULT_COVER_TYPE);
   const [isInstitutional, setIsInstitutional] = useState(false);
@@ -286,6 +303,15 @@ export default function CoverEdit() {
   // Catalog image URLs the contributor removed during this edit session. Sent as
   // removed_existing_image_keys so the catalog image is dropped on approval.
   const [removedExistingImageKeys, setRemovedExistingImageKeys] = useState<string[]>([]);
+  // Gallery keys whose pixel dimensions read as a marking closeup rather than a
+  // cover scan (issue #76). Keyed rather than flagged on the item so removing
+  // an image drops it from the count for free.
+  const [markingLikeImageKeys, setMarkingLikeImageKeys] = useState<string[]>([]);
+  const [wrongImageKindAcknowledged, setWrongImageKindAcknowledged] = useState(false);
+  const markingLikeImageCount = useMemo(
+    () => gallery.filter((item) => markingLikeImageKeys.includes(item.key)).length,
+    [gallery, markingLikeImageKeys],
+  );
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dropActive, setDropActive] = useState(false);
@@ -307,6 +333,7 @@ export default function CoverEdit() {
     if (editContributionId == null || mode !== "create") {
       setDraftLoadDone(true);
       setDraftLoadError(null);
+      setDraftReview(null);
       return;
     }
     let cancelled = false;
@@ -315,6 +342,12 @@ export default function CoverEdit() {
     void (async () => {
       try {
         const contribution = await getContribution(editContributionId);
+        if (!cancelled) {
+          setDraftReview({
+            status: String(contribution.status ?? "").toLowerCase(),
+            reviewNotes: contribution.reviewNotes ?? null,
+          });
+        }
         const sd = contribution.submittedData as Record<string, unknown> | undefined;
         if (!sd || typeof sd !== "object" || !isCoverContributionData(sd)) {
           if (!cancelled) {
@@ -573,6 +606,19 @@ export default function CoverEdit() {
     });
     setFieldErrors((prev) => ({ ...prev, images: undefined }));
     if (inputRef.current) inputRef.current.value = "";
+    // The inverse of the marking form's check (issue #76): a small, square
+    // image on the cover form is probably a marking closeup. Best-effort --
+    // an image that will not decode is left alone.
+    for (const item of next) {
+      if (item.kind !== "pending") continue;
+      const { key, upload } = item;
+      void measureImageFile(upload.file).then((dimensions) => {
+        if (!dimensions || !looksLikeWrongKind(dimensions, "COVER")) return;
+        setMarkingLikeImageKeys((prev) =>
+          prev.includes(key) ? prev : [...prev, key],
+        );
+      });
+    }
   };
 
   // Reorder + set-default + tracing + remove all act on the single combined
@@ -677,6 +723,12 @@ export default function CoverEdit() {
     const imageCount = gallery.length;
     if (imageCount < 1 && !noCoverImage) {
       errors.images = "Add at least one cover image or confirm no image is available.";
+    } else if (markingLikeImageCount > 0 && !wrongImageKindAcknowledged) {
+      // Cleared by ticking the acknowledgement in WrongImageKindWarning or by
+      // removing the image -- never a hard block (issue #76). Unreachable when
+      // the gallery is empty, so the no-image opt-out above always wins.
+      errors.images =
+        "Confirm the highlighted image is correct, or remove it, before submitting.";
     }
 
     for (const work of selectedReferenceWorks) {
@@ -973,28 +1025,15 @@ export default function CoverEdit() {
                   <CardTitle className="font-heading text-xl">
                     {mode === "create"
                       ? editContributionId != null
-                        ? "Continue Cover Draft"
+                        ? reviewStatus === "needs_revision"
+                          ? "Revise Cover Submission"
+                          : "Continue Cover Draft"
                         : "Submit New Cover"
                       : "Edit Cover"}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  {mode === "edit" && coverRow?.reviewStatus === "pending" && (
-                    <p className="text-sm rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-900 dark:text-amber-100">
-                      This cover is <strong>pending editor review</strong>. It is only visible to you and assigned
-                      editors until it is approved.
-                    </p>
-                  )}
-                  {mode === "edit" && coverRow?.reviewStatus === "needs_revision" && (
-                    <div className="text-sm rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 space-y-1">
-                      <p className="font-medium text-foreground">Editor requested changes</p>
-                      {(coverRow.reviewNotes ?? "").trim().length > 0 ? (
-                        <p className="text-muted-foreground whitespace-pre-wrap">{coverRow.reviewNotes}</p>
-                      ) : (
-                        <p className="text-muted-foreground">Update the cover below, then save to send it back.</p>
-                      )}
-                    </div>
-                  )}
+                  <CoverReviewBanner status={reviewStatus} notes={reviewNotes} />
 
                   <form onSubmit={handleFormSubmit} className="space-y-6" noValidate>
                     <div className="space-y-2">
@@ -1286,6 +1325,12 @@ export default function CoverEdit() {
                         No image is available to upload
                       </label>
                       {fieldErrors.images && <p className="text-sm text-destructive">{fieldErrors.images}</p>}
+                      <WrongImageKindWarning
+                        expected="COVER"
+                        count={markingLikeImageCount}
+                        acknowledged={wrongImageKindAcknowledged}
+                        onAcknowledgedChange={setWrongImageKindAcknowledged}
+                      />
                     </div>
 
                     <div className="space-y-3 pt-1">

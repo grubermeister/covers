@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, Pencil, Plus, Recycle, Replace, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Crop, History, Info, Loader2, MessageSquare, Pencil, Plus, Recycle, Replace, Star, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,7 @@ import {
 } from "@/components/ui/carousel";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
+import { CropImageDialog } from "@/components/CropImageDialog";
 import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { buildMarkingFields } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
@@ -313,6 +314,8 @@ const RecordDetail = () => {
   const [linkCoverBusy, setLinkCoverBusy] = useState(false);
   const [linkCoverError, setLinkCoverError] = useState<string | null>(null);
   const [moveImageDialogImg, setMoveImageDialogImg] = useState<MarkingImage | null>(null);
+  // Image whose marking an editor is cropping out of a whole-cover scan (#77).
+  const [cropImageTarget, setCropImageTarget] = useState<MarkingImage | null>(null);
   const [moveImageTargetCoverId, setMoveImageTargetCoverId] = useState("");
   const [moveImageView, setMoveImageView] = useState("FRONT");
   const [moveImageBusy, setMoveImageBusy] = useState(false);
@@ -1053,6 +1056,24 @@ const RecordDetail = () => {
                                     </Button>
                                   </>
                                 )}
+                                {canManageImage && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    aria-label="Crop the marking out of this image"
+                                    title="Crop marking"
+                                    disabled={reorderingImages}
+                                    onClick={() => {
+                                      const rawImg = record.images[idx];
+                                      if (!rawImg?.imageId) return;
+                                      setCropImageTarget(rawImg);
+                                    }}
+                                  >
+                                    <Crop className="h-3 w-3" />
+                                  </Button>
+                                )}
                                 {canMoveToCover && (
                                   <Button
                                     type="button"
@@ -1661,6 +1682,26 @@ const RecordDetail = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CropImageDialog
+        open={cropImageTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCropImageTarget(null);
+        }}
+        imageId={cropImageTarget?.imageId ?? null}
+        imageUrl={cropImageTarget?.imageUrl ?? null}
+        onCropped={async () => {
+          toast({
+            title: "Crop saved",
+            description:
+              "Added as a new image on this record. You can now move the original to a cover.",
+          });
+          if (markingId != null) {
+            const refreshed = await getMarkingById(markingId);
+            if (refreshed) setRecord(refreshed);
+          }
+        }}
+      />
 
       <Dialog
         open={linkCoverOpen}

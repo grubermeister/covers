@@ -512,6 +512,18 @@ class Image(TimestampedModel):
     is_tracing = models.BooleanField(default=False)
     display_order = models.IntegerField(default=0)
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='images_uploaded')
+    # Set when this row was produced by cropping another image (issue #77):
+    # an editor cutting the marking out of a whole-cover scan. Kept so a bad
+    # crop can be traced back to what it came from. SET_NULL rather than
+    # CASCADE -- deleting the original must not destroy the crop, which by then
+    # is the marking's catalog image.
+    cropped_from = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='crops',
+    )
 
     class Meta:
         db_table = 'images'

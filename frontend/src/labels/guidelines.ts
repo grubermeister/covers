@@ -83,3 +83,32 @@ export const DATE_FORMAT_HELP =
 
 export const LETTERING_HELP =
   "The shape and style of the letters in the marking (for example, serif vs. sans-serif). Leave blank for manuscript (handwritten) markings.";
+
+/**
+ * Copy for the wrong-kind-of-image warning (issue #76).
+ *
+ * Shown when an uploaded image's proportions suggest it belongs on the other
+ * form — a whole cover on the marking form, or a marking closeup on the cover
+ * form. The check is a guess from pixel dimensions, so the wording stays
+ * tentative ("looks like") and every message names the acknowledgement that
+ * lets the contributor proceed anyway.
+ */
+export const MARKING_FORM_COVER_IMAGE_WARNING = {
+  title: "This looks like a whole cover, not a marking",
+  body:
+    "This form collects the marking itself — a close-up of the postmark, " +
+    "handstamp, or manuscript marking. If you have a photograph of the whole " +
+    "cover, add it to the cover record instead so it is catalogued correctly.",
+} as const;
+
+export const COVER_FORM_MARKING_IMAGE_WARNING = {
+  title: "This looks like a marking close-up, not a cover",
+  body:
+    "This form collects images of the cover itself — the front, back, or " +
+    "interior. A close-up of the marking belongs on the marking record.",
+} as const;
+
+/** Shared acknowledgement label for both warnings above. */
+export const WRONG_IMAGE_KIND_OVERRIDE_LABEL =
+  "I know what I'm doing — this image is correct";
+

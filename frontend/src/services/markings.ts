@@ -256,6 +256,43 @@ export async function moveImageSubject(
 }
 
 /**
+ * POST /api/v2/images/{image_id}/crop/ -- save a rectangle of this image as a
+ * new image on the same subject (issue #77).
+ *
+ * Used to cut the marking out of a scan of a whole cover, so the full scan can
+ * then be moved to a Cover with moveImageSubject without leaving the marking
+ * imageless. The source image is not modified.
+ *
+ * Coordinates are in the source image's own pixels, not display pixels -- the
+ * caller must scale for any on-screen resizing before sending.
+ */
+export async function cropImage(
+  imageId: number,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<{ ok: true; imageId: number } | { ok: false; message: string }> {
+  await ensureCsrfToken();
+  try {
+    const { data } = await apiClient.post(`/images/${imageId}/crop/`, {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    });
+    return { ok: true, imageId: data.image_id };
+  } catch (err: unknown) {
+    const ax = err as {
+      response?: { data?: { detail?: string; image_view?: string[] } };
+    };
+    const data = ax.response?.data;
+    const message = data?.detail ?? data?.image_view?.[0];
+    return {
+      ok: false,
+      message: typeof message === "string" ? message : "Could not crop image.",
+    };
+  }
+}
+
+/**
  * DELETE /api/v2/images/{image_id}/ -- remove one image row.
  *
  * Cwd for manual verification: frontend/.

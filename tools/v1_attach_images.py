@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 
 from v1_bundle_overlay import (
+    COVER_COLUMNS,
+    COVER_MARKING_COLUMNS,
     IMAGE_COLUMNS,
     IMAGE_REF_COLUMNS,
     audit_from,
@@ -41,6 +43,8 @@ def attach_images(args: argparse.Namespace) -> int:
     source_map_path = bundle_dir / "source_marking_map.csv"
     images_path = bundle_dir / "images.csv"
     markings_path = bundle_dir / "markings.csv"
+    covers_path = bundle_dir / "covers.csv"
+    cover_markings_path = bundle_dir / "cover_markings.csv"
 
     image_ref_fields, image_refs = read_csv(Path(args.image_refs))
     missing_image_columns = [c for c in IMAGE_REF_COLUMNS if c not in image_ref_fields]
@@ -56,9 +60,17 @@ def attach_images(args: argparse.Namespace) -> int:
     image_fields, existing_images = (
         read_csv(images_path) if images_path.is_file() else (IMAGE_COLUMNS, [])
     )
+    cover_fields, covers = (
+        read_csv(covers_path) if covers_path.is_file() else (COVER_COLUMNS, [])
+    )
+    cover_marking_fields, cover_markings = (
+        read_csv(cover_markings_path)
+        if cover_markings_path.is_file()
+        else (COVER_MARKING_COLUMNS, [])
+    )
     warnings = []
     _, tm_by_raw = build_source_map_indexes(source_map_rows)
-    images = build_images(
+    images, new_covers, new_cover_markings = build_images(
         state,
         image_refs,
         tm_by_raw,
@@ -67,14 +79,38 @@ def attach_images(args: argparse.Namespace) -> int:
         bool(args.allow_missing_v1_images),
         audit_from(existing_images or markings),
         warnings,
+        covers,
     )
+    # Cover-view images (v1 txtView Front/Back) need a cover to hang off; the
+    # codes are allocated above the highest serial already in covers.csv.
+    covers = covers + new_covers
+    cover_markings = cover_markings + new_cover_markings
 
     write_csv(images_path, image_fields or IMAGE_COLUMNS, images)
+    if covers:
+        write_csv(covers_path, cover_fields or COVER_COLUMNS, covers)
+    if cover_markings:
+        write_csv(
+            cover_markings_path,
+            cover_marking_fields or COVER_MARKING_COLUMNS,
+            cover_markings,
+        )
     if args.warnings:
         write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
 
     print("v1 image refs: {0}".format(len(image_refs)))
     print("v1 images:     {0} -> {1}".format(len(images), images_path))
+    if new_covers:
+        print(
+            "v1 covers:     +{0} -> {1} (cover-view images)".format(
+                len(new_covers), covers_path
+            )
+        )
+        print(
+            "v1 cover_markings: +{0} -> {1}".format(
+                len(new_cover_markings), cover_markings_path
+            )
+        )
     if warnings:
         print("v1 image warnings: {0} -> {1}".format(len(warnings), args.warnings))
     return 0

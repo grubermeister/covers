@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -38,6 +39,7 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 
+from common.images import CropError, crop_image_bytes, extract_image_metadata
 from common.catalog_codes import (
     CATALOG_CODE_KEYS,
     CatalogCodeError,
@@ -105,6 +107,7 @@ from .permissions import (
     CanReviewContribution,
     IsOwnDeletableContribution,
     IsEditorOrAdminWrite,
+    IsResponsibleForImageSubject,
     _get_user_assigned_regions,
     _user_is_responsible_for_cover,
     _user_is_responsible_for_marking,
@@ -447,6 +450,120 @@ class ImageViewSet(viewsets.ModelViewSet):
             modified_by=self.request.user,
             uploaded_by=self.request.user,
         )
+
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[IsEditorOrAdminWrite, IsResponsibleForImageSubject],
+    )
+    def crop(self, request, pk=None):
+        """Save a rectangle of this image as a new image on the same subject.
+
+        Built for the repair in issue #78: much of the catalog has a scan of a
+        whole cover sitting in a marking's image slot. The full scan belongs on
+        a Cover, but moving it there would leave the marking with no image at
+        all -- 112 markings on prod hold nothing else. Cropping the marking out
+        first gives the marking a real closeup, and the original can then be
+        moved with the existing PATCH (issue #48).
+
+        Deliberately does not relocate anything: crop and move stay separate,
+        composable operations. The source file is never modified, so a bad crop
+        costs one delete.
+
+        Body: {"x": int, "y": int, "width": int, "height": int,
+               "image_view": optional, "image_description": optional}
+        """
+        source = self.get_object()
+        self.check_object_permissions(request, source)
+
+        try:
+            box = tuple(
+                int(request.data[field]) for field in ("x", "y", "width", "height")
+            )
+        except (KeyError, TypeError, ValueError):
+            return Response(
+                {"detail": "x, y, width and height are required whole numbers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_path = Path(settings.MEDIA_ROOT) / source.storage_filename.lstrip("/")
+        # storage_filename is editable in the admin, so confirm the resolved
+        # path is still inside MEDIA_ROOT before reading it.
+        media_root = Path(settings.MEDIA_ROOT).resolve()
+        try:
+            resolved = source_path.resolve(strict=True)
+            resolved.relative_to(media_root)
+        except (OSError, ValueError):
+            return Response(
+                {"detail": "Source image file is missing."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            content = crop_image_bytes(resolved.read_bytes(), source.mime_type, box)
+        except CropError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        metadata = extract_image_metadata(content, source.mime_type)
+        if metadata is None:
+            return Response(
+                {"detail": "Cropped image could not be encoded."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Keep the crop beside its source so media stays sorted by state.
+        subdir = str(Path(source.storage_filename).parent).strip("/.")
+        suffix = Path(source.storage_filename).suffix or ".jpg"
+        storage_name = f"{uuid.uuid4().hex}{suffix}"
+        if subdir:
+            storage_name = f"{subdir}/{storage_name}"
+        destination = Path(settings.MEDIA_ROOT) / storage_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+        default_view = (
+            Image.MARKING_VIEW_CHOICES[0]
+            if source.subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES[-1]
+        )
+        image_view = (request.data.get("image_view") or default_view).strip().upper()
+        allowed_views = (
+            Image.MARKING_VIEW_CHOICES
+            if source.subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES
+        )
+        if image_view not in allowed_views:
+            destination.unlink(missing_ok=True)
+            return Response(
+                {"image_view": [f"Must be one of {allowed_views} for this subject."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Appended, never promoted to default: an editor decides which image
+            # represents the record using the existing reorder controls.
+            max_order = Image.objects.filter(
+                subject_type=source.subject_type,
+                subject_id=source.subject_id,
+            ).aggregate(max_order=Max("display_order"))["max_order"]
+            cropped = Image.objects.create(
+                subject_type=source.subject_type,
+                subject_id=source.subject_id,
+                original_filename=source.original_filename[:255],
+                storage_filename=storage_name,
+                image_view=image_view,
+                image_description=(request.data.get("image_description") or "").strip(),
+                is_tracing=source.is_tracing,
+                display_order=(max_order or 0) + 1,
+                cropped_from=source,
+                uploaded_by=request.user,
+                created_by=request.user,
+                modified_by=request.user,
+                **metadata,
+            )
+
+        serializer = self.get_serializer(cropped)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
 
     def perform_update(self, serializer):
         # Moving an image to another subject (issue #48) has the same

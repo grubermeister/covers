@@ -104,7 +104,7 @@ const Auth = () => {
               WorldCovers Account
             </CardTitle>
             <CardDescription className="text-center">
-              Sign in to access the catalog
+              Sign in below, or request access if you do not have an account yet
             </CardDescription>
           </CardHeader>
           <CardContent className="p-4 sm:p-6 pt-0">
@@ -183,20 +183,27 @@ const Auth = () => {
                   >
                     {isSubmitting ? "Signing in..." : "Sign In"}
                   </Button>
-
-                  <div className="text-center pt-2">
-                    <Button
-                      type="button"
-                      variant="link"
-                      className="text-sm"
-                      onClick={() => setRequestDialogOpen(true)}
-                    >
-                      Request a login
-                    </Button>
-                  </div>
                 </Form>
               )}
             </Formik>
+
+            {/* #70: a first-time editor arrives with no credentials, so the sign-in form above is
+                unusable to them. Keep this path visually distinct from the form rather than a link
+                buried under the submit button. */}
+            <div className="mt-6 border-t pt-4 space-y-2 text-center">
+              <p className="text-sm font-medium">New to the catalog?</p>
+              <p className="text-sm text-muted-foreground">
+                Editor accounts are created for you — request one and we will set it up.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => setRequestDialogOpen(true)}
+              >
+                Request a login
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>
