@@ -2984,7 +2984,7 @@ def main(argv=None):
     # carry source_listing_idx + code, so the same helper works.
     _rm_codes_by_lst = _tm_codes_by_listing(ratemarks_df)
     _ax_codes_by_lst = _tm_codes_by_listing(auxmarks_df)
-    ds_rows = []  # (marking_code, date, granularity)
+    ds_rows = []  # marking_code, date, granularity, date parts
     for listing_idx, src in listings.iterrows():
         tm_codes = [c for c in _tm_codes_by_lst.get(listing_idx, []) if c]
         rm_codes = [c for c in _rm_codes_by_lst.get(listing_idx, []) if c]
@@ -3005,31 +3005,34 @@ def main(argv=None):
             try:
                 if gran == 'DAY':
                     obs = _date_cls(d['date_year_start'], d['date_month'], d['date_day'])
-                    obs_rows.append((str(obs), 'DAY'))
+                    obs_rows.append((str(obs), 'DAY', obs.year, obs.month, obs.day))
                 elif gran == 'MONTH':
                     obs = _date_cls(d['date_year_start'], d['date_month'], 1)
-                    obs_rows.append((str(obs), 'MONTH'))
+                    obs_rows.append((str(obs), 'MONTH', obs.year, obs.month, None))
                 elif gran == 'YEAR':
                     obs = _date_cls(d['date_year_start'], 1, 1)
-                    obs_rows.append((str(obs), 'YEAR'))
+                    obs_rows.append((str(obs), 'YEAR', obs.year, None, None))
                 elif gran == 'RANGE':
                     for yr in (d['date_year_start'], d['date_year_end']):
                         obs = _date_cls(int(yr), 1, 1)
-                        obs_rows.append((str(obs), 'YEAR'))
+                        obs_rows.append((str(obs), 'YEAR', obs.year, None, None))
                 # Approximate dates emit no dates_seen rows. Their exact source
                 # text is kept in the marking description instead.
             except (ValueError, TypeError, KeyError):
                 # Bad date components in source; Step 6 already reports parse errors.
                 continue
-            for obs_str, out_gran in obs_rows:
+            for obs_str, out_gran, date_year, date_month, date_day in obs_rows:
                 for mc in all_codes:
                     ds_rows.append({
                         'marking_code': mc,
                         'date': obs_str,
                         'granularity': out_gran,
+                        'date_year': date_year,
+                        'date_month': date_month,
+                        'date_day': date_day,
                     })
     dates_seen_df = pd.DataFrame(ds_rows) if ds_rows else pd.DataFrame(
-        columns=['marking_code', 'date', 'granularity']
+        columns=['marking_code', 'date', 'granularity', 'date_year', 'date_month', 'date_day']
     )
     if len(dates_seen_df):
         dates_seen_df = dates_seen_df.drop_duplicates(
@@ -3550,9 +3553,12 @@ def main(argv=None):
             "subject_id": _ds["subject_id"],
             "date": _ds["date"],
             "granularity": _ds["granularity"],
+            "date_year": _ds["date_year"],
+            "date_month": _ds["date_month"],
+            "date_day": _ds["date_day"],
         })
     else:
-        dates_seen_out = pd.DataFrame(columns=["subject_type", "subject_id", "date", "granularity"])
+        dates_seen_out = pd.DataFrame(columns=["subject_type", "subject_id", "date", "granularity", "date_year", "date_month", "date_day"])
     dates_seen_out = _stamp(dates_seen_out)
     cit_rows = []
     for kind, src_id, mk_id in emit_order:
@@ -3600,7 +3606,7 @@ def main(argv=None):
                                 "is_institutional", "width", "display_submitter_name",
                                 "description",
                              ]),
-        ("dates_seen",       dates_seen_out,       ["subject_type", "subject_id", "date", "granularity"]),
+        ("dates_seen",       dates_seen_out,       ["subject_type", "subject_id", "date", "granularity", "date_year", "date_month", "date_day"]),
         ("cover_markings",   cover_markings_out,   [
                                 "cover", "marking", "is_backstamp", "placement",
                                 "contributor_comment", "review_status", "reviewer",

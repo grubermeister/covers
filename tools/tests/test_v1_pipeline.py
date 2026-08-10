@@ -36,6 +36,17 @@ AUDIT = {
     "modified_by": "1",
 }
 
+DATE_FIELDS = [
+    "subject_type",
+    "subject_id",
+    "date",
+    "granularity",
+    "date_year",
+    "date_month",
+    "date_day",
+    *AUDIT,
+]
+
 
 def write_csv(path, fieldnames, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -2059,7 +2070,7 @@ class V1PipelineTests(unittest.TestCase):
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:183756", "source_listing_idx": "0", "marking_code": "ASCC2-WV-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "183756", "catalog_txt": "BERKELEY SPRINGS"}],
             )
-            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", DATE_FIELDS, [])
             write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
             write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
 
@@ -2210,7 +2221,7 @@ class V1PipelineTests(unittest.TestCase):
                     {"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC1-VA-M1101", "marking_type": "RATEMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"},
                 ],
             )
-            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", DATE_FIELDS, [])
             write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [stamped({"reference_work": "ASCC1", "subject_type": "MARKING", "subject_id": "ASCC1-VA-M1100", "citation_detail": "0"})])
             write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
 
@@ -2542,7 +2553,7 @@ class V1PipelineTests(unittest.TestCase):
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:71", "source_listing_idx": "0", "marking_code": "ASCC2-VA-M1100", "marking_type": "TOWNMARK", "page": "0", "chunk": "71", "catalog_txt": "RICHMOND"}],
             )
-            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", DATE_FIELDS, [])
             write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
             write_csv(
                 bundle / "images.csv",
@@ -2665,7 +2676,7 @@ class V1PipelineTests(unittest.TestCase):
                 ["v2_key", "source_listing_idx", "marking_code", "marking_type", "page", "chunk", "catalog_txt"],
                 [{"v2_key": "0:40", "source_listing_idx": "39", "marking_code": "ASCC2-VA-M1042", "marking_type": "TOWNMARK", "page": "0", "chunk": "40", "catalog_txt": "Alex=(Alexandria)"}],
             )
-            write_csv(bundle / "dates_seen.csv", ["subject_type", "subject_id", "date", "granularity", *AUDIT], [])
+            write_csv(bundle / "dates_seen.csv", DATE_FIELDS, [])
             write_csv(bundle / "citations.csv", ["reference_work", "subject_type", "subject_id", "citation_detail", *AUDIT], [])
             write_csv(bundle / "images.csv", v1_bundle_overlay.IMAGE_COLUMNS, [])
 
