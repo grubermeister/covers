@@ -53,6 +53,7 @@ import {
 import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
 import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { useToast } from "@/hooks/use-toast";
+import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
 import { useAuth } from "@/hooks/useAuth";
 import {
   sanitizeMmInput,
@@ -1272,7 +1273,7 @@ const Contribute = () => {
       navigate(`/record/${fallbackMarkingId}`);
       return;
     }
-    navigate("/dashboard");
+    navigate(dashboardHref());
   };
 
   const handleBackFromNewMarking = () => {
@@ -1286,7 +1287,7 @@ const Contribute = () => {
       navigate(-1);
       return;
     }
-    navigate("/dashboard");
+    navigate(dashboardHref());
   };
 
   const townOptions = useMemo(() => {
@@ -1910,7 +1911,7 @@ const Contribute = () => {
       });
 
       if (saveAsDraft) {
-        navigate("/dashboard", { state: { tab: "submissions" } });
+        navigate(dashboardHrefForTab("submissions"));
         return;
       }
 
@@ -1930,11 +1931,12 @@ const Contribute = () => {
         if (result.contributionId != null) {
           navigate(`/contribution/${result.contributionId}`, { state: { fromDashboard: true } });
         } else if (fromDashboardDirect || fromDashboard || fromDashboardViaDetail) {
-          navigate("/dashboard");
+          // Issue #87: back to the dashboard view they left, filters intact.
+          navigate(dashboardHref());
         } else if (fromSearch) {
           navigate("/search");
         } else {
-          navigate("/dashboard");
+          navigate(dashboardHref());
         }
         return;
       }
@@ -1951,7 +1953,7 @@ const Contribute = () => {
       } else if (window.history.length > 1) {
         navigate(-1);
       } else {
-        navigate("/dashboard");
+        navigate(dashboardHref());
       }
       return;
     } catch (err: unknown) {
@@ -3178,7 +3180,7 @@ const Contribute = () => {
                             try {
                               await deleteOwnContribution(editContributionId);
                               toast({ title: "Draft deleted" });
-                              navigate("/dashboard");
+                              navigate(dashboardHref());
                             } catch (err: unknown) {
                               toast({
                                 title: "Could not delete draft",

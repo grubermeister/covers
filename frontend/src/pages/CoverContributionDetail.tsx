@@ -27,6 +27,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
+import { ToastAction } from "@/components/ui/toast";
+import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
 import {
   coverContributionDisplayName,
   isCoverContributionData,
@@ -368,11 +370,12 @@ export default function CoverContributionDetail({ initialContribution = null }: 
       contribution.contributorUsername === user.email);
 
   const handleBack = () => {
+    // Issue #87: keep the dashboard's page, page size and filters on the way back.
     if (fromDashboard) {
-      navigate("/dashboard", { state: { tab: dashboardTab ?? (isStateEditor ? "editor" : "submissions") } });
+      navigate(dashboardHrefForTab(dashboardTab ?? (isStateEditor ? "editor" : "submissions")));
       return;
     }
-    navigate("/dashboard");
+    navigate(dashboardHref());
   };
 
   const contributionId = contribution?.id;
@@ -435,20 +438,26 @@ export default function CoverContributionDetail({ initialContribution = null }: 
         ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
-      toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && result.coverId != null) {
-        if (parentMarkingId != null) {
-          navigate(`/record/${parentMarkingId}/cover/${result.coverId}`, {
-            state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
-          });
-          return;
-        }
-        navigate(`/covers/${result.coverId}`, {
-          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
-        });
-        return;
-      }
-      navigate("/dashboard", { state: { tab: "editor" } });
+      // Issue #87: every decision returns to the review queue, matching the
+      // marking flow in ContributionDetail. Approving used to redirect to the
+      // new cover, stranding the editor mid-queue; the cover is one click away
+      // from the toast instead.
+      const approvedCoverPath =
+        kind === "approve" && result.coverId != null
+          ? parentMarkingId != null
+            ? `/record/${parentMarkingId}/cover/${result.coverId}`
+            : `/covers/${result.coverId}`
+          : null;
+      toast({
+        title: actionLabel,
+        description: "Your comment was saved for the contributor.",
+        action: approvedCoverPath ? (
+          <ToastAction altText="View the approved cover" onClick={() => navigate(approvedCoverPath)}>
+            View cover
+          </ToastAction>
+        ) : undefined,
+      });
+      navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
     } catch (err) {
       toast({
         title: "Could not submit",
@@ -526,9 +535,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
         title: "Submission deleted",
         description: "Your cover submission has been removed.",
       });
-      navigate("/dashboard", {
-        state: { tab: dashboardTab ?? (isStateEditor ? "editor" : "submissions") },
-      });
+      navigate(dashboardHrefForTab(dashboardTab ?? (isStateEditor ? "editor" : "submissions")));
     } catch (err) {
       toast({
         title: "Could not delete submission",

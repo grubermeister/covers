@@ -424,6 +424,10 @@ export interface MarkingRecord {
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
+  /** Recycle-bin metadata; only populated by GET /markings/recycle-bin/ (#89). */
+  removedAt: string | null;
+  removedByUsername: string | null;
+  removalReason: string;
   // Whether a state editor has personally vetted this record (Issue #22).
   isReviewed: boolean;
   /** Submitter opted in to show their name on the public marking detail page. */
@@ -708,6 +712,10 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     citations: mapCitationList(o.citations),
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
+    removedAt: (raw as { removed_at?: string | null }).removed_at ?? null,
+    removedByUsername:
+      (raw as { removed_by_username?: string | null }).removed_by_username ?? null,
+    removalReason: String((raw as { removal_reason?: string }).removal_reason ?? ""),
     isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
     displaySubmitterName: Boolean(o.display_submitter_name),
     submitterName:

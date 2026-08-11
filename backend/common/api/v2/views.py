@@ -82,6 +82,7 @@ from common.models import (
     CollectionAssignment,
     Color,
     Contribution,
+    ContributionRecycleBin,
     Cover,
     CoverMarking,
     CoverRecycleBin,
@@ -131,6 +132,7 @@ from .serializers import (
     MarkingListSerializer,
     MarkingSerializer,
     PostOfficeSerializer,
+    RecycleBinMarkingSerializer,
     ReferenceWorkSerializer,
     RegionSerializer,
     ShapeSerializer,
@@ -1539,7 +1541,15 @@ class MarkingViewSet(viewsets.ModelViewSet):
             )
         qs = (
             Marking.all_objects.filter(recycle_bin_entry__isnull=False)
-            .select_related("post_office", "shape", "lettering", "color")
+            .select_related(
+                "post_office",
+                "shape",
+                "lettering",
+                "color",
+                # Issue #89: every row renders who removed it and why.
+                "recycle_bin_entry",
+                "recycle_bin_entry__removed_by",
+            )
             .prefetch_related("post_office__post_office_regions__region")
             .order_by("-recycle_bin_entry__removed_at")
         )
@@ -1553,9 +1563,9 @@ class MarkingViewSet(viewsets.ModelViewSet):
                 qs = qs.none()
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = MarkingListSerializer(page, many=True, context=self.get_serializer_context())
+            serializer = RecycleBinMarkingSerializer(page, many=True, context=self.get_serializer_context())
             return self.get_paginated_response(serializer.data)
-        serializer = MarkingListSerializer(qs, many=True, context=self.get_serializer_context())
+        serializer = RecycleBinMarkingSerializer(qs, many=True, context=self.get_serializer_context())
         return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="my-assigned", permission_classes=[IsAuthenticated])
@@ -1923,13 +1933,23 @@ class ContributionViewSet(
                     return base_qs.filter(mine | Q(collection_id__in=assigned_ids)).distinct()
             return base_qs.filter(mine).distinct()
         mode = (self.request.query_params.get("mode") or "").strip().lower()
-        if mode == "editor":
+        if mode in ("editor", "archived"):
             if user.is_superuser:
                 qs = base_qs
             elif user_can_review_contributions(user):
                 qs = _get_editor_contribution_queryset(user)
             else:
                 return base_qs.none()
+            # Issue #89: archiving is editor-side housekeeping. An archived
+            # contribution leaves the review queue and is only reachable through
+            # ?mode=archived -- but the "My Contributions" branch below is
+            # deliberately NOT filtered, so its author keeps seeing it along with
+            # whatever feedback the editor left.
+            qs = qs.filter(recycle_bin_entry__isnull=(mode == "editor"))
+            if mode == "archived":
+                # Every row will render who archived it and why; without this the
+                # serializer's reverse-OneToOne lookups are one query per row.
+                qs = qs.select_related("recycle_bin_entry", "recycle_bin_entry__archived_by")
             state = (self.request.query_params.get("state") or "").strip()
             if state:
                 qs = qs.filter(
@@ -2143,6 +2163,100 @@ class ContributionViewSet(
                 "region_abbrev": suggestion.region_abbrev,
                 "subject_type": suggestion.subject_type,
             },
+            status=status.HTTP_200_OK,
+        )
+
+    # Statuses an editor may clear off the review queue (Issue #89). PENDING is
+    # excluded on purpose: an undecided submission must be approved, rejected or
+    # returned first, so nothing leaves the queue by being hidden.
+    ARCHIVABLE_STATUSES = frozenset({
+        Contribution.STATUS_APPROVED,
+        Contribution.STATUS_REJECTED,
+        Contribution.STATUS_NEEDS_REVISION,
+    })
+
+    @action(detail=True, methods=["post"], url_path="archive")
+    def archive(self, request, pk=None):
+        """
+        Archive this contribution off the editor review dashboard by creating a
+        ContributionRecycleBin sidecar row. The Contribution itself is untouched,
+        so its status, review notes and audit trail survive and it stays visible
+        to its contributor. Reversible via restore. Optional JSON body:
+        {"reason": "..."}.
+        """
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to archive this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if contrib.status not in self.ARCHIVABLE_STATUSES:
+            return Response(
+                {
+                    "detail": "Only a reviewed contribution can be archived. "
+                              f"Decide this one first (status: {contrib.status})."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if ContributionRecycleBin.objects.filter(contribution=contrib).exists():
+            return Response(
+                {"detail": "Contribution is already archived."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        reason = ""
+        if isinstance(request.data, dict):
+            reason = (request.data.get("reason") or "").strip()
+        with transaction.atomic():
+            ContributionRecycleBin.objects.create(
+                contribution=contrib, archived_by=request.user, reason=reason
+            )
+            log_submission_transaction(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_ARCHIVED,
+                actor=request.user,
+                contribution=contrib,
+                marking=contrib.marking,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload={"status": contrib.status},
+                after_payload={"status": contrib.status},
+                extra_payload={"reason": reason, "archived_contribution_id": contrib.pk},
+            )
+        return Response(
+            {"detail": "Contribution archived.", "contributionId": contrib.pk},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        """
+        Return an archived contribution to the editor review dashboard by
+        deleting its ContributionRecycleBin sidecar row.
+        """
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to restore this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        entry = ContributionRecycleBin.objects.filter(contribution=contrib).first()
+        if not entry:
+            return Response(
+                {"detail": "Contribution is not archived."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        with transaction.atomic():
+            entry.delete()
+            log_submission_transaction(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_RESTORED,
+                actor=request.user,
+                contribution=contrib,
+                marking=contrib.marking,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload={"status": contrib.status},
+                after_payload={"status": contrib.status},
+                extra_payload={"restored_contribution_id": contrib.pk},
+            )
+        return Response(
+            {"detail": "Contribution restored.", "contributionId": contrib.pk},
             status=status.HTTP_200_OK,
         )
 
