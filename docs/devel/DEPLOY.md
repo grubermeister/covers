@@ -1,193 +1,290 @@
-# Deployment (e.g. https://hellowoco.app)
+# Deployment
 
-For data import commands and ETL tools, see [TOOLS.md](TOOLS.md). For day-to-day operator tasks, see [RUNBOOK.md](RUNBOOK.md).
+This document describes the secure hosted deploy flow for WorldCovers.
 
-## Current setup (staging)
+WorldCovers hosted deployments target Ubuntu 24.04 LTS servers. The deploy
+pipeline assumes systemd, nginx, MySQL 8, Node 22, uv, and Python 3.13 on a
+host laid out as described below. `deploy/provision.sh` is the supported path
+for creating that host profile; it is not a generic Linux provisioning script.
 
-- **Host:** `hellowoco.app` (Ubuntu LTS)
-- **Branch:** `staging`
-- **Repo path:** `/srv/woco`
-- **App user:** `wocod` (owns the repo, runs gunicorn)
-- **Frontend build:** `frontend/dist/` (built during deploy, not committed)
+Source of truth:
 
-### Host layout
+- `.github/workflows/build-and-deploy.yml`: staging deploy to `woco.dev`
+- `.github/workflows/deploy-prod.yml`: production deploy to `hellowoco.app`
+- `deploy/provision.sh`: one-time Ubuntu 24.04 root host build (see below)
+- `deploy/deploy.sh`: unprivileged app build and migration steps
+- `deploy/worldcovers.service`: gunicorn systemd service definition
+- `deploy/worldcovers-apply-unit.sh`: staging-only root-owned unit helper
 
-```
-/srv/woco/
-  backend/        # Django source; gunicorn's working directory
-  frontend/       # React source + built dist/
-  tools/          # deploy.sh, worldcovers.service, notebooks
-  mysql.cnf       # DB user/password — gitignored, must be created on host
-  backend/.env    # SECRET_KEY, DEBUG, ALLOWED_HOSTS — gitignored, must be created on host
-  .venv/          # uv virtual environment (created by 'uv sync')
-  backups/        # database backups
-```
+## Provisioning vs Deploying
 
-### Service
+Two scripts, two distinct jobs. Do not confuse them:
 
-The app runs under the `worldcovers` systemd service. The canonical unit file lives at [tools/worldcovers.service](../tools/worldcovers.service) and is kept authoritative by `deploy.sh` (which installs it if it has changed).
+- `deploy/provision.sh` -- **build the host, once, as root.** Installs system
+  packages (nginx, MySQL, Node, certbot, build tools), creates the `wocod`
+  service user, installs uv/Python, creates the MySQL database and user,
+  writes `mysql.cnf` and `backend/.env` (with generated secrets), and
+  installs the systemd unit, sudoers drop-in, nginx site, and firewall. It
+  finishes by calling `deploy.sh` once. It is idempotent. Use it only for
+  first-time host provisioning or deliberate host rebuilds.
+- `deploy/deploy.sh` -- **build the app, every release, as `wocod`
+  (unprivileged).** Only `uv sync`, migrate, frontend build, collectstatic.
+  No apt, no user creation, no MySQL, no nginx, no root. This is what CI runs
+  on every deploy, and what `./woco setup prod` aliases.
 
-The unit file sets `PYTHONPATH`, `DJANGO_SETTINGS_MODULE`, and `DB_NAME` via `Environment=` directives. The remaining config is read from two gitignored files that must exist on the host:
+The privilege boundary is deliberate: per-release deploys never need root, so
+a compromised CI key cannot touch the OS, MySQL, or nginx. Provisioning is a
+separate, rare, root-only event.
 
-- `/srv/woco/mysql.cnf` — database user and password (Django reads via `read_default_file`; same format as the dev `mysql.cnf`, see [BUILD.md](BUILD.md))
-- `/srv/woco/backend/.env` — `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS` (read by python-decouple)
+## Provisioning A Fresh Host
 
-This is the intended home for the deferred production-mode config (see §10 of the remediation plan).
-
-### `wocod` sudoers
-
-`wocod` needs a narrow entry in `/etc/sudoers.d/wocod-deploy` so `deploy.sh` can update the unit file and restart the service without a password:
-
-```
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart worldcovers
-wocod ALL=(ALL) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/worldcovers.service
-```
-
-See [RUNBOOK.md](RUNBOOK.md) for full first-time host bootstrap instructions.
-
-## Pushing catalog data to staging
-
-Fresh CSV exports in `tools/wip/out/` and catalog images under `backend/media/` are kept out of git and pushed straight to the server with [tools/push_data.sh](../tools/push_data.sh).
+Run this only on a fresh Ubuntu 24.04 host. The repo must exist at
+`/srv/woco` before the script starts, and the script must run as `root`.
+Expected exit code: `0`.
 
 ```sh
-./tools/push_data.sh            # rsync tools/wip/ and backend/media/ only
-./tools/push_data.sh --import   # rsync, then run import_v2_data + import_catalog_images as wocod
-./tools/push_data.sh --dry-run  # show what rsync would change
+git clone <repo-url> /srv/woco
+WOCO_HOSTNAME=woco.dev WOCO_REPO_REF=staging /srv/woco/deploy/provision.sh
 ```
 
-How it works:
+For production, set `WOCO_HOSTNAME=hellowoco.app` and
+`WOCO_REPO_REF=main`. The script creates or reuses the `wocod` service user,
+writes `/srv/woco/mysql.cnf`, writes `/srv/woco/backend/.env`, installs the
+systemd unit, installs nginx, and runs `deploy/deploy.sh` once as `wocod`.
 
-- Two `rsync` passes: `tools/wip/` → `/srv/woco/tools/wip/` and `backend/media/` → `/srv/woco/backend/media/`.
-- Remote rsync runs via `sudo -n rsync` so `--chown=wocod:wocod` takes effect — files land owned by the app user, no manual `chown` dance.
-- `--delete` mirrors source to destination (previous `rm -rf` step is unnecessary).
-- `--import` SSHes back in and runs [tools/reload_data.sh](../tools/reload_data.sh) as `wocod`, which does `import_v2_data --truncate` (from `tools/wip/out/`) then `import_catalog_images` (auto-discovers `*_image_mapping.csv` under `MEDIA_ROOT`).
+The script does not issue TLS certificates. After DNS points at the host, run
+certbot as `root`:
 
-Prerequisites on the host:
+```sh
+certbot --nginx -d woco.dev --redirect -m <you@example.com> --agree-tos -n
+```
 
-- The SSH user (env `WOCO_HOST`, default `mpc@hellowoco.app`) can run `sudo` without a password. Blanket passwordless sudo is fine; a minimal drop-in is documented at the top of `push_data.sh` if you want to narrow it later.
-- One-time `setgid` on the target trees so any stray `scp` also lands group=`wocod` (safety net, not required by `push_data.sh`):
-  ```sh
-  sudo chown -R wocod:wocod /srv/woco/tools/wip /srv/woco/backend/media
-  sudo chmod -R g+s         /srv/woco/tools/wip /srv/woco/backend/media
-  ```
+Use the production hostname in that command when provisioning production.
 
-## After you push to GitHub – what to do
+## Hosts
 
-### Option A: Deploy on the server (VPS)
+Both hosts keep the repo at `/srv/woco`, owned by `wocod:wocod`.
+GitHub Actions deploys over SSH as `wocod`; it never SSHes as `root`.
 
-1. **Push** to `staging`.
-2. **On the server** (where hellowoco.app runs):
-   ```bash
-   cd /srv/woco
-   git pull
-   ./tools/deploy.sh         # installs deps, migrates, builds frontend
-   # Then restart your app (gunicorn/systemd or the current runserver process)
-   ```
-3. The server must have **uv** (which manages Python) and **Node.js + npm** (for the build step). One-time install on the server (as the `wocod` user):
-   ```bash
-   sudo -u wocod bash -lc "curl -LsSf https://astral.sh/uv/0.11.2/install.sh | sh"
-   sudo -u wocod bash -lc "uv --version"   # expect 0.11.2
-   ```
-   After uv is installed, `tools/deploy.sh` calls `uv sync --no-dev --frozen` to recreate `/srv/woco/.venv/` from `uv.lock`. The systemd unit's `ExecStart=/srv/woco/.venv/bin/gunicorn` works unchanged.
+```text
+staging:
+  host: woco.dev
+  branch: staging
+  secret: STAGING_DEPLOY_SSH_KEY
+  unit updates: sudo /usr/local/sbin/worldcovers-apply-unit
 
-### Option B: GitHub Actions (CI) + your host
+production:
+  host: hellowoco.app
+  branch: main
+  secret: PROD_DEPLOY_SSH_KEY
+  unit updates: manual root apply only
+```
 
-1. **Push** to `staging`.
-2. The workflow **`.github/workflows/build-and-deploy.yml`** runs on every push to `staging`:
-   - Installs Python and Node
-   - Builds the frontend (`frontend/dist/`)
-   - Saves the build as an artifact
-3. To **deploy**, add a deploy job in that workflow (SSH/rsync or a PaaS deploy action).
+Expected host layout:
 
-### Option C: Host that auto-deploys on git push (e.g. Railway, Render)
+```text
+/srv/woco/
+  backend/
+  deploy/
+  frontend/
+  tools/
+  mysql.cnf
+  backend/.env
+  .venv/
+  backups/
+```
 
-1. **Push** to `staging`.
-2. In your host’s dashboard, set the **build command** to:
-   ```bash
-   uv sync --no-dev --frozen && cd frontend && npm ci && npm run build && cd ..
-   ```
-3. Set the **start command** to your Django command (e.g. `cd backend && gunicorn woco.wsgi:application`).
+## GitHub Actions Deploy Flow
 
----
+Build job on both branches:
 
-## Why build the frontend on deploy?
-
-The built frontend (`frontend/dist/`) is **not** in the repo (it’s in `.gitignore`).
-So after a fresh deploy, the server has the Python/Django code and the React **source** in `frontend/`, but **no** `frontend/dist/` unless you build it.
-
-## What you need on deploy
-
-The **deploy process** must:
-
-1. **Install Python deps** and run Django migrations (e.g. `uv sync --no-dev --frozen`, `woco migrate`).
-2. **Build the frontend** so `frontend/dist/` exists **before** Django serves the site:
-   ```bash
-   cd frontend
-   npm ci          # or: npm install
-   npm run build
-   cd ..
-   ```
-3. **Start Django** (e.g. `gunicorn` via systemd, or `woco runserver` for ad-hoc).
-
-So the **deploy environment** needs:
-
-- **uv** (which manages Python and the venv from `uv.lock`)
-- **Node.js and npm** (only for the build step)
-
-## Example: one-off deploy script
-
-From the **project root** (worldcovers/):
-
-```bash
-# 1. Python
+```sh
+bash tools/fingerprint.sh
 uv sync --no-dev --frozen
-woco migrate --noinput
-woco collectstatic --noinput
-
-# 2. Frontend (creates frontend/dist/)
-cd frontend && npm ci && npm run build && cd ..
-
-# 3. Run the app (example; use gunicorn/uwsgi in production)
-woco runserver 0.0.0.0:8000
+cd frontend && npm ci && npm run build
+uv run python backend/manage.py check
 ```
 
-## Example: GitHub Actions (CI)
+Staging deploy over SSH as `wocod`:
 
-```yaml
-- name: Build frontend
-  run: |
-    cd frontend
-    npm ci
-    npm run build
+```sh
+git -C /srv/woco fetch origin
+git -C /srv/woco reset --hard origin/staging
+git -C /srv/woco clean -fd backend/common/migrations
+sudo -n /usr/local/sbin/worldcovers-apply-unit  # only if the unit differs
+sudo -n /bin/systemctl stop worldcovers
+cd /srv/woco && ./deploy/deploy.sh
+sudo -n /bin/systemctl start worldcovers
 ```
 
-If you deploy from a **different** server (e.g. pull from git on the server), that server must run the same `cd frontend && npm ci && npm run build` as part of its deploy.
+Production deploy over SSH as `wocod`:
 
-## Troubleshooting: 502 on admin (e.g. Listings changelist)
+```sh
+git -C /srv/woco fetch origin
+git -C /srv/woco reset --hard origin/main
+git -C /srv/woco clean -fd backend/common/migrations
+diff -q /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service
+sudo -n /bin/systemctl stop worldcovers
+cd /srv/woco && ./deploy/deploy.sh
+sudo -n /bin/systemctl start worldcovers
+```
 
-If the admin returns **502 Bad Gateway** for a heavy page (e.g. `/admin/postmarks/listing/`):
+Production deploy fails before stopping the service if the checked-in unit file
+differs from the installed unit. A root operator must review and apply that
+change manually.
 
-1. **Check app server logs** (where gunicorn runs) for the real error or timeout:
-   - `journalctl -u <your-gunicorn-service>` (systemd), or
-   - Gunicorn’s `--access-logfile` / `--error-logfile`, or
-   - Stderr of the process.
-   Look for `Worker timeout`, `SIGKILL`, or a Python traceback.
+## What deploy/deploy.sh Does
 
-2. **Increase Gunicorn worker timeout** if the page is slow but valid:
-   ```bash
-   gunicorn woco.wsgi:application --timeout 120 ...
-   ```
-   (Default is 30s; the Listings changelist uses a non-counting paginator and `select_related` to stay fast.)
+Run from repo root on the server:
 
-3. **Increase proxy timeout** if the reverse proxy (nginx, Caddy, etc.) returns 502 before gunicorn:
-   - nginx: `proxy_read_timeout 120s;` (in the `location` that proxies to Django).
-   - Caddy: `timeout 120s` on the reverse_proxy.
+```sh
+./deploy/deploy.sh
+```
 
-## Quick reference
+`./woco setup prod` is a thin alias for this same script, for symmetry with
+`./woco setup dev`. It runs the build steps only, never provisioning -- see
+[Provisioning vs Deploying](#provisioning-vs-deploying) above.
 
-| After you push… | Do this |
-|-----------------|--------|
-| **Deploy on your own server** | On server: `git pull` → `./tools/deploy.sh` → restart app |
-| **GitHub Actions only** | Workflow runs on push to `staging`; add a deploy job in `.github/workflows/build-and-deploy.yml` |
-| **PaaS (Railway, Render, etc.)** | Build command installs Python deps + builds frontend; start command = Django/gunicorn |
+Expected exit code: `0`.
+
+Steps:
+
+1. Source `frontend/.env` if present, exporting its variables for the
+   frontend build (Vite build-time settings; optional, not in git).
+2. `uv sync --no-dev --frozen`
+3. `uv run python backend/manage.py migrate --noinput`
+4. `cd frontend && npm ci && npm run build`
+5. `uv run python backend/manage.py collectstatic --noinput`
+
+The script does not stop, start, or restart systemd. The caller owns service
+lifecycle.
+
+For the manual (non-CI) deploy sequence, see
+[RUNBOOK.md](RUNBOOK.md#manual-deploy).
+
+## Sudoers
+
+Production allows only service stop and start:
+
+```text
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl start worldcovers
+```
+
+Staging allows service stop, service start, and the audited root-owned helper:
+
+```text
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
+wocod ALL=(ALL) NOPASSWD: /bin/systemctl start worldcovers
+wocod ALL=(root) NOPASSWD: /usr/local/sbin/worldcovers-apply-unit
+```
+
+Do not grant direct CI sudo access to `/usr/bin/install` or
+`/bin/systemctl daemon-reload` on either host.
+
+## Staging Unit Helper
+
+Install or refresh the helper as root on `woco.dev`:
+
+```sh
+cd /srv/woco
+install -o root -g root -m 0755 deploy/worldcovers-apply-unit.sh /usr/local/sbin/worldcovers-apply-unit
+visudo -cf /etc/sudoers.d/wocod-deploy
+```
+
+Expected exit code: `0`.
+
+The helper validates `/srv/woco/deploy/worldcovers.service`, runs
+`systemd-analyze verify`, installs to `/etc/systemd/system/worldcovers.service`,
+and runs `systemctl daemon-reload`.
+
+The helper is staging-only. It is intentionally not part of the production
+sudoers policy.
+
+## Production Manual Unit Apply
+
+When production deploy blocks because the unit changed, review the diff and run
+as root on `hellowoco.app`:
+
+```sh
+diff -u /etc/systemd/system/worldcovers.service /srv/woco/deploy/worldcovers.service
+systemd-analyze verify /srv/woco/deploy/worldcovers.service
+install -m 644 /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service
+systemctl daemon-reload
+systemctl restart worldcovers
+systemctl status worldcovers
+```
+
+Expected exit code: `0`.
+
+## Deploy Key Rotation
+
+Generate separate keys for the two deploy boundaries:
+
+```sh
+ssh-keygen -t ed25519 -C worldcovers-actions-staging -f worldcovers-actions-staging
+ssh-keygen -t ed25519 -C worldcovers-actions-prod -f worldcovers-actions-prod
+```
+
+Install only `worldcovers-actions-staging.pub` for
+`wocod@woco.dev`. Install only `worldcovers-actions-prod.pub` for
+`wocod@hellowoco.app`.
+
+Update GitHub Actions secrets:
+
+```text
+STAGING_DEPLOY_SSH_KEY = private key from worldcovers-actions-staging
+PROD_DEPLOY_SSH_KEY = private key from worldcovers-actions-prod
+```
+
+After both new deploys succeed, delete the old shared `DEPLOY_SSH_KEY` secret
+and remove its public key from all server `authorized_keys` files, including
+root on staging if it was added there.
+
+## SSH Policy
+
+Production should set:
+
+```text
+PermitRootLogin no
+```
+
+Staging should set `PermitRootLogin no` after `wocod` deploys work. Use
+`PermitRootLogin prohibit-password` only while recovering or provisioning the
+host.
+
+## Review Checklist For Deploy PRs
+
+Use this checklist on any PR that changes workflows, SSH users, hosts, sudoers,
+deploy keys, branch routing, or systemd files:
+
+- Separate deploy keys per host and privilege boundary.
+- Never promote a CI key from service-account access to root access.
+- Avoid shared secrets across environments.
+- Treat systemd unit updates as privileged infrastructure changes.
+- Make production fail closed before stopping the service.
+- Keep the repo and generated text ASCII-only.
+
+## Troubleshooting
+
+Check service state:
+
+```sh
+sudo systemctl status worldcovers
+sudo journalctl -u worldcovers -f
+```
+
+Check deploy prerequisites:
+
+```sh
+cd /srv/woco
+uv --version
+node --version
+npm --version
+test -f mysql.cnf
+test -f backend/.env
+```
+
+If a page returns 502, inspect the systemd journal first. Look for gunicorn
+worker timeouts, Python tracebacks, missing environment values, or failed
+database connections.

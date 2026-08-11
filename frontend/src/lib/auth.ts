@@ -1,6 +1,5 @@
 /**
  * Auth utilities using localStorage for session storage.
- * Replaces Supabase session for Django API login.
  */
 
 const AUTH_STORAGE_KEY = "worldcovers_user";
@@ -62,11 +61,17 @@ export function getStoredUser(): AuthUser | null {
 
 export function setStoredUser(user: AuthUser): void {
   const normalized = normalizeAuthUser(user) ?? user;
+  authStateVersion += 1;
+  currentUserInFlight = null;
+  currentUserCache = { user: normalized, fetchedAtMs: Date.now() };
   localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(normalized));
   window.dispatchEvent(new CustomEvent("auth-change", { detail: normalized }));
 }
 
 export function clearStoredUser(): void {
+  authStateVersion += 1;
+  currentUserInFlight = null;
+  currentUserCache = { user: null, fetchedAtMs: Date.now() };
   localStorage.removeItem(AUTH_STORAGE_KEY);
   window.dispatchEvent(new CustomEvent("auth-change", { detail: null }));
 }
@@ -82,6 +87,7 @@ type CachedCurrentUser = { user: AuthUser | null; fetchedAtMs: number };
 // Dedupes /api/me/ across the whole app (Navigation, Dashboard, etc.)
 let currentUserInFlight: Promise<AuthUser | null> | null = null;
 let currentUserCache: CachedCurrentUser | null = null;
+let authStateVersion = 0;
 const CURRENT_USER_CACHE_TTL_MS = 30_000;
 
 /**
@@ -96,8 +102,9 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
 
   if (currentUserInFlight) return currentUserInFlight;
 
+  const requestVersion = authStateVersion;
   const url = getApiBase() ? `${getApiBase()}/me/` : (import.meta.env.VITE_API_BASE_URL || "/api/v2") + "/me/";
-  currentUserInFlight = (async () => {
+  const request: Promise<AuthUser | null> = (async () => {
     try {
       const res = await fetch(url, { credentials: "include" });
       if (!res.ok) return null;
@@ -106,12 +113,16 @@ export async function fetchCurrentUser(): Promise<AuthUser | null> {
       if (!user || typeof user.id !== "number") return null;
       return normalizeAuthUser(user);
     } finally {
-      // Clear inflight no matter what.
-      currentUserInFlight = null;
+      if (currentUserInFlight === request) {
+        currentUserInFlight = null;
+      }
     }
   })();
 
-  const user = await currentUserInFlight;
-  currentUserCache = { user, fetchedAtMs: now };
+  currentUserInFlight = request;
+  const user = await request;
+  if (requestVersion === authStateVersion) {
+    currentUserCache = { user, fetchedAtMs: now };
+  }
   return user;
 }

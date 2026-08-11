@@ -11,9 +11,11 @@ from __future__ import annotations
 import json
 import os
 import uuid
+from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
 from django.db.models import Min, Max, Q
 from django.db.models.functions import ExtractYear
@@ -30,7 +32,6 @@ from rest_framework.permissions import (
     BasePermission,
     IsAdminUser,
     IsAuthenticated,
-    IsAuthenticatedOrReadOnly,
 )
 from rest_framework import serializers
 from rest_framework.response import Response
@@ -38,6 +39,25 @@ from rest_framework.views import APIView
 from django_filters.rest_framework import DjangoFilterBackend
 from drf_spectacular.utils import OpenApiResponse, extend_schema, inline_serializer
 
+from common.images import CropError, crop_image_bytes, extract_image_metadata
+from common.catalog_codes import (
+    CATALOG_CODE_KEYS,
+    CatalogCodeError,
+    final_code_for_contribution,
+    strip_catalog_code_keys,
+    suggest_direct_catalog_code,
+    suggest_for_contribution,
+)
+from common.contribution_apply import (
+    ContributionApplyError,
+    MARKING_DATE_SUBMIT_KEYS,
+    _parse_int,
+    strip_marking_date_keys,
+)
+from common.contribution_consolidation import (
+    ContributionTarget,
+    consolidate_superseded_contributions,
+)
 from common.audit import (
     build_cover_snapshot,
     build_marking_snapshot,
@@ -51,7 +71,11 @@ from common.audit import (
     restore_cover_from_snapshot,
     restore_marking_from_snapshot,
 )
-from common.filters import CoverMarkingFilter, MarkingListFilter
+from common.filters import (
+    CitationAwareMarkingSearchFilter,
+    CoverMarkingFilter,
+    MarkingListFilter,
+)
 from common.models import (
     Citation,
     Collection,
@@ -79,14 +103,16 @@ from common.models import (
 from woco.pagination import MarkingListPagination
 
 from .permissions import (
-    REVIEW_CONTRIBUTION_PERM,
     CanManageReferenceWorks,
     CanReviewContribution,
-    IsDraftOwner,
+    IsOwnDeletableContribution,
+    IsEditorOrAdminWrite,
+    IsResponsibleForImageSubject,
     _get_user_assigned_regions,
     _user_is_responsible_for_cover,
     _user_is_responsible_for_marking,
     user_assigned_collection_ids,
+    user_can_review_contributions,
 )
 from .serializers import (
     CitationSerializer,
@@ -122,6 +148,16 @@ User = get_user_model()
 # circular import back into views.py.
 
 
+def _user_may_review_contribution(user, contribution) -> bool:
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if not user_can_review_contributions(user):
+        return False
+    return contribution.collection_id in user_assigned_collection_ids(user)
+
+
 class IsResponsibleForRegion(BasePermission):
     """
     Object-level write check for Marking-bound resources.
@@ -132,7 +168,12 @@ class IsResponsibleForRegion(BasePermission):
     def has_permission(self, request, view):
         if request.method in {"GET", "HEAD", "OPTIONS"}:
             return True
-        return bool(request.user and request.user.is_authenticated)
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (user.is_superuser or user_can_review_contributions(user))
+        )
 
     def has_object_permission(self, request, view, obj):
         if request.method in {"GET", "HEAD", "OPTIONS"}:
@@ -142,17 +183,43 @@ class IsResponsibleForRegion(BasePermission):
 
 
 def _marking_list_queryset():
-    """Optimized queryset for Marking list-style endpoints with date-range annotations.
+    """Optimized queryset for Marking list-style endpoints.
 
-    Uses MarkingQuerySet.with_date_range so earliest_seen / latest_seen aggregate
-    both directly-attached DateSeen rows (subject_type='MARKING') and
-    cover-mediated DateSeen rows (subject_type='COVER' via cover_markings).
+    earliest_seen / latest_seen are real columns maintained by
+    common.date_range (issue #59), so no annotation is needed here.
     """
     return Marking.objects.select_related(
         "post_office", "shape", "lettering", "color"
     ).prefetch_related(
         "post_office__post_office_regions__region"
-    ).with_date_range()
+    )
+
+
+class CatalogCodeSuggestionView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        if not user_can_review_contributions(user):
+            return Response(
+                {"detail": "You do not have permission to generate catalog codes."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        payload = request.data if isinstance(request.data, dict) else dict(request.data)
+        try:
+            suggestion = suggest_direct_catalog_code(payload)
+        except CatalogCodeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "catalog_code": suggestion.catalog_code,
+                "prefix": suggestion.prefix,
+                "reference_code": suggestion.reference_code,
+                "region_abbrev": suggestion.region_abbrev,
+                "subject_type": suggestion.subject_type,
+            },
+            status=status.HTTP_200_OK,
+        )
 
 
 ###################################################################################################
@@ -161,7 +228,7 @@ def _marking_list_queryset():
 class ColorViewSet(viewsets.ModelViewSet):
     queryset = Color.objects.all()
     serializer_class = ColorSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name"]
     ordering = ["name"]
@@ -177,7 +244,7 @@ class RegionViewSet(viewsets.ModelViewSet):
     """Regions; supports ?assigned_only=true to scope to the user's Collections."""
     queryset = Region.objects.all().select_related("parent_region")
     serializer_class = RegionSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["region_tier", "parent_region"]
     search_fields = ["name", "abbrev"]
@@ -213,7 +280,7 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
         "post_office_regions__region"
     )
     serializer_class = PostOfficeSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = {"post_office_regions__region": ["exact"]}
     search_fields = [
@@ -251,7 +318,7 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
 class LetteringViewSet(viewsets.ModelViewSet):
     queryset = Lettering.objects.all()
     serializer_class = LetteringSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name"]
     ordering_fields = ["name", "created_date"]
@@ -267,7 +334,7 @@ class LetteringViewSet(viewsets.ModelViewSet):
 class ShapeViewSet(viewsets.ModelViewSet):
     queryset = Shape.objects.all()
     serializer_class = ShapeSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ["name", "code"]
     ordering_fields = ["name", "code", "created_date"]
@@ -297,6 +364,53 @@ class ReferenceWorkViewSet(viewsets.ModelViewSet):
     def perform_update(self, serializer):
         serializer.save(modified_by=self.request.user)
 
+    @staticmethod
+    def _ordinal_suffix(raw):
+        text = str(raw or "").strip()
+        if not text.isdigit():
+            return text
+        n = int(text)
+        mod100 = n % 100
+        if 11 <= mod100 <= 13:
+            return f"{n}th"
+        mod10 = n % 10
+        if mod10 == 1:
+            return f"{n}st"
+        if mod10 == 2:
+            return f"{n}nd"
+        if mod10 == 3:
+            return f"{n}rd"
+        return f"{n}th"
+
+    @classmethod
+    def _option_label(cls, work):
+        code = (work.code or "").strip()
+        title = (work.title or "").strip()
+        edition = (work.edition or "").strip()
+        head = f"{code} - {title}" if code and title else code or title
+        label = head or f"Reference work {work.pk}"
+        if edition:
+            label = f"{label} ({cls._ordinal_suffix(edition)} Ed.)"
+        return label
+
+    @action(detail=False, methods=["get"], url_path="options", permission_classes=[AllowAny])
+    def options(self, request):
+        """Lightweight coded reference-work payload for catalog citation filters."""
+        rows = (
+            ReferenceWork.objects.exclude(code__isnull=True)
+            .exclude(code__exact="")
+            .order_by("title", "code")
+        )
+        out = [
+            {
+                "code": (work.code or "").strip(),
+                "title": (work.title or "").strip(),
+                "label": self._option_label(work),
+            }
+            for work in rows
+        ]
+        return Response(out, status=status.HTTP_200_OK)
+
 
 class FAQEntryViewSet(viewsets.ReadOnlyModelViewSet):
     """Read-only FAQ for the public SPA homepage."""
@@ -321,7 +435,7 @@ class ImageViewSet(viewsets.ModelViewSet):
     """
     queryset = Image.objects.all().select_related("uploaded_by")
     serializer_class = ImageSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "image_view", "is_tracing"]
@@ -337,8 +451,160 @@ class ImageViewSet(viewsets.ModelViewSet):
             uploaded_by=self.request.user,
         )
 
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[IsEditorOrAdminWrite, IsResponsibleForImageSubject],
+    )
+    def crop(self, request, pk=None):
+        """Save a rectangle of this image as a new image on the same subject.
+
+        Built for the repair in issue #78: much of the catalog has a scan of a
+        whole cover sitting in a marking's image slot. The full scan belongs on
+        a Cover, but moving it there would leave the marking with no image at
+        all -- 112 markings on prod hold nothing else. Cropping the marking out
+        first gives the marking a real closeup, and the original can then be
+        moved with the existing PATCH (issue #48).
+
+        Deliberately does not relocate anything: crop and move stay separate,
+        composable operations. The source file is never modified, so a bad crop
+        costs one delete.
+
+        Body: {"x": int, "y": int, "width": int, "height": int,
+               "image_view": optional, "image_description": optional}
+        """
+        source = self.get_object()
+        self.check_object_permissions(request, source)
+
+        try:
+            box = tuple(
+                int(request.data[field]) for field in ("x", "y", "width", "height")
+            )
+        except (KeyError, TypeError, ValueError):
+            return Response(
+                {"detail": "x, y, width and height are required whole numbers."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        source_path = Path(settings.MEDIA_ROOT) / source.storage_filename.lstrip("/")
+        # storage_filename is editable in the admin, so confirm the resolved
+        # path is still inside MEDIA_ROOT before reading it.
+        media_root = Path(settings.MEDIA_ROOT).resolve()
+        try:
+            resolved = source_path.resolve(strict=True)
+            resolved.relative_to(media_root)
+        except (OSError, ValueError):
+            return Response(
+                {"detail": "Source image file is missing."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        try:
+            content = crop_image_bytes(resolved.read_bytes(), source.mime_type, box)
+        except CropError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+        metadata = extract_image_metadata(content, source.mime_type)
+        if metadata is None:
+            return Response(
+                {"detail": "Cropped image could not be encoded."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Keep the crop beside its source so media stays sorted by state.
+        subdir = str(Path(source.storage_filename).parent).strip("/.")
+        suffix = Path(source.storage_filename).suffix or ".jpg"
+        storage_name = f"{uuid.uuid4().hex}{suffix}"
+        if subdir:
+            storage_name = f"{subdir}/{storage_name}"
+        destination = Path(settings.MEDIA_ROOT) / storage_name
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_bytes(content)
+
+        default_view = (
+            Image.MARKING_VIEW_CHOICES[0]
+            if source.subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES[-1]
+        )
+        image_view = (request.data.get("image_view") or default_view).strip().upper()
+        allowed_views = (
+            Image.MARKING_VIEW_CHOICES
+            if source.subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES
+        )
+        if image_view not in allowed_views:
+            destination.unlink(missing_ok=True)
+            return Response(
+                {"image_view": [f"Must be one of {allowed_views} for this subject."]},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Appended, never promoted to default: an editor decides which image
+            # represents the record using the existing reorder controls.
+            max_order = Image.objects.filter(
+                subject_type=source.subject_type,
+                subject_id=source.subject_id,
+            ).aggregate(max_order=Max("display_order"))["max_order"]
+            cropped = Image.objects.create(
+                subject_type=source.subject_type,
+                subject_id=source.subject_id,
+                original_filename=source.original_filename[:255],
+                storage_filename=storage_name,
+                image_view=image_view,
+                image_description=(request.data.get("image_description") or "").strip(),
+                is_tracing=source.is_tracing,
+                display_order=(max_order or 0) + 1,
+                cropped_from=source,
+                uploaded_by=request.user,
+                created_by=request.user,
+                modified_by=request.user,
+                **metadata,
+            )
+
+        serializer = self.get_serializer(cropped)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
     def perform_update(self, serializer):
-        serializer.save(modified_by=self.request.user)
+        # Moving an image to another subject (issue #48) has the same
+        # default-image bookkeeping needs as deletion: the source subject may
+        # lose its display_order=0 row, and the moved image must not collide
+        # with the target's existing default. Ordinary metadata updates skip
+        # all of this.
+        old_subject = (
+            serializer.instance.subject_type,
+            serializer.instance.subject_id,
+        )
+        with transaction.atomic():
+            instance = serializer.save(modified_by=self.request.user)
+            new_subject = (instance.subject_type, instance.subject_id)
+            if new_subject == old_subject:
+                return
+            target_siblings = Image.objects.filter(
+                subject_type=new_subject[0],
+                subject_id=new_subject[1],
+            ).exclude(pk=instance.pk)
+            if target_siblings.exists():
+                max_order = target_siblings.aggregate(
+                    max_order=Max("display_order")
+                )["max_order"]
+                instance.display_order = (max_order or 0) + 1
+            else:
+                instance.display_order = 0
+            instance.save(update_fields=["display_order", "modified_date"])
+
+            source_siblings = Image.objects.filter(
+                subject_type=old_subject[0],
+                subject_id=old_subject[1],
+            ).order_by("display_order", "image_id")
+            if not source_siblings.filter(display_order=0).exists():
+                next_default = source_siblings.first()
+                if next_default is not None:
+                    next_default.display_order = 0
+                    next_default.modified_by = self.request.user
+                    next_default.save(
+                        update_fields=["display_order", "modified_by", "modified_date"]
+                    )
 
     def perform_destroy(self, instance):
         # "Default image" is implicit: for a given (subject_type, subject_id),
@@ -369,7 +635,7 @@ class ImageViewSet(viewsets.ModelViewSet):
 class CitationViewSet(viewsets.ModelViewSet):
     queryset = Citation.objects.all().select_related("reference_work")
     serializer_class = CitationSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
     filterset_fields = ["reference_work", "subject_type", "subject_id"]
     search_fields = ["citation_detail", "reference_work__title"]
@@ -389,7 +655,7 @@ class CitationViewSet(viewsets.ModelViewSet):
 class CoverV2ViewSet(viewsets.ModelViewSet):
     queryset = Cover.objects.all().select_related("color")
     serializer_class = CoverSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["color", "type", "has_adhesive", "is_institutional"]
     ordering_fields = ["id", "code", "created_date"]
@@ -520,7 +786,7 @@ class CoverV2ViewSet(viewsets.ModelViewSet):
         manager hides removed rows.
         """
         user = request.user
-        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+        if not user_can_review_contributions(user):
             return Response(
                 {"detail": "You are not allowed to view the recycle bin."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -715,11 +981,11 @@ class DateSeenViewSet(viewsets.ModelViewSet):
     # cover or marking.
     queryset = DateSeen.objects.all()
     serializer_class = DateSeenSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["subject_type", "subject_id", "granularity"]
-    ordering_fields = ["date", "created_date"]
-    ordering = ["subject_type", "subject_id", "date"]
+    ordering_fields = ["date", "date_year", "date_month", "date_day", "created_date"]
+    ordering = ["subject_type", "subject_id", "date", "date_year", "date_month", "date_day"]
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user, modified_by=self.request.user)
@@ -731,7 +997,7 @@ class DateSeenViewSet(viewsets.ModelViewSet):
 class CoverValuationViewSet(viewsets.ModelViewSet):
     queryset = CoverValuation.objects.all().select_related("cover")
     serializer_class = CoverValuationSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ["cover"]
     ordering_fields = ["appraisal_date", "amt"]
@@ -759,7 +1025,7 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
         .select_related("cover", "cover__color", "marking", "reviewer")
     )
     serializer_class = CoverMarkingSerializer
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_class = CoverMarkingFilter
     ordering_fields = ["id", "created_date", "reviewed_at"]
@@ -819,7 +1085,7 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
 
         if not user.is_authenticated:
             return qs.none()
-        if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        if user_can_review_contributions(user):
             region_ids = list(
                 Region.objects.filter(collection__id__in=user_assigned_collection_ids(user)).values_list(
                     "pk", flat=True
@@ -1072,14 +1338,14 @@ class CoverMarkingViewSet(viewsets.ModelViewSet):
 ###################################################################################################
 class MarkingViewSet(viewsets.ModelViewSet):
     """
-    Unified marking ViewSet. Replaces PostmarkViewSet / RatemarkViewSet /
+    Unified marking ViewSet. Handles Townmark / Ratemark /
     AuxmarkViewSet. List supports `?type=TOWNMARK|RATEMARK|AUXMARK`
     and the legacy filters preserved on MarkingListFilter.
     """
     pagination_class = MarkingListPagination
     queryset = Marking.objects.all()
-    permission_classes = [IsAuthenticatedOrReadOnly, IsResponsibleForRegion]
-    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    permission_classes = [IsEditorOrAdminWrite, IsResponsibleForRegion]
+    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, filters.OrderingFilter]
     filterset_class = MarkingListFilter
     # No raw DELETE: removing a marking goes through the audited, reversible
     # POST /markings/<pk>/remove/ (recycle bin) action instead. Custom POST
@@ -1087,9 +1353,14 @@ class MarkingViewSet(viewsets.ModelViewSet):
     http_method_names = ["get", "post", "put", "patch", "head", "options", "trace"]
     search_fields = [
         "code",
-        "catalog_txt",
+        # Search intentionally skips source catalog text. Public searches use
+        # display fields plus CitationAwareMarkingSearchFilter's citation union.
         "inscription_txt",
         "desc",
+        # `type` holds the stored enum value (TOWNMARK/RATEMARK/AUXMARK), so a
+        # search for "ratemark"/"auxmark"/"townmark" finds all markings of that
+        # class. icontains on the enum value, not the human label. (#40)
+        "type",
         "post_office__post_office_regions__region__name",
         "post_office__name",
         "shape__name",
@@ -1103,6 +1374,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "post_office__name",
         "code",
         "type",
+        "is_manuscript",
         # Physical/editorial fields
         "shape__name",
         "lettering__name",
@@ -1117,6 +1389,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
     ]
     ordering = [
         "post_office__post_office_regions__region__name",
+        "is_manuscript",
         "post_office__name",
         "earliest_seen",
     ]
@@ -1138,7 +1411,6 @@ class MarkingViewSet(viewsets.ModelViewSet):
                 Marking.all_objects
                 .select_related("post_office", "shape", "lettering", "color")
                 .prefetch_related("post_office__post_office_regions__region")
-                .with_date_range()
                 .filter(pk=self.kwargs[self.lookup_field])
                 .first()
             )
@@ -1260,7 +1532,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
         (who/when/why) lives in the marking changelog.
         """
         user = request.user
-        if not (user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)):
+        if not user_can_review_contributions(user):
             return Response(
                 {"detail": "You are not allowed to view the recycle bin."},
                 status=status.HTTP_403_FORBIDDEN,
@@ -1269,7 +1541,6 @@ class MarkingViewSet(viewsets.ModelViewSet):
             Marking.all_objects.filter(recycle_bin_entry__isnull=False)
             .select_related("post_office", "shape", "lettering", "color")
             .prefetch_related("post_office__post_office_regions__region")
-            .with_date_range()
             .order_by("-recycle_bin_entry__removed_at")
         )
         if not user.is_superuser:
@@ -1518,33 +1789,13 @@ class MarkingViewSet(viewsets.ModelViewSet):
     )
 )
 class MarkingDateRangeView(APIView):
-    """Earliest and latest dates_seen.date years across the approved catalog.
-
-    Aggregates DateSeen rows that belong to approved catalog content only:
-      * subject_type='MARKING': subject_id must reference an existing Marking.
-        Draft contributions do not have a Marking row yet (Contribution.marking
-        is null until approval), so MARKING-scoped draft dates cannot exist.
-      * subject_type='COVER':  subject_id must reference a Cover that is linked
-        to at least one Marking via an APPROVED CoverMarking. Cover-scoped
-        DateSeen rows created during draft / pending / rejected reviews are
-        therefore excluded from the public catalog range.
-    """
+    """Earliest and latest observed years across the searchable catalog."""
     permission_classes = [AllowAny]
 
     def get(self, request):
-        approved_cover_ids = CoverMarking.objects.filter(
-            review_status=CoverMarking.REVIEW_APPROVED,
-        ).values("cover_id")
-        approved_marking_ids = Marking.objects.values("pk")
-
-        qs = DateSeen.objects.filter(
-            Q(subject_type=DateSeen.SUBJECT_MARKING, subject_id__in=approved_marking_ids)
-            | Q(subject_type=DateSeen.SUBJECT_COVER, subject_id__in=approved_cover_ids)
-        )
-
-        agg = qs.aggregate(
-            earliest_year=Min(ExtractYear("date")),
-            latest_year=Max(ExtractYear("date")),
+        agg = Marking.objects.aggregate(
+            earliest_year=Min(ExtractYear("earliest_seen")),
+            latest_year=Max(ExtractYear("latest_seen")),
         )
         earliest = int(agg["earliest_year"]) if agg["earliest_year"] is not None else None
         latest = int(agg["latest_year"]) if agg["latest_year"] is not None else None
@@ -1576,15 +1827,16 @@ class ContributionViewSet(
     POST /contributions/ delegates to ContributionSubmitView so authenticated
     contributors can submit new entries here. Approve / reject actions live on
     detail routes.
-    DELETE /contributions/<pk>/ hard-deletes a DRAFT owned by the requester
-    (true DELETE); see IsDraftOwner. Non-draft contributions cannot be
+    DELETE /contributions/<pk>/ hard-deletes (withdraws) an UNAPPROVED
+    contribution owned by the requester -- draft, pending, needs_revision or
+    rejected -- see IsOwnDeletableContribution. Approved contributions cannot be
     hard-deleted -- removing a promoted marking goes through the recycle bin.
     """
     permission_classes = [IsAuthenticated, CanReviewContribution]
     serializer_class = ContributionDetailSerializer
     filter_backends = [DjangoFilterBackend]
     filterset_fields = ["status"]
-    ordering = ["-created_at"]
+    ordering = ["-created_date"]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
@@ -1593,16 +1845,20 @@ class ContributionViewSet(
         # GET (list/detail) and on the approve/reject detail actions.
         if self.action == "create":
             return [IsAuthenticated()]
-        # DELETE is the true-delete-for-drafts path: gated by IsDraftOwner,
-        # not the editor-review permission.
+        # DELETE is the contributor withdraw path: an owner may remove their own
+        # unapproved contribution (draft/pending/needs_revision/rejected). Gated
+        # by IsOwnDeletableContribution, not the editor-review permission.
         if self.action == "destroy":
-            return [IsAuthenticated(), IsDraftOwner()]
+            return [IsAuthenticated(), IsOwnDeletableContribution()]
         return super().get_permissions()
 
     def perform_destroy(self, instance):
-        # Reachable only for a draft owned by the requester (IsDraftOwner).
-        # A draft has no Marking yet, so this hard-delete has no downstream
-        # catalog impact. Record a tombstone transaction before deleting; the
+        # Reachable only for an UNAPPROVED contribution owned by the requester
+        # (IsOwnDeletableContribution): draft, pending, needs_revision or
+        # rejected. None of these has a published Marking of its own yet, so this
+        # hard-delete (withdrawal) has no downstream catalog impact. Record a
+        # tombstone transaction before deleting -- before_payload.status carries
+        # the real status so a withdrawn pending submission is auditable -- the
         # contribution FK is left null because the row is about to vanish
         # (SubmissionTransaction.contribution is SET_NULL anyway).
         log_submission_transaction(
@@ -1661,7 +1917,7 @@ class ContributionViewSet(
             if user.is_superuser:
                 return base_qs
             mine = Q(contributor=user)
-            if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+            if user_can_review_contributions(user):
                 assigned_ids = user_assigned_collection_ids(user)
                 if assigned_ids:
                     return base_qs.filter(mine | Q(collection_id__in=assigned_ids)).distinct()
@@ -1669,10 +1925,19 @@ class ContributionViewSet(
         mode = (self.request.query_params.get("mode") or "").strip().lower()
         if mode == "editor":
             if user.is_superuser:
-                return base_qs
-            if user.has_perm(REVIEW_CONTRIBUTION_PERM):
-                return _get_editor_contribution_queryset(user)
-            return base_qs.none()
+                qs = base_qs
+            elif user_can_review_contributions(user):
+                qs = _get_editor_contribution_queryset(user)
+            else:
+                return base_qs.none()
+            state = (self.request.query_params.get("state") or "").strip()
+            if state:
+                qs = qs.filter(
+                    Q(collection__region__name__iexact=state)
+                    | Q(collection__region__abbrev__iexact=state)
+                    | Q(submitted_data__state__iexact=state)
+                )
+            return qs
         return base_qs.filter(contributor=user).distinct()
 
     def get_serializer_class(self):
@@ -1683,6 +1948,11 @@ class ContributionViewSet(
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):
         contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to review this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
         if contrib.status != Contribution.STATUS_PENDING:
             return Response(
                 {"detail": f"Contribution is not pending (status: {contrib.status})."},
@@ -1691,8 +1961,37 @@ class ContributionViewSet(
         serializer = ContributionApproveRejectSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         review_notes = serializer.validated_data.get("review_notes", "")
+        requested_catalog_code = serializer.validated_data.get("catalog_code", None)
         try:
             with transaction.atomic():
+                # Capture the BEFORE snapshot for edits (the entity already
+                # exists and apply mutates it in place). build_*_snapshot read
+                # live DB state, so this must run BEFORE apply. CREATE leaves
+                # these empty, so the audit diff for a create stays before={}.
+                sd = contrib.submitted_data or {}
+                edit_marking_id = _parse_int(sd.get("edit_marking_id"))
+                edit_cover_id = _parse_int(sd.get("edit_cover_id"))
+                before_marking_snapshot = {}
+                before_cover_snapshot = {}
+                if edit_cover_id:
+                    try:
+                        before_cover_snapshot = build_cover_snapshot(
+                            Cover.all_objects.get(pk=edit_cover_id)
+                        )
+                    except Cover.DoesNotExist:
+                        pass
+                elif edit_marking_id:
+                    try:
+                        before_marking_snapshot = build_marking_snapshot(
+                            Marking.all_objects.get(pk=edit_marking_id)
+                        )
+                    except Marking.DoesNotExist:
+                        pass
+
+                final_code_for_contribution(
+                    contrib,
+                    requested_code=requested_catalog_code,
+                )
                 result = contrib.apply_to_catalog()
 
                 # apply_to_catalog returns a Marking for marking submissions and
@@ -1709,6 +2008,10 @@ class ContributionViewSet(
                     cover_marking.reviewer = request.user
                     cover_marking.review_notes = review_notes
                     cover_marking.modified_by = request.user
+                    # Stamp reviewed_at here for BOTH create and edit: the edit
+                    # apply path deliberately leaves the link's review fields
+                    # alone, so the approve view owns reviewed_at in both cases.
+                    cover_marking.reviewed_at = timezone.now()
                     cover_marking.save(
                         update_fields=["reviewer", "review_notes", "modified_by", "reviewed_at"]
                     )
@@ -1716,11 +2019,27 @@ class ContributionViewSet(
                     contrib.status = Contribution.STATUS_APPROVED
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
-                    # Link the contribution to the marking it enriches so the
-                    # entry detail page can surface its feedback/comment. Cover
-                    # detection in the serializers is submitted_data-driven, not
-                    # FK-driven, so the cover label still renders correctly.
-                    contrib.marking = parent_marking
+                    contrib.modified_by = request.user
+                    # Delete older cover contributions before checking the
+                    # optional parent marking link. An older approved cover
+                    # contribution may own that one-to-one link.
+                    consolidate_superseded_contributions(
+                        current=contrib,
+                        target=ContributionTarget("cover", cover.pk),
+                        actor=request.user,
+                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                    )
+                    update_fields = [
+                        "status",
+                        "reviewer",
+                        "review_notes",
+                        "submitted_data",
+                        "modified_date",
+                        "modified_by",
+                    ]
+                    if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
+                        contrib.marking = parent_marking
+                        update_fields.append("marking")
                     # Stamp traceability so the frontend mapper treats this
                     # contribution as materialized (no longer a pending draft).
                     sd = dict(contrib.submitted_data or {})
@@ -1728,16 +2047,7 @@ class ContributionViewSet(
                     sd["cover_marking_id"] = cover_marking.pk
                     sd["materialized_cover_marking_id"] = cover_marking.pk
                     contrib.submitted_data = sd
-                    contrib.save(
-                        update_fields=[
-                            "status",
-                            "reviewer",
-                            "review_notes",
-                            "marking",
-                            "submitted_data",
-                            "updated_at",
-                        ]
-                    )
+                    contrib.save(update_fields=update_fields)
                     after_snapshot = build_cover_snapshot(cover)
                     txn = log_submission_transaction(
                         action=SubmissionTransaction.ACTION_APPROVE,
@@ -1746,7 +2056,7 @@ class ContributionViewSet(
                         marking=parent_marking,
                         cover=cover,
                         source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload={},
+                        before_payload=before_cover_snapshot,
                         after_payload=after_snapshot,
                         extra_payload={
                             "review_notes": review_notes,
@@ -1765,13 +2075,20 @@ class ContributionViewSet(
                     contrib.status = Contribution.STATUS_APPROVED
                     contrib.reviewer = request.user
                     contrib.review_notes = review_notes
-                    # Link the approved contribution to the marking it produced.
-                    # apply_to_catalog() creates and returns the Marking but does
-                    # not set this FK; without it marking_id stays NULL and the
-                    # entry detail page can never find the contribution's
-                    # feedback/comment.
-                    contrib.marking = marking
-                    contrib.save(update_fields=["status", "reviewer", "review_notes", "marking", "updated_at"])
+                    contrib.modified_by = request.user
+                    # Delete older marking contributions before assigning the
+                    # one-to-one Contribution.marking link to the latest row.
+                    consolidate_superseded_contributions(
+                        current=contrib,
+                        target=ContributionTarget("marking", marking.pk),
+                        actor=request.user,
+                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                    )
+                    update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
+                    if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
+                        contrib.marking = marking
+                        update_fields.append("marking")
+                    contrib.save(update_fields=update_fields)
                     after_snapshot = build_marking_snapshot(marking)
                     txn = log_submission_transaction(
                         action=SubmissionTransaction.ACTION_APPROVE,
@@ -1779,18 +2096,55 @@ class ContributionViewSet(
                         contribution=contrib,
                         marking=marking,
                         source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload={},
+                        before_payload=before_marking_snapshot,
                         after_payload=after_snapshot,
                         extra_payload={"review_notes": review_notes},
                     )
                     create_marking_version(marking, txn, request.user)
-                    approved_response = {"detail": "Contribution approved.", "markingId": marking.pk}
-        except NotImplementedError as exc:
+                    approved_response = {
+                        "detail": "Contribution approved.",
+                        "markingId": marking.pk,
+                    }
+        except (CatalogCodeError, ContributionApplyError) as exc:
             return Response(
                 {"detail": str(exc)},
-                status=status.HTTP_501_NOT_IMPLEMENTED,
+                status=status.HTTP_400_BAD_REQUEST,
             )
         return Response(approved_response, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=["post"], url_path="catalog-code-suggestion")
+    def catalog_code_suggestion(self, request, pk=None):
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to review this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if contrib.status != Contribution.STATUS_PENDING:
+            return Response(
+                {"detail": f"Contribution is not pending (status: {contrib.status})."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        force = str(request.data.get("force") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+        try:
+            suggestion = suggest_for_contribution(contrib, force=force)
+        except CatalogCodeError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(
+            {
+                "catalog_code": suggestion.catalog_code,
+                "prefix": suggestion.prefix,
+                "reference_code": suggestion.reference_code,
+                "region_abbrev": suggestion.region_abbrev,
+                "subject_type": suggestion.subject_type,
+            },
+            status=status.HTTP_200_OK,
+        )
 
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
@@ -1807,7 +2161,8 @@ class ContributionViewSet(
         contrib.status = Contribution.STATUS_REJECTED
         contrib.reviewer = request.user
         contrib.review_notes = review_notes
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "updated_at"])
+        contrib.modified_by = request.user
+        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_REJECT,
             actor=request.user,
@@ -1840,7 +2195,8 @@ class ContributionViewSet(
         contrib.status = Contribution.STATUS_NEEDS_REVISION
         contrib.reviewer = request.user
         contrib.review_notes = review_notes
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "updated_at"])
+        contrib.modified_by = request.user
+        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_EDIT_SUBMISSION,
             actor=request.user,
@@ -1936,7 +2292,7 @@ def _is_cover_submission_data(data) -> bool:
     kind = str(data.get("submission_kind") or data.get("submissionKind") or "").strip().lower()
     if kind == "cover":
         return True
-    if kind in {"marking", "postmark", "townmark", "ratemark", "auxmark"}:
+    if kind in {"marking", "townmark", "ratemark", "auxmark"}:
         return False
     type_value = str(data.get("type") or "").strip().upper()
     has_cover_type = type_value in {"FC", "FL"}
@@ -1945,6 +2301,13 @@ def _is_cover_submission_data(data) -> bool:
     parent_raw = data.get("parent_marking_id") or data.get("marking_id")
     has_parent = parent_raw not in (None, "")
     has_cover_date = bool(str(data.get("cover_date") or data.get("coverDate") or "").strip())
+    has_cover_date = has_cover_date or any(
+        data.get(key) not in (None, "")
+        for key in ("cover_date_year", "cover_date_month", "cover_date_day")
+    )
+    has_cover_date = has_cover_date or str(
+        data.get("cover_date_unknown") or ""
+    ).strip().lower() in {"true", "1", "yes", "on"}
     if has_parent and (has_cover_type or has_cover_date) and not has_town and not has_marking_type:
         return True
     return False
@@ -1994,21 +2357,98 @@ def _resolve_collection_for_submission(
     return region, collection, effective_state
 
 
+MARKING_DATE_BOUNDARY_KEYS = (
+    (
+        "marking_erd",
+        "marking_erd_granularity",
+        "marking_erd_unknown",
+        "marking_erd_date_year",
+        "marking_erd_date_month",
+        "marking_erd_date_day",
+    ),
+    (
+        "marking_lrd",
+        "marking_lrd_granularity",
+        "marking_lrd_unknown",
+        "marking_lrd_date_year",
+        "marking_lrd_date_month",
+        "marking_lrd_date_day",
+    ),
+)
+
+
+def _truthy_payload_bool(data: dict, key: str) -> bool:
+    value = data.get(key)
+    if value is True:
+        return True
+    if isinstance(value, int) and value == 1:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return False
+
+
+def _payload_has_value(data: dict, key: str) -> bool:
+    return data.get(key) not in (None, "")
+
+
+def _validate_marking_date_boundary_payload(data: dict):
+    for label, keys in (
+        ("Earliest date", MARKING_DATE_BOUNDARY_KEYS[0]),
+        ("Latest date", MARKING_DATE_BOUNDARY_KEYS[1]),
+    ):
+        date_key, _gran_key, unknown_key, year_key, month_key, day_key = keys
+        if not any(key in data for key in keys):
+            continue
+        if _truthy_payload_bool(data, unknown_key):
+            continue
+        has_component = any(
+            _payload_has_value(data, key)
+            for key in (year_key, month_key, day_key)
+        )
+        has_legacy_date = _payload_has_value(data, date_key)
+        if not has_component and not has_legacy_date:
+            return "{} must include a date component or set Date unknown.".format(label)
+        if not has_component:
+            continue
+        row = DateSeen(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=0,
+            date_year=_parse_int(data.get(year_key)),
+            date_month=_parse_int(data.get(month_key)),
+            date_day=_parse_int(data.get(day_key)),
+        )
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            return "Invalid {} components: {}".format(label.lower(), exc)
+    return None
+
+
+def _clear_replaced_marking_date_boundaries(existing_data: dict, submitted_data: dict) -> None:
+    """
+    Pending-contribution edits merge JSON into the prior submitted_data. If a
+    user changes LRD from unknown to a date, the old *_unknown=true key must not
+    survive beside the new date keys.
+    """
+    for boundary_keys in MARKING_DATE_BOUNDARY_KEYS:
+        if not any(key in submitted_data for key in boundary_keys):
+            continue
+        for key in boundary_keys:
+            existing_data.pop(key, None)
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ContributionSubmitView(APIView):
     """
     Public submission endpoint for new contributions.
 
-    Accepts the new unified payload shape: marking_* keys (formerly postmark_*),
+    Accepts the unified payload shape: marking_* keys,
     plus `type` (TOWNMARK | RATEMARK | AUXMARK) and `desc`. The payload is
     persisted to Contribution.submitted_data and routed to a Collection by
     state. Final application to the catalog (creating / updating Marking,
     Image, CoverMarking, DateSeen, CoverValuation rows) happens at approval
-    time; that pipeline is rebuilt against the unified schema in a follow-up
-    pass and currently raises ContributionApplyNotImplemented.
-
-    See plan: docs/devel/scope.md and
-    .claude/plans/the-latest-changes-made-functional-zebra.md sections 2c.
+    time.
     """
     permission_classes = [IsAuthenticated]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
@@ -2049,7 +2489,7 @@ class ContributionSubmitView(APIView):
                 )
             sd = contrib.submitted_data or {}
             is_cover_draft = _submitted_data_is_cover(sd)
-            is_marking_edit_draft = bool(sd.get("edit_postmark_id"))
+            is_marking_edit_draft = bool(sd.get("edit_marking_id"))
             if not (is_cover_draft or is_marking_edit_draft):
                 return Response(
                     {"detail": "This draft type cannot be abandoned via this endpoint."},
@@ -2121,6 +2561,13 @@ class ContributionSubmitView(APIView):
             if meta:
                 image_metas.append(meta)
 
+        # Contributor-chosen final image order: a list of tokens, one per
+        # displayed image, where "__new__" is a freshly-uploaded file (consumed
+        # FIFO from image_metas) and any other token is an existing image's
+        # URL/storage_filename tail. Applied at submit time so the saved metas
+        # list -- and thus display_order at approval -- matches the UI order.
+        image_order = _parse_removed_image_keys(data.get("image_order"))
+
         # Strip multi-value form keys to plain values for the JSONField payload.
         # Skip raw file objects: they are not JSON-serializable and we have already
         # captured them in image_metas above.
@@ -2131,6 +2578,9 @@ class ContributionSubmitView(APIView):
             "edit_contribution_id",
             "editContributionId",
             "removed_existing_image_keys",
+            # Image-ordering control consumed by the *_image_metas builders;
+            # not a display field for the review UI.
+            "image_order",
             # Submit-mode controls -- consumed by _is_save_as_draft_submission
             # above; should not be persisted into the JSON submitted_data
             # payload that the review UI renders as field rows.
@@ -2138,6 +2588,13 @@ class ContributionSubmitView(APIView):
             "saveAsDraft",
             "status",
         }
+        user_can_submit_catalog_code = user_can_review_contributions(request.user)
+        if not user_can_submit_catalog_code:
+            skip_keys.update(CATALOG_CODE_KEYS)
+            # ERD/LRD on Submit New Marking are editor-only (issue #27); the
+            # same editor role gates both. Drop them from a non-editor's
+            # submission so only an editor can set a marking's date.
+            skip_keys.update(MARKING_DATE_SUBMIT_KEYS)
         for key in data:
             if key in skip_keys:
                 continue
@@ -2159,33 +2616,44 @@ class ContributionSubmitView(APIView):
             submitted_data["state"] = state_value
         if routing_deferred:
             submitted_data["routing_deferred"] = True
+        if (
+            not is_cover_submission
+            and not is_draft
+            and user_can_submit_catalog_code
+        ):
+            date_boundary_error = _validate_marking_date_boundary_payload(submitted_data)
+            if date_boundary_error:
+                return Response(
+                    {"detail": date_boundary_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
         # Collapse duplicate marking-edit drafts. When a contributor saves a
-        # draft against an existing marking (edit_postmark_id) without already
+        # draft against an existing marking (edit_marking_id) without already
         # targeting a specific draft (no edit_contribution_id), look for an
         # open draft of theirs against the same marking and route the save
         # through the update branch below. Closes the race where two tabs (or
         # a fast click before the frontend dedupe GET resolves) would each
         # create a parallel draft row. Form-posted values arrive as strings;
-        # the JSON branch posts ints. Query both to cover legacy rows.
+        # the JSON branch posts ints, so query both shapes.
         if edit_pk is None and is_draft:
-            edit_postmark_id_raw = submitted_data.get("edit_postmark_id")
-            if edit_postmark_id_raw not in (None, ""):
+            edit_marking_id_raw = submitted_data.get("edit_marking_id")
+            if edit_marking_id_raw not in (None, ""):
                 try:
-                    epi_int = int(edit_postmark_id_raw)
+                    epi_int = int(edit_marking_id_raw)
                 except (TypeError, ValueError):
                     epi_int = None
-                epi_str = str(edit_postmark_id_raw)
-                value_filter = Q(submitted_data__edit_postmark_id=epi_str)
+                epi_str = str(edit_marking_id_raw)
+                value_filter = Q(submitted_data__edit_marking_id=epi_str)
                 if epi_int is not None:
-                    value_filter |= Q(submitted_data__edit_postmark_id=epi_int)
+                    value_filter |= Q(submitted_data__edit_marking_id=epi_int)
                 existing_draft = (
                     Contribution.objects.filter(
                         contributor=request.user,
                         status=Contribution.STATUS_DRAFT,
                     )
                     .filter(value_filter)
-                    .order_by("-updated_at")
+                    .order_by("-modified_date")
                     .first()
                 )
                 if existing_draft is not None:
@@ -2193,24 +2661,25 @@ class ContributionSubmitView(APIView):
 
         if edit_pk is not None:
             if is_draft:
-                # Allow save-as-draft against either an actual draft or a
-                # needs_revision row (contributor saving partial edits before
-                # they are ready to resubmit). The needs_revision row keeps
-                # its status so it stays in the editor's history and the
-                # original review_notes remain visible.
+                # Allow saving updates against editable, unapproved rows.
+                # Pending rows stay pending; returned rows keep their status so
+                # they stay in history with the original review_notes visible.
                 target_statuses = [
                     Contribution.STATUS_DRAFT,
+                    Contribution.STATUS_PENDING,
                     Contribution.STATUS_NEEDS_REVISION,
+                    Contribution.STATUS_REJECTED,
                 ]
                 transition_to_pending = False
             else:
-                # Non-draft submit with edit_pk: contributor either resubmitting
-                # after the editor returned the contribution for revision OR
-                # promoting one of their own drafts to pending review for the
-                # first time. Both transition the row to pending.
+                # Non-draft submit with edit_pk: contributor is updating a
+                # pending row, resubmitting a returned row, or promoting one of
+                # their own drafts to pending review. All end as pending.
                 target_statuses = [
                     Contribution.STATUS_DRAFT,
+                    Contribution.STATUS_PENDING,
                     Contribution.STATUS_NEEDS_REVISION,
+                    Contribution.STATUS_REJECTED,
                 ]
                 transition_to_pending = True
 
@@ -2221,91 +2690,53 @@ class ContributionSubmitView(APIView):
             ).first()
             if not contrib:
                 detail = (
-                    "Contribution not found, not owned by you, or not in a submittable status (draft / needs_revision)."
+                    "Contribution not found, not owned by you, or not in a submittable status (draft / pending / needs_revision / rejected)."
                     if transition_to_pending
-                    else "Draft or returned contribution not found or not editable."
+                    else "Draft, pending, or returned contribution not found or not editable."
                 )
                 return Response({"detail": detail}, status=status.HTTP_404_NOT_FOUND)
             existing_sd = dict(contrib.submitted_data or {})
 
-            # Honor contributor-side image removals. Frontend
-            # (Contribute.tsx -> removeExistingImageAt) sends a JSON list of
-            # the displayed URLs that the user removed from the edit form.
-            # We drop matching entries from marking_images (URL strings) and
-            # from any *_metas lists (matching by storage_filename tail) so
-            # the resubmission reflects what the contributor actually wants.
-            removed_keys_raw = data.get("removed_existing_image_keys")
-            removed_keys = []
-            if isinstance(removed_keys_raw, str):
-                try:
-                    parsed = json.loads(removed_keys_raw)
-                    if isinstance(parsed, list):
-                        removed_keys = [str(k) for k in parsed if k]
-                except (ValueError, TypeError):
-                    removed_keys = []
-            elif isinstance(removed_keys_raw, list):
-                removed_keys = [str(k) for k in removed_keys_raw if k]
-
-            if removed_keys:
-                removed_set = set(removed_keys)
-                # marking_images is a list of URL strings; drop direct hits.
-                existing_marking_images = existing_sd.get("marking_images")
-                if isinstance(existing_marking_images, list):
-                    existing_sd["marking_images"] = [
-                        u for u in existing_marking_images if u not in removed_set
-                    ]
-
-                def _meta_was_removed(meta):
-                    if not isinstance(meta, dict):
-                        return False
-                    sf = str(meta.get("storage_filename") or "").lstrip("/")
-                    if not sf:
-                        return False
-                    for k in removed_set:
-                        kn = str(k).lstrip("/")
-                        if kn == sf or kn.endswith(sf):
-                            return True
-                    return False
-
-                for meta_key in ("marking_image_metas", "cover_image_metas", "image_metas"):
-                    metas_list = existing_sd.get(meta_key)
-                    if isinstance(metas_list, list):
-                        existing_sd[meta_key] = [
-                            m for m in metas_list if not _meta_was_removed(m)
-                        ]
-
-                # image_meta is the catalog-default thumbnail pointer; if it
-                # was just removed, replace it with the next surviving meta
-                # (or None if none remain).
-                primary = existing_sd.get("image_meta")
-                if isinstance(primary, dict) and _meta_was_removed(primary):
-                    replacement = None
-                    for fallback_key in ("marking_image_metas", "image_metas", "cover_image_metas"):
-                        fallback_list = existing_sd.get(fallback_key)
-                        if isinstance(fallback_list, list) and fallback_list:
-                            replacement = fallback_list[0]
-                            break
-                    existing_sd["image_meta"] = replacement
-
-            if image_metas:
-                meta_key = "cover_image_metas" if is_cover_submission else "marking_image_metas"
-                prior = existing_sd.get(meta_key) or existing_sd.get("image_metas") or []
-                if not isinstance(prior, list):
-                    prior = []
-                merged_metas = list(prior) + image_metas
-                submitted_data[meta_key] = merged_metas
-                submitted_data["image_metas"] = merged_metas
-                submitted_data["image_meta"] = merged_metas[0] if merged_metas else existing_sd.get("image_meta")
+            # Honor contributor-side image removals and merge new uploads
+            # against the draft's prior submitted_data. Frontend
+            # (Contribute.tsx -> removeExistingImageAt) sends a JSON list of the
+            # displayed URLs the user removed from the edit form; the helper
+            # drops matching entries and merges any newly uploaded files.
+            image_updates = _apply_existing_image_reconciliation(
+                existing_sd, data, image_metas, is_cover_submission, image_order
+            )
+            submitted_data.update(image_updates)
+            if not user_can_submit_catalog_code:
+                existing_sd = strip_catalog_code_keys(existing_sd)
+                existing_sd = strip_marking_date_keys(existing_sd)
+            else:
+                _clear_replaced_marking_date_boundaries(existing_sd, submitted_data)
             existing_sd.update(submitted_data)
+            if transition_to_pending:
+                image_error = _validate_final_submission_image_choice(
+                    existing_sd, is_cover_submission
+                )
+                if image_error:
+                    return Response(
+                        {"detail": image_error},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
             contrib.submitted_data = existing_sd
             contrib.collection = collection
-            update_fields = ["submitted_data", "collection", "updated_at"]
+            contrib.modified_by = request.user
+            update_fields = ["submitted_data", "collection", "modified_date", "modified_by"]
             if transition_to_pending:
                 contrib.status = Contribution.STATUS_PENDING
                 contrib.reviewer = None
                 contrib.review_notes = ""
                 update_fields += ["status", "reviewer", "review_notes"]
             contrib.save(update_fields=update_fields)
+            if transition_to_pending:
+                consolidate_superseded_contributions(
+                    current=contrib,
+                    actor=request.user,
+                    source=SubmissionTransaction.SOURCE_CONTRIBUTOR_PORTAL,
+                )
             log_submission_transaction(
                 action=SubmissionTransaction.ACTION_EDIT_SUBMISSION,
                 actor=request.user,
@@ -2321,19 +2752,65 @@ class ContributionSubmitView(APIView):
                 status=status.HTTP_200_OK,
             )
 
-        if image_metas:
+        # Fresh submit (no edit_contribution_id). When an edit marker is present
+        # -- a PENDING edit submitted without first creating a draft -- rebuild
+        # the FULL desired image set server-side from the catalog entry's
+        # existing Image rows so approval-time apply reconciles correctly
+        # (existing-image removals are otherwise dropped on this branch).
+        # Otherwise this is a plain create: store the uploads as-is.
+        edit_marking_marker = _parse_int(submitted_data.get("edit_marking_id"))
+        edit_cover_marker = _parse_int(submitted_data.get("edit_cover_id"))
+        if is_cover_submission and edit_cover_marker is not None:
+            _apply_fresh_edit_image_metas(
+                submitted_data,
+                data,
+                image_metas,
+                subject_type=Image.SUBJECT_COVER,
+                subject_id=edit_cover_marker,
+                meta_key="cover_image_metas",
+                image_order=image_order,
+            )
+        elif (not is_cover_submission) and edit_marking_marker is not None:
+            _apply_fresh_edit_image_metas(
+                submitted_data,
+                data,
+                image_metas,
+                subject_type=Image.SUBJECT_MARKING,
+                subject_id=edit_marking_marker,
+                meta_key="marking_image_metas",
+                image_order=image_order,
+            )
+        elif image_metas:
             submitted_data["marking_image_metas"] = image_metas
             if is_cover_submission:
                 submitted_data["cover_image_metas"] = image_metas
             submitted_data["image_metas"] = image_metas
             submitted_data["image_meta"] = image_metas[0]
 
+        if not is_draft:
+            image_error = _validate_final_submission_image_choice(
+                submitted_data, is_cover_submission
+            )
+            if image_error:
+                return Response(
+                    {"detail": image_error},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
         contrib = Contribution.objects.create(
             contributor=request.user,
             collection=collection,
             submitted_data=submitted_data,
             status=Contribution.STATUS_DRAFT if is_draft else Contribution.STATUS_PENDING,
+            created_by=request.user,
+            modified_by=request.user,
         )
+        if not is_draft:
+            consolidate_superseded_contributions(
+                current=contrib,
+                actor=request.user,
+                source=SubmissionTransaction.SOURCE_CONTRIBUTOR_PORTAL,
+            )
         log_submission_transaction(
             action=SubmissionTransaction.ACTION_SUBMIT,
             actor=request.user,
@@ -2400,6 +2877,294 @@ def _save_contribution_image(uploaded_file, region_abbrev):
         "original_filename": (getattr(uploaded_file, "name", "image") or "image")[:255],
         **metadata,
     }
+
+
+def _parse_removed_image_keys(raw):
+    """Parse removed_existing_image_keys (a JSON string or a list) into a list
+    of URL strings. Returns [] for anything else."""
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return [str(k) for k in parsed if k] if isinstance(parsed, list) else []
+    if isinstance(raw, list):
+        return [str(k) for k in raw if k]
+    return []
+
+
+def _submitted_payload_has_images(submitted_data, is_cover):
+    keys = (
+        ("cover_image_metas", "image_metas")
+        if is_cover
+        else ("marking_image_metas", "image_metas")
+    )
+    for key in keys:
+        value = submitted_data.get(key)
+        if isinstance(value, list) and len(value) > 0:
+            return True
+    return False
+
+
+def _submitted_payload_affirms_no_images(submitted_data, is_cover):
+    keys = (
+        ("no_cover_image", "noCoverImage", "cover_no_image", "coverNoImage")
+        if is_cover
+        else (
+            "no_marking_image",
+            "noMarkingImage",
+            "marking_no_image",
+            "markingNoImage",
+        )
+    )
+    for key in (*keys, "no_image", "noImage"):
+        value = submitted_data.get(key)
+        if isinstance(value, bool):
+            if value:
+                return True
+            continue
+        if isinstance(value, int):
+            if value == 1:
+                return True
+            continue
+        if str(value or "").strip().lower() in {"true", "1", "yes", "on"}:
+            return True
+    return False
+
+
+def _validate_final_submission_image_choice(submitted_data, is_cover):
+    if _submitted_payload_has_images(submitted_data, is_cover):
+        return None
+    if _submitted_payload_affirms_no_images(submitted_data, is_cover):
+        return None
+    label = "cover image" if is_cover else "marking image"
+    return "Add at least one {} or confirm no image is available.".format(label)
+
+
+def _storage_filename_removed(storage_filename, removed_set):
+    """True when storage_filename matches one of the removed URL keys. Mirrors
+    the _meta_was_removed matcher: normalize both (strip leading slash) and test
+    URL-tail against the storage_filename."""
+    sf = str(storage_filename or "").lstrip("/")
+    if not sf:
+        return False
+    for k in removed_set:
+        kn = str(k).lstrip("/")
+        if kn == sf or kn.endswith(sf):
+            return True
+    return False
+
+
+def _parse_existing_image_tags(raw):
+    """Parse existing_image_tags ({url: "tracing"|"photograph"}) from a JSON
+    string or dict into a {str: str} map. Returns {} otherwise."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return {}
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items()}
+    return {}
+
+
+def _existing_image_tag_value(storage_filename, existing_tags):
+    """Return the tag for an image whose URL key in existing_tags matches the
+    storage_filename (URL-tail match, legacy 'markings/' prefix stripped), or
+    None when no key matches."""
+    sfn = str(storage_filename or "").lstrip("/")
+    if sfn.startswith("markings/"):
+        sfn = sfn[len("markings/"):]
+    for url, tag in existing_tags.items():
+        urln = str(url or "").lstrip("/")
+        if urln.startswith("markings/"):
+            urln = urln[len("markings/"):]
+        if urln == sfn or urln.endswith(sfn):
+            return tag
+    return None
+
+
+def _normalize_order_key(value):
+    """Normalize a storage_filename or image URL for tail-matching: strip a
+    leading slash and the legacy 'markings/' prefix. Mirrors the normalization
+    used by _existing_image_tag_value / _storage_filename_removed."""
+    s = str(value or "").lstrip("/")
+    if s.startswith("markings/"):
+        s = s[len("markings/"):]
+    return s
+
+
+def _reorder_metas_by_image_order(combined, new_metas, image_order):
+    """Return `combined` reordered to match the contributor-chosen `image_order`.
+
+    image_order is a list of string tokens, one per displayed image, in the
+    desired order. Each token is either the literal "__new__" (a newly-uploaded
+    file, consumed FIFO from new_metas) or an existing image's key (its media
+    URL / storage_filename tail, matched against each kept meta's
+    storage_filename with the same tail-match used elsewhere).
+
+    `combined` is the full meta list (kept metas + new_metas) in its current
+    order; `new_metas` is this submit's newly-uploaded metas (a subset of
+    `combined`, matched by identity). When image_order is missing, empty, or not
+    a list, `combined` is returned unchanged. Any meta not consumed by a token is
+    appended at the end (preserving `combined` order) so nothing is ever dropped.
+    """
+    if not isinstance(image_order, list) or not image_order:
+        return combined
+    new_ids = {id(m) for m in new_metas}
+    kept = [m for m in combined if id(m) not in new_ids and isinstance(m, dict)]
+    new_queue = [m for m in combined if id(m) in new_ids]
+
+    used = set()
+    result = []
+    for token in image_order:
+        tok = str(token)
+        if tok == "__new__":
+            if new_queue:
+                m = new_queue.pop(0)
+                result.append(m)
+                used.add(id(m))
+            continue
+        tkey = _normalize_order_key(tok)
+        if not tkey:
+            continue
+        for m in kept:
+            if id(m) in used:
+                continue
+            mkey = _normalize_order_key(m.get("storage_filename"))
+            if mkey and (mkey == tkey or tkey.endswith(mkey) or mkey.endswith(tkey)):
+                result.append(m)
+                used.add(id(m))
+                break
+
+    # Safety: append anything the tokens did not account for, in original order.
+    for m in combined:
+        if id(m) not in used:
+            result.append(m)
+            used.add(id(m))
+    return result
+
+
+def _apply_existing_image_reconciliation(
+    existing_sd, data, image_metas, is_cover, image_order=None
+):
+    """
+    Draft-resume image reconciliation. Mutates existing_sd in place to honor
+    contributor-side removals (removed_existing_image_keys) against the draft's
+    prior submitted_data (marking_images URL list, the *_metas lists, and the
+    image_meta thumbnail pointer), then computes the merged meta set when there
+    are new uploads. Returns a dict of submitted_data updates (the *_metas /
+    image_metas / image_meta keys) for the caller to apply; an empty dict when
+    there are no new uploads.
+    """
+    removed_keys = _parse_removed_image_keys(data.get("removed_existing_image_keys"))
+    if removed_keys:
+        removed_set = set(removed_keys)
+        # marking_images is a list of URL strings; drop direct hits.
+        existing_marking_images = existing_sd.get("marking_images")
+        if isinstance(existing_marking_images, list):
+            existing_sd["marking_images"] = [
+                u for u in existing_marking_images if u not in removed_set
+            ]
+        for meta_key in ("marking_image_metas", "cover_image_metas", "image_metas"):
+            metas_list = existing_sd.get(meta_key)
+            if isinstance(metas_list, list):
+                existing_sd[meta_key] = [
+                    m
+                    for m in metas_list
+                    if not (
+                        isinstance(m, dict)
+                        and _storage_filename_removed(
+                            m.get("storage_filename"), removed_set
+                        )
+                    )
+                ]
+        # image_meta is the catalog-default thumbnail pointer; if it was just
+        # removed, replace it with the next surviving meta (or None if none).
+        primary = existing_sd.get("image_meta")
+        if isinstance(primary, dict) and _storage_filename_removed(
+            primary.get("storage_filename"), removed_set
+        ):
+            replacement = None
+            for fallback_key in ("marking_image_metas", "image_metas", "cover_image_metas"):
+                fallback_list = existing_sd.get(fallback_key)
+                if isinstance(fallback_list, list) and fallback_list:
+                    replacement = fallback_list[0]
+                    break
+            existing_sd["image_meta"] = replacement
+
+    updates = {}
+    # When the contributor only reordered prior images (no new uploads),
+    # image_metas is empty but image_order still needs to be applied to the
+    # prior list so the new order persists on the draft.
+    if image_metas or image_order:
+        meta_key = "cover_image_metas" if is_cover else "marking_image_metas"
+        prior = existing_sd.get(meta_key) or existing_sd.get("image_metas") or []
+        if not isinstance(prior, list):
+            prior = []
+        new_metas = list(image_metas or [])
+        merged_metas = list(prior) + new_metas
+        merged_metas = _reorder_metas_by_image_order(
+            merged_metas, new_metas, image_order
+        )
+        updates[meta_key] = merged_metas
+        updates["image_metas"] = merged_metas
+        updates["image_meta"] = (
+            merged_metas[0] if merged_metas else existing_sd.get("image_meta")
+        )
+    return updates
+
+
+def _apply_fresh_edit_image_metas(
+    submitted_data, data, image_metas, *, subject_type, subject_id, meta_key,
+    image_order=None,
+):
+    """
+    Build the FULL desired image set for a PENDING edit submitted fresh (no
+    draft, so edit_pk is None). The database is the source of truth for kept
+    images: query the edit target's existing Image rows, drop the ones the
+    contributor removed (removed_existing_image_keys), convert each kept row
+    into a submitted_data meta record (storage_filename + dimensions + a
+    'tracing' flag derived from existing_image_tags, else the DB is_tracing),
+    put the kept records first, then append the newly uploaded files' records.
+    When image_order is supplied, reorder the combined set to the
+    contributor-chosen sequence (kept images and new uploads may interleave, and
+    any image may become the default at index 0). Store the combined set under
+    meta_key + image_metas + image_meta so approval-time apply (_sync_images)
+    reconciles correctly.
+    """
+    removed_set = set(_parse_removed_image_keys(data.get("removed_existing_image_keys")))
+    existing_tags = _parse_existing_image_tags(data.get("existing_image_tags"))
+
+    kept_records = []
+    rows = Image.objects.filter(
+        subject_type=subject_type, subject_id=subject_id
+    ).order_by("display_order", "image_id")
+    for row in rows:
+        if _storage_filename_removed(row.storage_filename, removed_set):
+            continue
+        tag = _existing_image_tag_value(row.storage_filename, existing_tags)
+        tracing = (tag == "tracing") if tag is not None else bool(row.is_tracing)
+        kept_records.append(
+            {
+                "storage_filename": row.storage_filename,
+                "original_filename": row.original_filename or "",
+                "file_checksum": row.file_checksum or "",
+                "mime_type": row.mime_type or "",
+                "image_width": row.image_width or 0,
+                "image_height": row.image_height or 0,
+                "file_size_bytes": row.file_size_bytes or 0,
+                "image_description": row.image_description or "",
+                "tracing": tracing,
+            }
+        )
+
+    new_metas = list(image_metas or [])
+    combined = kept_records + new_metas
+    combined = _reorder_metas_by_image_order(combined, new_metas, image_order)
+    submitted_data[meta_key] = combined
+    submitted_data["image_metas"] = combined
+    submitted_data["image_meta"] = combined[0] if combined else None
 
 
 ###################################################################################################

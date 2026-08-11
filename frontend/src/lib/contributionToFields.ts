@@ -9,6 +9,12 @@
 // when the backend payload grows.
 
 import type { MarkingFieldInput } from "@/lib/markingFields";
+import { formatRateValue } from "@/lib/rateDisplay";
+import {
+  formatPartialDateInput,
+  partialDateInputFromPayload,
+} from "@/lib/partialDate";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import type { MarkingTypeValue } from "@/services/markings";
 
 export interface ContributionLookups {
@@ -36,6 +42,19 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   "last_seen", "lastSeen",
   "date_range", "dateRange",
   "dates_observed", "datesObserved",
+  // consumed: editor-only ERD/LRD (fall back to these for earliest/latest)
+  "marking_erd", "markingErd",
+  "marking_erd_granularity", "markingErdGranularity",
+  "marking_erd_unknown", "markingErdUnknown",
+  "marking_erd_date_year", "markingErdDateYear",
+  "marking_erd_date_month", "markingErdDateMonth",
+  "marking_erd_date_day", "markingErdDateDay",
+  "marking_lrd", "markingLrd",
+  "marking_lrd_granularity", "markingLrdGranularity",
+  "marking_lrd_unknown", "markingLrdUnknown",
+  "marking_lrd_date_year", "markingLrdDateYear",
+  "marking_lrd_date_month", "markingLrdDateMonth",
+  "marking_lrd_date_day", "markingLrdDateDay",
   // consumed: physical attributes
   "shape", "shape_id", "shapeId",
   "color", "color_id", "colorId",
@@ -58,28 +77,35 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   "comment_for_editor", "commentForEditor",
   "review_notes", "reviewNotes",
   "comment",
+  // ignored: attribution opt-in (rendered outside the catalog field list)
+  "display_submitter_name", "displaySubmitterName",
   // ignored: image payloads (rendered in the carousel above the field list)
   "image_meta",
   "image_metas", "imageMetas",
+  "no_marking_image", "noMarkingImage",
   "marking_images", "markingImages",
   "marking_image_metas", "markingImageMetas",
   "marking_image_tags", "markingImageTags",
   "cover_image_metas", "coverImageMetas",
   "cover_image_tags", "coverImageTags",
-  "postmark_images", "postmarkImages", "PostmarkImages",
   "ratemark_images", "ratemarkImages", "RatemarkImages",
   "auxmark_images", "auxmarkImages", "AuxmarkImages",
   // ignored: bookkeeping that doesn't appear in the field list
-  "original_postmark_id", "originalPostmarkId",
-  // ignored: marking-edit draft bookkeeping. edit_postmark_id is the target
+  "original_marking_id", "originalMarkingId",
+  // ignored: marking-edit draft bookkeeping. edit_marking_id is the target
   // marking; marking_modified_at_baseline is the timestamp captured when the
   // draft was last saved so resume can detect upstream edits.
-  "edit_postmark_id", "editPostmarkId",
+  "edit_marking_id", "editMarkingId",
+  "existing_image_tags", "existingImageTags",
   "marking_modified_at_baseline", "markingModifiedAtBaseline",
   "post_office_id", "postOfficeId",
   "submission_kind", "submissionKind",
   "entity_type", "entityType",
   "routing_deferred", "routingDeferred",
+  "catalog_code", "catalogCode",
+  "catalog_code_source", "catalogCodeSource",
+  "catalog_code_reference_code", "catalogCodeReferenceCode",
+  "catalog_code_region_abbrev", "catalogCodeRegionAbbrev",
   // ignored: submit-mode controls that older rows captured into
   // submitted_data before the backend started stripping them.
   "save_as_draft", "saveAsDraft",
@@ -102,16 +128,20 @@ function normalizeMarkingType(raw: string): MarkingTypeValue | null {
   return null;
 }
 
-function isManuscriptValue(sd: Record<string, unknown>): boolean {
-  return sd.is_manuscript === true || sd.isManuscript === true;
+function booleanValue(value: unknown): boolean | null {
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off", ""].includes(normalized)) return false;
+  }
+  return null;
 }
 
-function formatRateValue(raw: unknown): string {
-  const s = toStr(raw);
-  if (!s) return "";
-  const n = parseFloat(s);
-  if (!Number.isFinite(n)) return "";
-  return (n / 100).toFixed(2);
+function isManuscriptValue(sd: Record<string, unknown>): boolean {
+  return booleanValue(sd.is_manuscript ?? sd.isManuscript) === true;
 }
 
 function yearOnly(value: unknown): string {
@@ -121,25 +151,54 @@ function yearOnly(value: unknown): string {
   return m ? m[1] : s;
 }
 
+function markingBoundaryDate(sd: Record<string, unknown>, prefix: "marking_erd" | "marking_lrd"): string {
+  const camelPrefix = prefix === "marking_erd" ? "markingErd" : "markingLrd";
+  const formatted = formatPartialDateInput(
+    partialDateInputFromPayload(
+      sd,
+      {
+        unknown: `${prefix}_unknown`,
+        year: `${prefix}_date_year`,
+        month: `${prefix}_date_month`,
+        day: `${prefix}_date_day`,
+        legacyDate: prefix,
+        legacyGranularity: `${prefix}_granularity`,
+      },
+      {
+        unknown: `${camelPrefix}Unknown`,
+        year: `${camelPrefix}DateYear`,
+        month: `${camelPrefix}DateMonth`,
+        day: `${camelPrefix}DateDay`,
+        legacyDate: camelPrefix,
+        legacyGranularity: `${camelPrefix}Granularity`,
+      },
+    ),
+  );
+  return formatted;
+}
+
+function firstNonEmpty(...values: unknown[]): string {
+  for (const value of values) {
+    const s = toStr(value);
+    if (s) return s;
+  }
+  return "";
+}
+
 function readEarliestLatest(sd: Record<string, unknown>): { earliest: string; latest: string } {
   const dr = toStr(sd.date_range ?? sd.dateRange);
   const drParts = dr ? dr.split(/\s*-\s*/).map((s) => s.trim()) : [];
-  const e = yearOnly(sd.first_seen ?? sd.firstSeen ?? drParts[0]);
-  const l = yearOnly(sd.last_seen ?? sd.lastSeen ?? drParts[1]);
+  const erd = markingBoundaryDate(sd, "marking_erd");
+  const lrd = markingBoundaryDate(sd, "marking_lrd");
+  const e = erd || yearOnly(firstNonEmpty(sd.first_seen, sd.firstSeen, drParts[0]));
+  const l = lrd || yearOnly(firstNonEmpty(sd.last_seen, sd.lastSeen, drParts[1]));
   return { earliest: e, latest: l };
-}
-
-function isCircleShape(name: string): boolean {
-  const s = name.toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  return s.includes("circle");
 }
 
 function formatDimensions(sd: Record<string, unknown>, shapeName: string, isManuscript: boolean): string {
   const w = toStr(sd.width_mm ?? sd.widthMm);
   const h = toStr(sd.height_mm ?? sd.heightMm);
-  if (!isManuscript && isCircleShape(shapeName)) {
+  if (!isManuscript && isTrueCircleShapeName(shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";
@@ -158,9 +217,7 @@ function readImpression(sd: Record<string, unknown>): string {
 }
 
 function readIsIrreg(sd: Record<string, unknown>): boolean | null {
-  if (sd.is_irreg === true || sd.isIrreg === true || sd.isIrregular === true) return true;
-  if (sd.is_irreg === false || sd.isIrreg === false || sd.isIrregular === false) return false;
-  return null;
+  return booleanValue(sd.is_irreg ?? sd.isIrreg ?? sd.isIrregular);
 }
 
 function readNestedId(value: unknown, snake: string, camel: string): number | undefined {
@@ -259,7 +316,7 @@ export function submittedDataToFieldInput(
     earliestSeen: earliest,
     latestSeen: latest,
     shapeName,
-    rateValFormatted: formatRateValue(sd.rate_val ?? sd.rateVal),
+    rateValFormatted: formatRateValue(toStr(sd.rate_val ?? sd.rateVal)),
     dateFmt: resolveDateFormat(sd, lookups),
     impression: readImpression(sd),
     isIrreg: readIsIrreg(sd),

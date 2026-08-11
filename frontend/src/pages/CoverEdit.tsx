@@ -10,7 +10,7 @@ import {
   Upload,
 } from "lucide-react";
 import axios from "axios";
-import { getContribution, createContribution, abandonCoverContributionDraft } from "@/services/contributions";
+import { getContribution, createContribution } from "@/services/contributions";
 
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
@@ -30,55 +30,37 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
+import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
+import { CoverReviewBanner } from "@/components/CoverReviewBanner";
+import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
+import { COVER_SUBMISSION_GUIDELINES } from "@/labels/guidelines";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import {
   contributionImageMetasFromSubmittedData,
-  fileFromContributionDraftImage,
-  isDraftContributionImage,
   markingImagesFromContributionMetas,
 } from "@/lib/contributionImages";
 
 import {
-  createCover,
-  createCoverDate,
-  createCoverMarking,
-  deleteCoverDate,
-  updateCover,
-  updateCoverDate,
-  updateCoverMarking,
-  type CoverDateGranularity,
-  type CoverWritePayload,
-} from "@/services/covers";
+  partialDateInputFromDateSeen,
+  partialDateInputFromSubmittedData,
+  validatePartialDate,
+  type PartialDateInput,
+} from "@/lib/partialDate";
+import { listCitationsForSubject } from "@/services/citations";
 import {
-  createCitationSubject,
-  deleteCitationSubject,
-  listCitationsForSubject,
-  updateCitationSubject,
-} from "@/services/citations";
-import {
-  createImageForSubject,
   getImagesForSubject,
   getMarkingById,
   getMarkingCovers,
   normalizeImageUrl,
   resolveMarkingRoutingState,
   routingStateFromMarkingRecord,
-  postCoverMarkingResubmit,
-  reorderImages,
-  updateImage,
   type AssociatedCover,
-  type AssociatedDateSeen,
   type MarkingImage,
   type MarkingRecord,
 } from "@/services/markings";
-import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
+import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 
 type Mode = "create" | "edit";
-
-type CoverDateField = {
-  existingId?: number;
-  date: string;
-};
 
 type PendingUpload = {
   key: string;
@@ -86,6 +68,13 @@ type PendingUpload = {
   tracing: boolean;
   previewUrl: string;
 };
+
+// One entry in the combined image gallery. "existing" wraps an already-saved
+// catalog or draft image; "pending" wraps a newly-picked file. Reorder and
+// set-default operate across both kinds in a single ordered list.
+type GalleryItem =
+  | { kind: "existing"; key: string; img: MarkingImage }
+  | { kind: "pending"; key: string; upload: PendingUpload };
 
 type ReferenceDetailInput = {
   pageNumber: string;
@@ -101,8 +90,23 @@ const COVER_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "FC", label: "FC - Folded Cover" },
   { value: "FL", label: "FL - Folded Letter" },
 ];
+const COVER_MONTH_OPTIONS = [
+  { value: "1", label: "JAN" },
+  { value: "2", label: "FEB" },
+  { value: "3", label: "MAR" },
+  { value: "4", label: "APR" },
+  { value: "5", label: "MAY" },
+  { value: "6", label: "JUN" },
+  { value: "7", label: "JUL" },
+  { value: "8", label: "AUG" },
+  { value: "9", label: "SEP" },
+  { value: "10", label: "OCT" },
+  { value: "11", label: "NOV" },
+  { value: "12", label: "DEC" },
+];
 
 const DEFAULT_COVER_TYPE = "FL";
+const EMPTY_COVER_DATE: PartialDateInput = { unknown: false, year: "", month: "", day: "" };
 
 const MAX_IMAGE_SIZE_MB = 100;
 const ALLOWED_IMAGE_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/tiff"];
@@ -120,26 +124,6 @@ function formatAxiosError(err: unknown): string {
   return err.message || "Request failed.";
 }
 
-function deriveGranularityFromIso(iso: string): { granularity: CoverDateGranularity; normalizedDate: string } | null {
-  const trimmed = iso.trim();
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
-  if (!m) return null;
-  const y = Number(m[1]);
-  const month = Number(m[2]);
-  const day = Number(m[3]);
-  if (!Number.isFinite(y) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-  if (month < 1 || month > 12 || day < 1 || day > 31) return null;
-
-  const normalizedDate = `${m[1]}-${m[2]}-${m[3]}`;
-  if (month === 1 && day === 1) {
-    return { granularity: "YEAR", normalizedDate: `${y}-01-01` };
-  }
-  if (day === 1) {
-    return { granularity: "MONTH", normalizedDate: `${y}-${String(month).padStart(2, "0")}-01` };
-  }
-  return { granularity: "DAY", normalizedDate };
-}
-
 function normalizeCoverType(raw: string | null | undefined): string {
   return raw === "FC" || raw === "FL" ? raw : DEFAULT_COVER_TYPE;
 }
@@ -147,44 +131,23 @@ function normalizeCoverType(raw: string | null | undefined): string {
 function buildEditState(cover: AssociatedCover | null | undefined) {
   const c = cover?.coverDetails ?? null;
   const seen = c?.datesSeen ?? [];
-  const sorted = [...seen].sort((a, b) => a.date.localeCompare(b.date));
+  const sorted = [...seen].sort((a, b) => String(a.date ?? "").localeCompare(String(b.date ?? "")));
   const primary = sorted[0];
-  const coverDate: CoverDateField =
-    primary != null ? { existingId: primary.id, date: primary.date.slice(0, 10) } : { date: "" };
+  const coverDate: PartialDateInput =
+    primary != null ? partialDateInputFromDateSeen(primary) : { ...EMPTY_COVER_DATE };
 
   return {
     type: normalizeCoverType(c?.type ?? null),
     isInstitutional: c?.isInstitutional === true,
     isBackstamp: cover?.isBackstamp === true,
+    displaySubmitterName: c?.displaySubmitterName === true,
+    description: c?.description ?? "",
     coverDate,
   };
 }
 
 function fileKey(file: File) {
   return `${file.name}-${file.size}-${file.lastModified}`;
-}
-
-function formatReferenceWorkForReferences(
-  work: ReferenceWorkRecord,
-  detail?: ReferenceDetailInput,
-): string {
-  const parts: string[] = [];
-  if (work.title?.trim()) parts.push(`Title: ${work.title.trim()}`);
-  if (work.authorship?.trim()) parts.push(`Authorship: ${work.authorship.trim()}`);
-  if (work.publisher?.trim()) parts.push(`Publisher: ${work.publisher.trim()}`);
-  if (work.publicationYear != null) parts.push(`Publication year: ${work.publicationYear}`);
-  if (work.edition?.trim()) parts.push(`Edition: ${work.edition.trim()}`);
-  if (work.volume?.trim()) parts.push(`Volume: ${work.volume.trim()}`);
-  if (work.isbn?.trim()) parts.push(`Isbn: ${work.isbn.trim()}`);
-  if (work.url?.trim()) parts.push(`Url: ${work.url.trim()}`);
-  if (detail?.pageNumber?.trim()) parts.push(`Page number: ${detail.pageNumber.trim()}`);
-  if (detail?.citationUrl?.trim()) parts.push(`Citation url: ${detail.citationUrl.trim()}`);
-  return parts.join("\n");
-}
-
-function citationDetailForApi(work: ReferenceWorkRecord, detail?: ReferenceDetailInput): string {
-  const raw = formatReferenceWorkForReferences(work, detail);
-  return raw.length <= 500 ? raw : `${raw.slice(0, 497)}...`;
 }
 
 function parseCitationDetailBlob(text: string): ReferenceDetailInput {
@@ -215,17 +178,57 @@ const COVER_FIELD_SCROLL_ORDER: Array<{ key: keyof FieldErrorsShape; id: string 
   { key: "contributorComment", id: "contributor-comment" },
 ];
 
-function scrollToFirstFieldError(errors: FieldErrorsShape) {
+function getFocusableTarget(el: HTMLElement): HTMLElement {
+  const primarySelector =
+    "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role='combobox']:not([disabled])";
+  if (el.matches(primarySelector)) {
+    return el;
+  }
+
+  const primary = el.querySelector<HTMLElement>(primarySelector);
+  if (primary) return primary;
+
+  return el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? el;
+}
+
+function scrollAndFocusElement(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const focusable = getFocusableTarget(el);
+  if (typeof focusable.focus === "function") {
+    window.setTimeout(() => focusable.focus(), 300);
+  }
+  return true;
+}
+
+function scrollToFirstReferenceDetailError(
+  selectedReferenceWorks: ReferenceWorkRecord[],
+  errors: Record<number, ReferenceDetailFieldErrors>,
+): boolean {
+  for (const work of selectedReferenceWorks) {
+    const rowErrors = errors[work.id];
+    if (!rowErrors) continue;
+    const id = rowErrors.pageNumber ? `cover-reference-page-${work.id}` : `cover-reference-url-${work.id}`;
+    if (scrollAndFocusElement(document.getElementById(id))) return true;
+  }
+  return false;
+}
+
+function scrollToFirstFieldError(
+  errors: FieldErrorsShape,
+  referenceDetailErrors: Record<number, ReferenceDetailFieldErrors>,
+  selectedReferenceWorks: ReferenceWorkRecord[],
+) {
   for (const { key, id } of COVER_FIELD_SCROLL_ORDER) {
     if (!errors[key]) continue;
-    const el = document.getElementById(id);
-    if (!el) continue;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    const focusable = el as HTMLElement & { focus?: () => void };
-    if (typeof focusable.focus === "function") {
-      window.setTimeout(() => focusable.focus?.(), 300);
+    if (
+      key === "referenceWorks" &&
+      scrollToFirstReferenceDetailError(selectedReferenceWorks, referenceDetailErrors)
+    ) {
+      return;
     }
-    return;
+    const el = document.getElementById(id);
+    if (scrollAndFocusElement(el)) return;
   }
 }
 
@@ -252,16 +255,33 @@ export default function CoverEdit() {
   const [draftLoadError, setDraftLoadError] = useState<string | null>(null);
   const [coverRow, setCoverRow] = useState<AssociatedCover | null>(null);
   const [markingRecord, setMarkingRecord] = useState<MarkingRecord | null>(null);
+  // Review state of a contribution resumed via ?edit=<id>. `mode` is "edit" only when the
+  // route carries a coverId, but the dashboard sends a needs-revision cover to
+  // /record/:id/cover/new?edit=<id> — i.e. create mode — so coverRow is never loaded on
+  // the one path contributors actually take. Without this, the editor's feedback is
+  // invisible to the person being asked to act on it.
+  const [draftReview, setDraftReview] = useState<{
+    status: string;
+    reviewNotes: string | null;
+  } | null>(null);
 
   const initial = useMemo(
     () => (mode === "edit" ? buildEditState(coverRow) : null),
     [mode, coverRow],
   );
 
+  // Review banners must work on both routes into this page: /cover/:coverId/edit (coverRow)
+  // and /cover/new?edit=<contributionId> (draftReview).
+  const reviewStatus = mode === "edit" ? coverRow?.reviewStatus ?? null : draftReview?.status ?? null;
+  const reviewNotes = mode === "edit" ? coverRow?.reviewNotes ?? null : draftReview?.reviewNotes ?? null;
+
   const [type, setType] = useState(mode === "create" ? "" : DEFAULT_COVER_TYPE);
   const [isInstitutional, setIsInstitutional] = useState(false);
   const [isBackstamp, setIsBackstamp] = useState(false);
-  const [coverDate, setCoverDate] = useState<CoverDateField>({ date: "" });
+  const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
+  const [description, setDescription] = useState("");
+  const [coverDate, setCoverDate] = useState<PartialDateInput>({ ...EMPTY_COVER_DATE });
+  const [noCoverImage, setNoCoverImage] = useState(false);
 
   const [fieldErrors, setFieldErrors] = useState<FieldErrorsShape>({});
   const [referenceDetailErrorsById, setReferenceDetailErrorsById] = useState<
@@ -273,13 +293,27 @@ export default function CoverEdit() {
   const [submitting, setSubmitting] = useState(false);
 
   const coverId = coverRow?.coverDetails?.id ?? null;
-  const [existingImages, setExistingImages] = useState<MarkingImage[]>([]);
+  // Single ordered gallery: already-saved images interleaved with new uploads.
+  // Reorder + set-default operate across the whole list; the chosen order is sent
+  // as image_order and applied at approval (see backend
+  // _reorder_metas_by_image_order in common/api/v2/views.py). The edit form never
+  // writes to the catalog directly.
+  const [gallery, setGallery] = useState<GalleryItem[]>([]);
   const [imagesLoading, setImagesLoading] = useState(false);
-  const [reorderingImages, setReorderingImages] = useState(false);
+  // Catalog image URLs the contributor removed during this edit session. Sent as
+  // removed_existing_image_keys so the catalog image is dropped on approval.
+  const [removedExistingImageKeys, setRemovedExistingImageKeys] = useState<string[]>([]);
+  // Gallery keys whose pixel dimensions read as a marking closeup rather than a
+  // cover scan (issue #76). Keyed rather than flagged on the item so removing
+  // an image drops it from the count for free.
+  const [markingLikeImageKeys, setMarkingLikeImageKeys] = useState<string[]>([]);
+  const [wrongImageKindAcknowledged, setWrongImageKindAcknowledged] = useState(false);
+  const markingLikeImageCount = useMemo(
+    () => gallery.filter((item) => markingLikeImageKeys.includes(item.key)).length,
+    [gallery, markingLikeImageKeys],
+  );
 
   const inputRef = useRef<HTMLInputElement | null>(null);
-  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
-  const [uploading, setUploading] = useState(false);
   const [dropActive, setDropActive] = useState(false);
 
   const [referenceWorks, setReferenceWorks] = useState<ReferenceWorkRecord[]>([]);
@@ -299,6 +333,7 @@ export default function CoverEdit() {
     if (editContributionId == null || mode !== "create") {
       setDraftLoadDone(true);
       setDraftLoadError(null);
+      setDraftReview(null);
       return;
     }
     let cancelled = false;
@@ -307,6 +342,12 @@ export default function CoverEdit() {
     void (async () => {
       try {
         const contribution = await getContribution(editContributionId);
+        if (!cancelled) {
+          setDraftReview({
+            status: String(contribution.status ?? "").toLowerCase(),
+            reviewNotes: contribution.reviewNotes ?? null,
+          });
+        }
         const sd = contribution.submittedData as Record<string, unknown> | undefined;
         if (!sd || typeof sd !== "object" || !isCoverContributionData(sd)) {
           if (!cancelled) {
@@ -317,10 +358,16 @@ export default function CoverEdit() {
         }
         const typeVal = String(sd.type ?? "").trim().toUpperCase();
         if (typeVal === "FC" || typeVal === "FL") setType(typeVal);
-        const rawDate = String(sd.cover_date ?? sd.coverDate ?? "").trim();
-        if (rawDate) setCoverDate({ date: rawDate.slice(0, 10) });
+        const draftDate = partialDateInputFromSubmittedData(sd);
+        if (draftDate.unknown || draftDate.year || draftDate.month || draftDate.day) {
+          setCoverDate(draftDate);
+        }
         setIsInstitutional(String(sd.is_institutional ?? sd.isInstitutional) === "true");
         setIsBackstamp(String(sd.is_backstamp ?? sd.isBackstamp) === "true");
+        setDisplaySubmitterName(String(sd.display_submitter_name ?? sd.displaySubmitterName) === "true");
+        setDescription(String(sd.description ?? ""));
+        const loadedNoCoverImage = String(sd.no_cover_image ?? sd.noCoverImage) === "true";
+        setNoCoverImage(loadedNoCoverImage);
         const comment = String(sd.contributor_comment ?? sd.comment_for_editor ?? "").trim();
         if (comment) setContributorComment(comment);
 
@@ -335,7 +382,7 @@ export default function CoverEdit() {
 
         const metas = contributionImageMetasFromSubmittedData(sd);
         const draftImages = markingImagesFromContributionMetas(metas, markingId);
-        if (draftImages.length > 0) {
+        if (!loadedNoCoverImage && draftImages.length > 0) {
           const tagsRaw = sd.cover_image_tags ?? sd.coverImageTags;
           let tags: string[] = [];
           if (typeof tagsRaw === "string") {
@@ -348,10 +395,11 @@ export default function CoverEdit() {
           } else if (Array.isArray(tagsRaw)) {
             tags = tagsRaw.map((t) => String(t));
           }
-          setExistingImages(
+          setGallery(
             draftImages.map((img, i) => ({
-              ...img,
-              isTracing: tags[i] === "tracing",
+              kind: "existing" as const,
+              key: normalizeImageUrl(img.imageUrl),
+              img: { ...img, isTracing: tags[i] === "tracing" },
             })),
           );
         }
@@ -367,20 +415,26 @@ export default function CoverEdit() {
     return () => {
       cancelled = true;
     };
-  }, [editContributionId, mode, referenceWorks]);
+  }, [editContributionId, markingId, mode, referenceWorks]);
 
   useEffect(() => {
     if (mode !== "edit" || !initial) return;
     setType(initial.type);
     setIsInstitutional(initial.isInstitutional);
     setIsBackstamp(initial.isBackstamp);
+    setDisplaySubmitterName(initial.displaySubmitterName);
+    setDescription(initial.description);
     setCoverDate(initial.coverDate);
+    setNoCoverImage(false);
   }, [mode, initial]);
 
+  const coverRowId = coverRow?.id;
+  const coverContributorComment = coverRow?.contributorComment;
+
   useEffect(() => {
-    if (!coverRow) return;
-    setContributorComment(coverRow.contributorComment ?? "");
-  }, [coverRow?.id]);
+    if (coverRowId == null) return;
+    setContributorComment(coverContributorComment ?? "");
+  }, [coverRowId, coverContributorComment]);
 
   useEffect(() => {
     let cancelled = false;
@@ -494,7 +548,13 @@ export default function CoverEdit() {
     setImagesLoading(true);
     try {
       const imgs = await getImagesForSubject({ subjectType: "COVER", subjectId: coverId });
-      setExistingImages(imgs);
+      setGallery(
+        imgs.map((img) => ({
+          kind: "existing" as const,
+          key: normalizeImageUrl(img.imageUrl),
+          img,
+        })),
+      );
     } finally {
       setImagesLoading(false);
     }
@@ -518,42 +578,103 @@ export default function CoverEdit() {
     navigate(returnPath());
   };
 
+  const handleCancelEditing = () => {
+    navigate(returnPath());
+  };
+
   const mergePickedFiles = (files: FileList | File[] | null) => {
     if (!files || (Array.isArray(files) && files.length === 0)) return;
     const list = Array.isArray(files) ? files : Array.from(files);
-    const next: PendingUpload[] = [];
+    const next: GalleryItem[] = [];
     for (const file of list) {
       const mime = (file.type || "").toLowerCase();
       if (!ALLOWED_IMAGE_TYPES.includes(mime)) continue;
       if (file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024) continue;
+      const key = fileKey(file);
       next.push({
-        key: fileKey(file),
-        file,
-        tracing: false,
-        previewUrl: URL.createObjectURL(file),
+        kind: "pending",
+        key,
+        upload: { key, file, tracing: false, previewUrl: URL.createObjectURL(file) },
       });
     }
     if (next.length === 0) return;
-    setPendingUploads((prev) => {
+    setNoCoverImage(false);
+    setGallery((prev) => {
       const seen = new Set(prev.map((p) => p.key));
       const additions = next.filter((p) => !seen.has(p.key));
       return [...prev, ...additions];
     });
     setFieldErrors((prev) => ({ ...prev, images: undefined }));
     if (inputRef.current) inputRef.current.value = "";
+    // The inverse of the marking form's check (issue #76): a small, square
+    // image on the cover form is probably a marking closeup. Best-effort --
+    // an image that will not decode is left alone.
+    for (const item of next) {
+      if (item.kind !== "pending") continue;
+      const { key, upload } = item;
+      void measureImageFile(upload.file).then((dimensions) => {
+        if (!dimensions || !looksLikeWrongKind(dimensions, "COVER")) return;
+        setMarkingLikeImageKeys((prev) =>
+          prev.includes(key) ? prev : [...prev, key],
+        );
+      });
+    }
   };
 
-  const removePendingAt = (index: number) => {
-    setPendingUploads((prev) => {
-      const row = prev[index];
-      if (row) URL.revokeObjectURL(row.previewUrl);
+  // Reorder + set-default + tracing + remove all act on the single combined
+  // gallery, so they work uniformly across already-saved and newly-picked images.
+  const removeGalleryAt = (index: number) => {
+    setGallery((prev) => {
+      const item = prev[index];
+      if (!item) return prev;
+      if (item.kind === "pending") {
+        URL.revokeObjectURL(item.upload.previewUrl);
+      } else {
+        // Both catalog images and draft previews carry a media URL whose tail is
+        // the storage_filename; the backend tail-matches removed keys against it,
+        // so the same key works for a published-cover edit and a draft resume.
+        const key = normalizeImageUrl(item.img.imageUrl);
+        if (key) {
+          setRemovedExistingImageKeys((keys) => (keys.includes(key) ? keys : [...keys, key]));
+        }
+      }
       return prev.filter((_, i) => i !== index);
     });
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
   };
 
-  const movePendingBy = (index: number, delta: -1 | 1) => {
+  const setNoCoverImageChecked = (checked: boolean) => {
+    setNoCoverImage(checked);
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    if (!checked) return;
+    setGallery((prev) => {
+      const removed = prev
+        .filter(
+          (item): item is Extract<GalleryItem, { kind: "existing" }> =>
+            item.kind === "existing",
+        )
+        .map((item) => normalizeImageUrl(item.img.imageUrl))
+        .filter((url) => url.length > 0);
+      if (removed.length > 0) {
+        setRemovedExistingImageKeys((keys) => {
+          const next = [...keys];
+          for (const url of removed) {
+            if (!next.includes(url)) next.push(url);
+          }
+          return next;
+        });
+      }
+      for (const item of prev) {
+        if (item.kind === "pending") URL.revokeObjectURL(item.upload.previewUrl);
+      }
+      return [];
+    });
+    if (inputRef.current) inputRef.current.value = "";
+  };
+
+  const moveGalleryBy = (index: number, delta: -1 | 1) => {
     const target = index + delta;
-    setPendingUploads((prev) => {
+    setGallery((prev) => {
       if (target < 0 || target >= prev.length) return prev;
       const next = prev.slice();
       [next[index], next[target]] = [next[target], next[index]];
@@ -561,9 +682,10 @@ export default function CoverEdit() {
     });
   };
 
-  const setPendingAsDefault = (index: number) => {
+  const setGalleryDefault = (index: number) => {
     if (index <= 0) return;
-    setPendingUploads((prev) => {
+    setGallery((prev) => {
+      if (index >= prev.length) return prev;
       const next = prev.slice();
       const [picked] = next.splice(index, 1);
       next.unshift(picked);
@@ -571,124 +693,15 @@ export default function CoverEdit() {
     });
   };
 
-  const setPendingTracingAt = (index: number, tracing: boolean) => {
-    setPendingUploads((prev) => prev.map((row, i) => (i === index ? { ...row, tracing } : row)));
-  };
-
-  const applyExistingImageOrder = async (newImages: MarkingImage[]) => {
-    if (reorderingImages) return;
-    const ids = newImages.map((img) => img.imageId).filter((id) => id > 0);
-    if (ids.length === 0) {
-      setExistingImages(newImages.map((img, idx) => ({ ...img, displayOrder: idx })));
-      return;
-    }
-    setReorderingImages(true);
-    setExistingImages(newImages.map((img, idx) => ({ ...img, displayOrder: idx })));
-    try {
-      const ok = await reorderImages(ids);
-      if (!ok) {
-        toast({
-          title: "Reorder failed",
-          description: "Could not save the new image order. Refreshing from the server.",
-          variant: "destructive",
-        });
-      }
-      await refreshImages();
-    } finally {
-      setReorderingImages(false);
-    }
-  };
-
-  const moveExistingImageBy = (index: number, delta: -1 | 1) => {
-    const target = index + delta;
-    if (target < 0 || target >= existingImages.length) return;
-    const next = existingImages.slice();
-    [next[index], next[target]] = [next[target], next[index]];
-    void applyExistingImageOrder(next);
-  };
-
-  const setExistingAsDefault = (index: number) => {
-    if (index <= 0) return;
-    const next = existingImages.slice();
-    const [picked] = next.splice(index, 1);
-    next.unshift(picked);
-    void applyExistingImageOrder(next);
-  };
-
-  const toggleExistingTracing = async (index: number, tracing: boolean) => {
-    const img = existingImages[index];
-    if (!img) return;
-    if (isDraftContributionImage(img.imageId)) {
-      setExistingImages((prev) => prev.map((row, i) => (i === index ? { ...row, isTracing: tracing } : row)));
-      return;
-    }
-    const ok = await updateImage(img.imageId, { isTracing: tracing });
-    if (!ok) {
-      toast({
-        title: "Could not update image",
-        description: "Please try again.",
-        variant: "destructive",
-      });
-      return;
-    }
-    setExistingImages((prev) => prev.map((row, i) => (i === index ? { ...row, isTracing: tracing } : row)));
-  };
-
-  /** Materialize draft contribution previews and new picks onto the Cover row. */
-  const uploadAllCoverImagesOrThrow = async (targetCoverId: number) => {
-    if (uploading) return;
-    const draftImages = existingImages
-      .filter((img) => isDraftContributionImage(img.imageId))
-      .sort((a, b) => a.displayOrder - b.displayOrder);
-    if (draftImages.length === 0 && pendingUploads.length === 0) return;
-
-    setUploading(true);
-    try {
-      let displayOrder = existingImages.filter((img) => img.imageId > 0).length;
-      const created: Array<MarkingImage | null> = [];
-
-      for (const img of draftImages) {
-        const file = await fileFromContributionDraftImage(img);
-        const row = await createImageForSubject({
-          file,
-          subjectType: "COVER",
-          subjectId: targetCoverId,
-          imageView: "FRONT",
-          isTracing: img.isTracing === true,
-          displayOrder,
-        });
-        created.push(row);
-        if (row) displayOrder += 1;
-      }
-
-      for (let i = 0; i < pendingUploads.length; i += 1) {
-        const row = pendingUploads[i];
-        const img = await createImageForSubject({
-          file: row.file,
-          subjectType: "COVER",
-          subjectId: targetCoverId,
-          imageView: "FRONT",
-          isTracing: row.tracing,
-          displayOrder: displayOrder + i,
-        });
-        created.push(img);
-      }
-
-      const okCount = created.filter(Boolean).length;
-      const expected = draftImages.length + pendingUploads.length;
-      if (expected > 0 && okCount === 0) {
-        throw new Error("Could not upload cover images. Check format (PNG, JPG, TIFF) and try again.");
-      }
-      if (okCount < expected) {
-        throw new Error("Some cover images could not be uploaded. Please try again.");
-      }
-
-      pendingUploads.forEach((p) => URL.revokeObjectURL(p.previewUrl));
-      setPendingUploads([]);
-      setExistingImages((prev) => prev.filter((img) => !isDraftContributionImage(img.imageId)));
-    } finally {
-      setUploading(false);
-    }
+  const setGalleryTracingAt = (index: number, tracing: boolean) => {
+    setGallery((prev) =>
+      prev.map((item, i) => {
+        if (i !== index) return item;
+        return item.kind === "pending"
+          ? { ...item, upload: { ...item.upload, tracing } }
+          : { ...item, img: { ...item.img, isTracing: tracing } };
+      }),
+    );
   };
 
   const validateForm = (saveAsDraft: boolean): boolean => {
@@ -703,15 +716,19 @@ export default function CoverEdit() {
     if (!type.trim()) {
       errors.type = "Cover type is required.";
     }
-    const trimmedDate = (coverDate.date ?? "").trim();
-    if (!trimmedDate) {
-      errors.date = "Date is required.";
-    } else if (!deriveGranularityFromIso(trimmedDate)) {
-      errors.date = "Enter a complete calendar date.";
+    const dateResult = validatePartialDate(coverDate);
+    if (dateResult.ok === false) {
+      errors.date = dateResult.error;
     }
-    const imageCount = existingImages.length + pendingUploads.length;
-    if (imageCount < 1) {
-      errors.images = "At least one cover image is required.";
+    const imageCount = gallery.length;
+    if (imageCount < 1 && !noCoverImage) {
+      errors.images = "Add at least one cover image or confirm no image is available.";
+    } else if (markingLikeImageCount > 0 && !wrongImageKindAcknowledged) {
+      // Cleared by ticking the acknowledgement in WrongImageKindWarning or by
+      // removing the image -- never a hard block (issue #76). Unreachable when
+      // the gallery is empty, so the no-image opt-out above always wins.
+      errors.images =
+        "Confirm the highlighted image is correct, or remove it, before submitting.";
     }
 
     for (const work of selectedReferenceWorks) {
@@ -754,49 +771,28 @@ export default function CoverEdit() {
 
     setFieldErrors(errors);
     if (Object.keys(errors).length > 0) {
-      scrollToFirstFieldError(errors);
+      scrollToFirstFieldError(errors, referenceDetailErrors, selectedReferenceWorks);
       return false;
     }
     return true;
   };
 
-  const syncCoverCitations = async (savedCoverPk: number) => {
-    const existing = await listCitationsForSubject({ subjectType: "COVER", subjectId: savedCoverPk });
-    const byRef = new Map(existing.map((r) => [r.referenceWorkId, r]));
-    const selectedIds = new Set(selectedReferenceWorks.map((w) => w.id));
-
-    for (const row of existing) {
-      if (!selectedIds.has(row.referenceWorkId)) {
-        const ok = await deleteCitationSubject(row.id);
-        if (!ok) throw new Error("Could not update reference citations.");
-      }
-    }
-    for (const work of selectedReferenceWorks) {
-      const text = citationDetailForApi(work, referenceDetailsById[work.id]);
-      const prev = byRef.get(work.id);
-      if (prev) {
-        if (prev.citationDetail !== text) {
-          const ok = await updateCitationSubject(prev.id, text);
-          if (!ok) throw new Error("Could not update reference citations.");
-        }
-      } else {
-        const created = await createCitationSubject({
-          referenceWorkId: work.id,
-          subjectType: "COVER",
-          subjectId: savedCoverPk,
-          citationDetail: text,
-        });
-        if (!created) throw new Error("Could not create reference citations.");
-      }
-    }
-  };
-
-  const handleSaveDraft = async () => {
+  // Save a cover draft (asDraft=true) or submit it for editor review (asDraft=false).
+  // Both create a Contribution via createContribution; only the save_as_draft flag and
+  // the post-success toast/navigation differ. A submitted cover goes through the same
+  // review queue as a marking, so it appears under My Submissions (contributor) and the
+  // editor pending-review queue -- not directly on the marking record. The backend sets
+  // status=pending when save_as_draft is absent and materializes the Cover + CoverMarking
+  // on approval (see backend ContributionViewSet.approve / contribution_apply.py).
+  const submitCoverContribution = async (asDraft: boolean) => {
     if (!user) {
-      toast({ title: "Sign in required", description: "Please sign in to save a draft.", variant: "destructive" });
+      toast({
+        title: "Sign in required",
+        description: asDraft ? "Please sign in to save a draft." : "Please sign in before submitting.",
+        variant: "destructive",
+      });
       return;
     }
-    if (mode !== "create") return;
     if (!Number.isFinite(markingId) || markingId <= 0) {
       toast({
         title: "Invalid marking",
@@ -819,7 +815,9 @@ export default function CoverEdit() {
     if (!stateRoute) {
       stateRoute = await resolveMarkingRoutingState(markingId);
     }
-    const oversized = pendingUploads.filter((p) => p.file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024);
+    const oversized = gallery.filter(
+      (item) => item.kind === "pending" && item.upload.file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024,
+    );
     if (oversized.length) {
       toast({
         title: "Image too large",
@@ -828,13 +826,13 @@ export default function CoverEdit() {
       });
       return;
     }
-    if (!validateForm(true)) return;
+    if (!validateForm(asDraft)) return;
 
     setSubmitting(true);
     try {
       const form = new FormData();
       form.append("submission_kind", "cover");
-      form.append("save_as_draft", "true");
+      if (asDraft) form.append("save_as_draft", "true");
       if (editContributionId != null) {
         form.append("edit_contribution_id", String(editContributionId));
       }
@@ -844,14 +842,26 @@ export default function CoverEdit() {
       form.append("parent_marking_id", String(markingId));
       form.append("marking_id", String(markingId));
       if (type.trim()) form.append("type", type.trim().toUpperCase());
-      const trimmedDate = coverDate.date.trim();
-      const derived = deriveGranularityFromIso(trimmedDate);
-      if (derived) {
-        form.append("cover_date", derived.normalizedDate);
-        form.append("cover_granularity", derived.granularity);
+      if (coverDate.unknown) {
+        form.append("cover_date_unknown", "true");
+      } else {
+        const rawYear = coverDate.year.trim();
+        const rawMonth = coverDate.month.trim();
+        const rawDay = coverDate.day.trim();
+        if (rawYear) form.append("cover_date_year", rawYear);
+        if (rawMonth) form.append("cover_date_month", rawMonth);
+        if (rawDay) form.append("cover_date_day", rawDay);
+        const parsedDate = validatePartialDate(coverDate);
+        if (parsedDate.ok && parsedDate.value.legacyDate && parsedDate.value.legacyGranularity) {
+          form.append("cover_date", parsedDate.value.legacyDate);
+          form.append("cover_granularity", parsedDate.value.legacyGranularity);
+        }
       }
       form.append("is_institutional", String(isInstitutional));
       form.append("is_backstamp", String(isBackstamp));
+      form.append("display_submitter_name", String(displaySubmitterName));
+      if (noCoverImage) form.append("no_cover_image", "true");
+      form.append("description", description.trim());
       const trimmedComment = contributorComment.trim();
       if (trimmedComment) {
         form.append("contributor_comment", trimmedComment);
@@ -866,22 +876,78 @@ export default function CoverEdit() {
         }));
         form.append("reference_work_details", JSON.stringify(payload));
       }
-      const tracingTags = pendingUploads.map((p) => (p.tracing ? "tracing" : "photograph"));
+      // Walk the combined gallery in display order: append each new-upload file
+      // with its positional tracing tag, and emit an image_order token per image
+      // (the existing image's key, or "__new__" for a new upload). The backend
+      // rebuilds the saved metas list in this order so display_order at approval
+      // matches the on-screen order (and index 0 becomes the catalog default).
+      const tracingTags: string[] = [];
+      const imageOrder: string[] = [];
+      for (const item of gallery) {
+        if (item.kind === "pending") {
+          form.append("cover_image", item.upload.file, item.upload.file.name);
+          tracingTags.push(item.upload.tracing ? "tracing" : "photograph");
+          imageOrder.push("__new__");
+        } else {
+          imageOrder.push(item.key);
+        }
+      }
       form.append("cover_image_tags", JSON.stringify(tracingTags));
-      for (const row of pendingUploads) {
-        form.append("cover_image", row.file, row.file.name);
+      form.append("image_order", JSON.stringify(imageOrder));
+
+      // Existing-image removals apply on approval in both flows: the fresh
+      // published-cover edit (edit_cover_id) and the draft-resume merge
+      // (edit_contribution_id). Harmless no-op for a brand-new cover (empty list).
+      if (removedExistingImageKeys.length > 0) {
+        form.append("removed_existing_image_keys", JSON.stringify(removedExistingImageKeys));
+      }
+
+      if (mode === "edit" && coverRow?.coverDetails) {
+        // Edit markers: the backend updates the existing Cover/CoverMarking in
+        // place on approval (no duplicate) -- see backend/common/api/v2/views.py
+        // _apply_fresh_edit_image_metas and contribution_apply.py _apply_cover_edit.
+        form.append("edit_cover_id", String(coverRow.coverDetails.id));
+        form.append("edit_cover_marking_id", String(coverRow.id));
+        // existing_image_tags: {url: "tracing"|"photograph"} over retained catalog
+        // images (imageId > 0). Emit every kept image (not just tracings) so
+        // unchecking Tracing flips the value back to photograph; the backend
+        // tail-matches each URL against Image.storage_filename.
+        const existingTagMap: Record<string, string> = {};
+        for (const item of gallery) {
+          if (item.kind === "existing" && item.img.imageId > 0) {
+            existingTagMap[normalizeImageUrl(item.img.imageUrl)] =
+              item.img.isTracing ? "tracing" : "photograph";
+          }
+        }
+        if (Object.keys(existingTagMap).length > 0) {
+          form.append("existing_image_tags", JSON.stringify(existingTagMap));
+        }
       }
 
       await createContribution(form);
 
-      toast({
-        title: editContributionId != null ? "Cover draft updated" : "Cover draft saved",
-        description: "Your draft is listed under Associated Covers on this marking.",
-      });
-      navigate(`/record/${markingId}`);
+      if (asDraft) {
+        toast({
+          title: editContributionId != null ? "Cover draft updated" : "Cover draft saved",
+          description: "Your draft is saved and available in your Dashboard under My Submissions.",
+        });
+        // Return to wherever the editor opened this form from (dashboard, record,
+        // or contribution detail); returnPath honors location.state.from and
+        // falls back to the parent marking record.
+        navigate(returnPath());
+      } else {
+        toast({
+          title: mode === "edit" ? "Cover edit submitted for review" : "Cover submitted",
+          description:
+            mode === "edit"
+              ? "Your changes have been submitted for approval. The published cover updates after an editor approves them."
+              : "Your cover has been submitted for approval. It will appear on this marking after an editor approves it.",
+        });
+        navigate("/dashboard", { state: { tab: "submissions" } });
+      }
     } catch (err) {
       toast({
-        title: "Could not save draft",
+        title: asDraft ? "Could not save draft" : "Could not submit cover",
         description: formatAxiosError(err),
         variant: "destructive",
       });
@@ -890,162 +956,12 @@ export default function CoverEdit() {
     }
   };
 
-  const handleSubmitCatalog = async (e: FormEvent) => {
+  // Route the form's submit button. Both new covers and edits go through the
+  // editor review queue (submitCoverContribution); nothing writes to the catalog
+  // directly -- approval applies the change (and updates edits in place).
+  const handleFormSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (submitting) return;
-    if (!user) {
-      toast({ title: "Sign in required", description: "Please sign in before submitting.", variant: "destructive" });
-      return;
-    }
-    if (!validateForm(false)) return;
-
-    const trimmedDate = coverDate.date.trim();
-    const derived = deriveGranularityFromIso(trimmedDate);
-    if (!derived) return;
-
-    const { granularity, normalizedDate } = derived;
-
-    const coverType = normalizeCoverType(type);
-    const coverPayload: CoverWritePayload = {
-      type: coverType,
-      color: null,
-      has_adhesive: false,
-      is_institutional: isInstitutional,
-      width: null,
-      height: null,
-    };
-
-    const trimmedComment = contributorComment.trim();
-
-    const oversized = pendingUploads.filter((p) => p.file.size > MAX_IMAGE_SIZE_MB * 1024 * 1024);
-    if (oversized.length) {
-      toast({
-        title: "Image too large",
-        description: `Use images under ${MAX_IMAGE_SIZE_MB}MB.`,
-        variant: "destructive",
-      });
-      return;
-    }
-
-    setSubmitting(true);
-    try {
-      let savedCoverId: number;
-      let coverMarkingPk: number;
-      let originalDates: AssociatedDateSeen[] = [];
-
-      if (mode === "create") {
-        const created = await createCover(coverPayload);
-        savedCoverId = created.id;
-        const link = await createCoverMarking({
-          cover: savedCoverId,
-          marking: markingId,
-          is_backstamp: isBackstamp,
-          placement: null,
-          contributor_comment: trimmedComment,
-        });
-        coverMarkingPk = link.id;
-      } else {
-        if (!coverRow || !coverRow.coverDetails) {
-          throw new Error("Cannot edit cover: missing cover details.");
-        }
-        savedCoverId = coverRow.coverDetails.id;
-        coverMarkingPk = coverRow.id;
-        originalDates = coverRow.coverDetails.datesSeen;
-
-        await updateCover(savedCoverId, coverPayload);
-        await updateCoverMarking(coverMarkingPk, {
-          is_backstamp: isBackstamp,
-          placement: null,
-          contributor_comment: trimmedComment,
-        });
-      }
-
-      const keepId = coverDate.existingId ?? null;
-      const deleteOps = originalDates.filter((d) => d.id !== keepId).map((d) => deleteCoverDate(d.id));
-
-      if (keepId != null) {
-        await Promise.all([
-          ...deleteOps,
-          updateCoverDate(keepId, { date: normalizedDate, granularity }),
-        ]);
-      } else {
-        await Promise.all([
-          ...deleteOps,
-          createCoverDate({
-            cover: savedCoverId,
-            date: normalizedDate,
-            granularity,
-          }),
-        ]);
-      }
-
-      await syncCoverCitations(savedCoverId);
-
-      await uploadAllCoverImagesOrThrow(savedCoverId);
-
-      if (mode === "create") {
-        const { covers } = await getMarkingCovers(markingId);
-        const found = covers.find((c) => c.id === coverMarkingPk) ?? null;
-        setCoverRow(found);
-        if (found?.coverDetails?.id) {
-          setImagesLoading(true);
-          try {
-            const imgs = await getImagesForSubject({
-              subjectType: "COVER",
-              subjectId: found.coverDetails.id,
-            });
-            setExistingImages(imgs);
-          } finally {
-            setImagesLoading(false);
-          }
-        }
-      } else if (coverId != null) {
-        await refreshImages();
-      }
-
-      if (mode === "edit" && coverRow?.reviewStatus === "needs_revision") {
-        try {
-          await postCoverMarkingResubmit(coverMarkingPk);
-        } catch (re) {
-          toast({
-            title: "Could not resubmit for review",
-            description: re instanceof Error ? re.message : "Your edits were saved.",
-            variant: "destructive",
-          });
-        }
-      }
-
-      if (editContributionId != null && mode === "create") {
-        try {
-          await abandonCoverContributionDraft(editContributionId);
-        } catch {
-          toast({
-            title: "Could not remove draft entry",
-            description:
-              "Your cover was submitted for review, but the saved draft may still appear on the record until it is cleared.",
-            variant: "destructive",
-          });
-        }
-      }
-
-      toast({
-        title: mode === "create" ? "Cover submitted" : "Cover updated",
-        description:
-          mode === "create"
-            ? "Your cover is linked to this marking and will appear after editor review."
-            : "Your changes have been saved.",
-      });
-
-      navigate(returnPath());
-    } catch (err) {
-      toast({
-        title: mode === "create" ? "Could not submit cover" : "Could not save cover",
-        description: formatAxiosError(err),
-        variant: "destructive",
-      });
-    } finally {
-      setSubmitting(false);
-    }
+    void submitCoverContribution(false);
   };
 
   if (loading || !draftLoadDone) {
@@ -1109,30 +1025,17 @@ export default function CoverEdit() {
                   <CardTitle className="font-heading text-xl">
                     {mode === "create"
                       ? editContributionId != null
-                        ? "Continue Cover Draft"
+                        ? reviewStatus === "needs_revision"
+                          ? "Revise Cover Submission"
+                          : "Continue Cover Draft"
                         : "Submit New Cover"
                       : "Edit Cover"}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  {mode === "edit" && coverRow?.reviewStatus === "pending" && (
-                    <p className="text-sm rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-amber-900 dark:text-amber-100">
-                      This cover is <strong>pending editor review</strong>. It is only visible to you and assigned
-                      editors until it is approved.
-                    </p>
-                  )}
-                  {mode === "edit" && coverRow?.reviewStatus === "needs_revision" && (
-                    <div className="text-sm rounded-md border border-orange-500/30 bg-orange-500/5 px-3 py-2 space-y-1">
-                      <p className="font-medium text-foreground">Editor requested changes</p>
-                      {(coverRow.reviewNotes ?? "").trim().length > 0 ? (
-                        <p className="text-muted-foreground whitespace-pre-wrap">{coverRow.reviewNotes}</p>
-                      ) : (
-                        <p className="text-muted-foreground">Update the cover below, then save to send it back.</p>
-                      )}
-                    </div>
-                  )}
+                  <CoverReviewBanner status={reviewStatus} notes={reviewNotes} />
 
-                  <form onSubmit={handleSubmitCatalog} className="space-y-6" noValidate>
+                  <form onSubmit={handleFormSubmit} className="space-y-6" noValidate>
                     <div className="space-y-2">
                       <Label htmlFor="cover-type">
                         Type <span className="text-destructive" aria-hidden="true">*</span>
@@ -1145,7 +1048,7 @@ export default function CoverEdit() {
                         }}
                       >
                         <SelectTrigger id="cover-type" className={cn(fieldErrors.type && "border-destructive")}>
-                          <SelectValue placeholder="Select cover type…" />
+                          <SelectValue placeholder="Select cover type..." />
                         </SelectTrigger>
                         <SelectContent>
                           {COVER_TYPE_OPTIONS.map((opt) => (
@@ -1158,21 +1061,100 @@ export default function CoverEdit() {
                       {fieldErrors.type && <p className="text-sm text-destructive">{fieldErrors.type}</p>}
                     </div>
 
-                    <div className="space-y-2">
-                      <Label htmlFor="cover-date">
+                    <div className="space-y-3" id="cover-date">
+                      <Label>
                         Date <span className="text-destructive" aria-hidden="true">*</span>
                       </Label>
-                      <Input
-                        id="cover-date"
-                        type="date"
-                        value={coverDate.date}
-                        onChange={(e) => {
-                          setCoverDate((prev) => ({ ...prev, date: e.target.value }));
-                          setFieldErrors((prev) => ({ ...prev, date: undefined }));
-                        }}
-                        disabled={submitting}
-                        className={cn(fieldErrors.date && "border-destructive")}
-                      />
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={coverDate.unknown}
+                          onCheckedChange={(v) => {
+                            setCoverDate(
+                              v === true
+                                ? { unknown: true, year: "", month: "", day: "" }
+                                : { ...EMPTY_COVER_DATE },
+                            );
+                            setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                          }}
+                          disabled={submitting}
+                        />
+                        Date unknown
+                      </label>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-month" className="text-xs text-muted-foreground">
+                            Month
+                          </Label>
+                          <Select
+                            value={coverDate.month || "__none__"}
+                            onValueChange={(v) => {
+                              setCoverDate((prev) => ({
+                                ...prev,
+                                unknown: false,
+                                month: v === "__none__" ? "" : v,
+                              }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                          >
+                            <SelectTrigger
+                              id="cover-date-month"
+                              className={cn(fieldErrors.date && "border-destructive")}
+                            >
+                              <SelectValue placeholder="Unknown" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__none__">Unknown</SelectItem>
+                              {COVER_MONTH_OPTIONS.map((opt) => (
+                                <SelectItem key={opt.value} value={opt.value}>
+                                  {opt.label}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-day" className="text-xs text-muted-foreground">
+                            Day
+                          </Label>
+                          <Input
+                            id="cover-date-day"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="DD"
+                            value={coverDate.day}
+                            onChange={(e) => {
+                              const raw = e.target.value.replace(/\D/g, "").slice(0, 2);
+                              setCoverDate((prev) => ({ ...prev, unknown: false, day: raw }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                            className={cn(fieldErrors.date && "border-destructive")}
+                          />
+                        </div>
+                        <div className="space-y-1.5">
+                          <Label htmlFor="cover-date-year" className="text-xs text-muted-foreground">
+                            Year
+                          </Label>
+                          <Input
+                            id="cover-date-year"
+                            type="text"
+                            inputMode="numeric"
+                            placeholder="YYYY"
+                            value={coverDate.year}
+                            onChange={(e) => {
+                              setCoverDate((prev) => ({
+                                ...prev,
+                                unknown: false,
+                                year: e.target.value.replace(/\D/g, "").slice(0, 4),
+                              }));
+                              setFieldErrors((prev) => ({ ...prev, date: undefined }));
+                            }}
+                            disabled={submitting || coverDate.unknown}
+                            className={cn(fieldErrors.date && "border-destructive")}
+                          />
+                        </div>
+                      </div>
                       {fieldErrors.date && <p className="text-sm text-destructive">{fieldErrors.date}</p>}
                     </div>
 
@@ -1224,31 +1206,43 @@ export default function CoverEdit() {
                         <div className="pointer-events-none flex flex-col items-center gap-2 text-center select-none">
                           <Upload className="h-10 w-10 text-muted-foreground" aria-hidden />
                           <p className="text-sm text-muted-foreground">
-                            Click or drag images here (PNG, JPG, TIFF — max {MAX_IMAGE_SIZE_MB}MB each).
+                            Click or drag images here (PNG, JPG, TIFF -- max {MAX_IMAGE_SIZE_MB}MB each).
                           </p>
                         </div>
 
                         {imagesLoading ? (
                           <div className="pointer-events-none flex items-center gap-2 text-sm text-muted-foreground mt-4 justify-center">
                             <Loader2 className="h-4 w-4 animate-spin" />
-                            Loading images…
+                            Loading images...
                           </div>
                         ) : (
-                          (existingImages.length > 0 || pendingUploads.length > 0) && (
+                          gallery.length > 0 && (
                             <div
                               className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-6 pointer-events-auto"
                               onClick={(ev) => ev.stopPropagation()}
                             >
-                              {existingImages.map((img, idx) => {
-                                const url = normalizeImageUrl(img.imageUrl);
-                                const isDefault = img.displayOrder === 0;
+                              {gallery.map((item, idx) => {
+                                const isDefault = idx === 0;
+                                const url =
+                                  item.kind === "existing"
+                                    ? normalizeImageUrl(item.img.imageUrl)
+                                    : item.upload.previewUrl;
+                                const tracing =
+                                  item.kind === "existing"
+                                    ? item.img.isTracing === true
+                                    : item.upload.tracing;
                                 return (
-                                  <div key={img.imageId} className="flex flex-col items-center gap-2 rounded border border-border p-3">
-                                    <div className="h-36 w-36 rounded overflow-hidden bg-muted shrink-0 flex items-center justify-center border border-border">
+                                  <div key={item.key} className="flex flex-col items-center gap-2 rounded border border-border p-3">
+                                    <div className="relative h-36 w-36 rounded overflow-hidden bg-muted shrink-0 flex items-center justify-center border border-border">
                                       {url ? (
                                         <img src={url} alt="" className="max-h-full max-w-full object-contain" />
                                       ) : (
                                         <span className="text-xs text-muted-foreground text-center px-2">No preview</span>
+                                      )}
+                                      {isDefault && (
+                                        <span className="absolute top-1 left-1 rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase text-primary-foreground">
+                                          Default
+                                        </span>
                                       )}
                                     </div>
                                     <div className="flex items-center justify-center gap-1">
@@ -1258,8 +1252,8 @@ export default function CoverEdit() {
                                         size="icon"
                                         className="h-8 w-8"
                                         aria-label="Move left"
-                                        disabled={reorderingImages || idx === 0}
-                                        onClick={() => moveExistingImageBy(idx, -1)}
+                                        disabled={idx === 0 || submitting}
+                                        onClick={() => moveGalleryBy(idx, -1)}
                                       >
                                         <ArrowLeft className="h-4 w-4" />
                                       </Button>
@@ -1269,8 +1263,8 @@ export default function CoverEdit() {
                                         size="icon"
                                         className="h-8 w-8"
                                         aria-label="Move right"
-                                        disabled={reorderingImages || idx === existingImages.length - 1}
-                                        onClick={() => moveExistingImageBy(idx, 1)}
+                                        disabled={idx === gallery.length - 1 || submitting}
+                                        onClick={() => moveGalleryBy(idx, 1)}
                                       >
                                         <ArrowRight className="h-4 w-4" />
                                       </Button>
@@ -1280,62 +1274,9 @@ export default function CoverEdit() {
                                         size="icon"
                                         className="h-8 w-8"
                                         aria-label="Set as default"
-                                        disabled={reorderingImages || isDefault}
-                                        onClick={() => setExistingAsDefault(idx)}
-                                      >
-                                        <Star className={cn("h-4 w-4", isDefault && "fill-current")} />
-                                      </Button>
-                                    </div>
-                                    <label className="flex items-center gap-2 text-sm">
-                                      <Checkbox
-                                        checked={img.isTracing === true}
-                                        onCheckedChange={(v) => void toggleExistingTracing(idx, v === true)}
-                                        disabled={submitting}
-                                      />
-                                      Tracing
-                                    </label>
-                                  </div>
-                                );
-                              })}
-
-                              {pendingUploads.map((row, idx) => {
-                                const isDefault = idx === 0 && existingImages.length === 0;
-                                return (
-                                  <div key={row.key} className="flex flex-col items-center gap-2 rounded border border-border p-3">
-                                    <div className="h-36 w-36 rounded overflow-hidden bg-muted shrink-0 flex items-center justify-center border border-border">
-                                      <img src={row.previewUrl} alt="" className="max-h-full max-w-full object-contain" />
-                                    </div>
-                                    <div className="flex items-center justify-center gap-1">
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        aria-label="Move left"
-                                        disabled={idx === 0}
-                                        onClick={() => movePendingBy(idx, -1)}
-                                      >
-                                        <ArrowLeft className="h-4 w-4" />
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        aria-label="Move right"
-                                        disabled={idx === pendingUploads.length - 1}
-                                        onClick={() => movePendingBy(idx, 1)}
-                                      >
-                                        <ArrowRight className="h-4 w-4" />
-                                      </Button>
-                                      <Button
-                                        type="button"
-                                        variant={isDefault ? "secondary" : "ghost"}
-                                        size="icon"
-                                        className="h-8 w-8"
-                                        aria-label="Set as default"
-                                        disabled={isDefault}
-                                        onClick={() => setPendingAsDefault(idx)}
+                                        title="Set as default catalog thumbnail"
+                                        disabled={isDefault || submitting}
+                                        onClick={() => setGalleryDefault(idx)}
                                       >
                                         <Star className={cn("h-4 w-4", isDefault && "fill-current")} />
                                       </Button>
@@ -1345,19 +1286,23 @@ export default function CoverEdit() {
                                         size="icon"
                                         className="h-8 w-8"
                                         aria-label="Remove"
-                                        onClick={() => removePendingAt(idx)}
+                                        disabled={submitting}
+                                        onClick={() => removeGalleryAt(idx)}
                                       >
                                         <Trash2 className="h-4 w-4" />
                                       </Button>
                                     </div>
                                     <label className="flex items-center gap-2 text-sm">
                                       <Checkbox
-                                        checked={row.tracing}
-                                        onCheckedChange={(v) => setPendingTracingAt(idx, v === true)}
+                                        checked={tracing}
+                                        onCheckedChange={(v) => setGalleryTracingAt(idx, v === true)}
+                                        disabled={submitting}
                                       />
                                       Tracing
                                     </label>
-                                    <p className="text-xs text-muted-foreground truncate max-w-[200px]">{row.file.name}</p>
+                                    {item.kind === "pending" && (
+                                      <p className="text-xs text-muted-foreground truncate max-w-[200px]">{item.upload.file.name}</p>
+                                    )}
                                   </div>
                                 );
                               })}
@@ -1365,7 +1310,27 @@ export default function CoverEdit() {
                           )
                         )}
                       </div>
+                      {gallery.length > 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          The first image becomes the Catalog Search thumbnail. Use the arrows to reorder or
+                          the star to set the default; check Tracing on hand-traced or computer-traced diagrams.
+                        </p>
+                      )}
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={noCoverImage}
+                          onCheckedChange={(v) => setNoCoverImageChecked(v === true)}
+                          disabled={submitting}
+                        />
+                        No image is available to upload
+                      </label>
                       {fieldErrors.images && <p className="text-sm text-destructive">{fieldErrors.images}</p>}
+                      <WrongImageKindWarning
+                        expected="COVER"
+                        count={markingLikeImageCount}
+                        acknowledged={wrongImageKindAcknowledged}
+                        onAcknowledgedChange={setWrongImageKindAcknowledged}
+                      />
                     </div>
 
                     <div className="space-y-3 pt-1">
@@ -1381,6 +1346,26 @@ export default function CoverEdit() {
                         <Checkbox checked={isBackstamp} onCheckedChange={(v) => setIsBackstamp(v === true)} disabled={submitting} />
                         Backstamp
                       </label>
+                      <label className="flex items-center gap-2 text-sm">
+                        <Checkbox
+                          checked={displaySubmitterName}
+                          onCheckedChange={(v) => setDisplaySubmitterName(v === true)}
+                          disabled={submitting}
+                        />
+                        Would you like your name to display as the submitter?
+                      </label>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label htmlFor="cover-description">Description</Label>
+                      <Textarea
+                        id="cover-description"
+                        rows={3}
+                        placeholder="Optional description / notes about this cover (shown on the cover's detail page)."
+                        value={description}
+                        onChange={(e) => setDescription(e.target.value)}
+                        disabled={submitting}
+                      />
                     </div>
 
                     <div className="space-y-3" id="cover-reference-works">
@@ -1391,7 +1376,7 @@ export default function CoverEdit() {
                             <Button type="button" variant="outline" className="w-full justify-between" disabled={referenceWorksLoading}>
                               <span>
                                 {referenceWorksLoading
-                                  ? "Loading reference works…"
+                                  ? "Loading reference works..."
                                   : selectedReferenceWorks.length > 0
                                     ? `${selectedReferenceWorks.length} selected`
                                     : "Select reference works"}
@@ -1439,7 +1424,7 @@ export default function CoverEdit() {
                                       setFieldErrors((prev) => ({ ...prev, referenceWorks: undefined }));
                                     }}
                                   >
-                                    {work.title || `Reference #${work.id}`}
+                                    {formatReferenceWorkLabel(work, `Reference #${work.id}`)}
                                   </DropdownMenuCheckboxItem>
                                 );
                               })
@@ -1452,11 +1437,17 @@ export default function CoverEdit() {
                         <div className="space-y-2">
                           {selectedReferenceWorks.map((work) => (
                             <div key={work.id} className="rounded-md border border-border px-3 py-2 space-y-3">
-                              <p className="text-sm font-medium truncate">{work.title || "Untitled"}</p>
+                              <p className="text-sm font-medium truncate">{formatReferenceWorkLabel(work, "Untitled")}</p>
                               <div className="grid gap-3 sm:grid-cols-2">
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">Page number</Label>
+                                  <Label
+                                    htmlFor={`cover-reference-page-${work.id}`}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Page number
+                                  </Label>
                                   <Input
+                                    id={`cover-reference-page-${work.id}`}
                                     value={referenceDetailsById[work.id]?.pageNumber ?? ""}
                                     className={referenceDetailErrorsById[work.id]?.pageNumber ? "border-destructive" : ""}
                                     onChange={(e) => {
@@ -1479,8 +1470,14 @@ export default function CoverEdit() {
                                   )}
                                 </div>
                                 <div className="space-y-1">
-                                  <Label className="text-xs text-muted-foreground">Citation URL</Label>
+                                  <Label
+                                    htmlFor={`cover-reference-url-${work.id}`}
+                                    className="text-xs text-muted-foreground"
+                                  >
+                                    Citation URL
+                                  </Label>
                                   <Input
+                                    id={`cover-reference-url-${work.id}`}
                                     value={referenceDetailsById[work.id]?.citationUrl ?? ""}
                                     className={referenceDetailErrorsById[work.id]?.citationUrl ? "border-destructive" : ""}
                                     onChange={(e) => {
@@ -1528,20 +1525,36 @@ export default function CoverEdit() {
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3 pt-2">
-                      {mode === "create" && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        className="w-full sm:flex-1"
+                        disabled={submitting}
+                        onClick={() => void submitCoverContribution(true)}
+                      >
+                        Save as Draft
+                      </Button>
+                      <Button
+                        type="submit"
+                        className={
+                          mode === "edit"
+                            ? "w-full sm:flex-1 bg-green-800 text-white hover:bg-green-900"
+                            : "w-full sm:flex-1"
+                        }
+                        disabled={submitting}
+                      >
+                        {submitting ? "Saving..." : mode === "create" ? "Submit Cover" : "Submit changes for review"}
+                      </Button>
+                      {mode === "edit" && (
                         <Button
                           type="button"
-                          variant="outline"
-                          className="w-full sm:flex-1"
-                          disabled={submitting || uploading}
-                          onClick={() => void handleSaveDraft()}
+                          className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                          disabled={submitting}
+                          onClick={handleCancelEditing}
                         >
-                          Save as Draft
+                          Cancel Editing
                         </Button>
                       )}
-                      <Button type="submit" className="w-full sm:flex-1" disabled={submitting || uploading}>
-                        {submitting ? "Saving…" : mode === "create" ? "Submit Cover" : "Save changes"}
-                      </Button>
                     </div>
                   </form>
                 </CardContent>
@@ -1554,18 +1567,11 @@ export default function CoverEdit() {
                   <CardTitle className="font-heading text-lg">Submission Guidelines</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Accuracy:</strong> Verify all dates and details before submission.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Reference works:</strong> Include references when available to help verification.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Review Time:</strong> Most submissions are reviewed within 1–3 business days.
-                  </p>
+                  {COVER_SUBMISSION_GUIDELINES.map((g) => (
+                    <p key={g.label} className="leading-relaxed">
+                      <strong className="text-foreground">{g.label}:</strong> {g.body}
+                    </p>
+                  ))}
                 </CardContent>
               </Card>
             </div>

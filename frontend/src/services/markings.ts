@@ -9,12 +9,16 @@ import {
   contributionImageMetasFromSubmittedData,
   contributionMetaImageUrl,
 } from "@/lib/contributionImages";
+import {
+  partialDateInputFromSubmittedData,
+  validatePartialDate,
+  type DateSeenGranularity,
+} from "@/lib/partialDate";
 
 /**
- * Unified Marking service. Replaces the legacy postmarks/ratemarks/auxmarks
- * facade that lived in services/postmarks.ts. The v2 API now returns one
- * row per marking (TOWNMARK | RATEMARK | AUXMARK), so the frontend no
- * longer fans out per-row to ratemark/auxmark side endpoints.
+ * Unified Marking service. The v2 API returns one row per marking
+ * (TOWNMARK | RATEMARK | AUXMARK), so the frontend does not fan out
+ * per-row to type-specific side endpoints.
  *
  * Endpoints (under /api/v2):
  *   GET    /markings/                       list, paginated
@@ -215,6 +219,126 @@ export async function updateImage(
 }
 
 /**
+ * PATCH /api/v2/images/{image_id}/ -- reassign an image to another subject
+ * (issue #48). image_view must be valid for the target subject type
+ * (MARKING: FULL/DETAIL; COVER: FRONT/BACK/INTERIOR/DETAIL); the backend
+ * validates target existence and view pairing and handles default-image
+ * promotion on the source subject.
+ */
+export async function moveImageSubject(
+  imageId: number,
+  subjectType: "MARKING" | "COVER",
+  subjectId: number,
+  imageView: string,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  try {
+    await ensureCsrfToken();
+    await apiClient.patch(`/images/${imageId}/`, {
+      subject_type: subjectType,
+      subject_id: subjectId,
+      image_view: imageView,
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    const ax = err as {
+      response?: {
+        data?: { detail?: string; subject_id?: string[]; image_view?: string[] };
+      };
+    };
+    const data = ax.response?.data;
+    const message =
+      data?.detail ?? data?.subject_id?.[0] ?? data?.image_view?.[0];
+    return {
+      ok: false,
+      message: typeof message === "string" ? message : "Could not reassign image.",
+    };
+  }
+}
+
+/**
+ * POST /api/v2/images/{image_id}/crop/ -- save a rectangle of this image as a
+ * new image on the same subject (issue #77).
+ *
+ * Used to cut the marking out of a scan of a whole cover, so the full scan can
+ * then be moved to a Cover with moveImageSubject without leaving the marking
+ * imageless. The source image is not modified.
+ *
+ * Coordinates are in the source image's own pixels, not display pixels -- the
+ * caller must scale for any on-screen resizing before sending.
+ */
+export async function cropImage(
+  imageId: number,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<{ ok: true; imageId: number } | { ok: false; message: string }> {
+  await ensureCsrfToken();
+  try {
+    const { data } = await apiClient.post(`/images/${imageId}/crop/`, {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    });
+    return { ok: true, imageId: data.image_id };
+  } catch (err: unknown) {
+    const ax = err as {
+      response?: { data?: { detail?: string; image_view?: string[] } };
+    };
+    const data = ax.response?.data;
+    const message = data?.detail ?? data?.image_view?.[0];
+    return {
+      ok: false,
+      message: typeof message === "string" ? message : "Could not crop image.",
+    };
+  }
+}
+
+/**
+ * DELETE /api/v2/images/{image_id}/ -- remove one image row.
+ *
+ * Cwd for manual verification: frontend/.
+ * Command: npm run build
+ * Expected exit code: 0.
+ *
+ * The backend deletes only the Image row; shared files remain on disk. That is
+ * the intended quick-delete behavior for an editor cleaning up a bad catalog
+ * image from a detail page without visiting the full edit flow.
+ */
+export async function deleteImage(
+  imageId: number,
+): Promise<{ ok: true } | { ok: false; message: string }> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.delete(`/images/${imageId}/`);
+    return { ok: true };
+  } catch (err: unknown) {
+    const ax = err as { response?: { data?: { detail?: string } } };
+    const detail = ax.response?.data?.detail;
+    return {
+      ok: false,
+      message: typeof detail === "string" ? detail : "Could not delete image.",
+    };
+  }
+}
+
+/**
+ * Toggle the state-editor "reviewed/confirmed" flag on a marking (Issue #22).
+ * Persisted via the same editor-gated PATCH path as other catalog edits; the
+ * backend rejects the write unless the caller is the state editor responsible
+ * for the marking's region (or an admin). Returns false on any error.
+ */
+export async function updateMarkingReviewed(
+  markingId: number,
+  reviewed: boolean,
+): Promise<boolean> {
+  try {
+    await apiClient.patch(`/markings/${markingId}/`, { is_reviewed: reviewed });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Subset of ReferenceWork fields embedded in a Citation row, sufficient
  * to render a citation entry without a second /reference-works/ call.
  * Mirrors the read-only `reference_work_details` field on the v2
@@ -245,6 +369,14 @@ export interface MarkingCitation {
   referenceWork: MarkingCitationReferenceWork | null;
 }
 
+/** One territory/state a town belonged to (multi-territory support, #24). */
+export interface MarkingRegion {
+  id: number;
+  name: string;
+  abbrev: string;
+  regionTier: string;
+}
+
 /** Canonical UI shape for a marking row (list or detail). */
 export interface MarkingRecord {
   id: number;
@@ -273,14 +405,31 @@ export interface MarkingRecord {
   colorName: string;
   postOfficeName: string;
   regionName: string;
+  // All territories/states this town belonged to over time (current-first).
+  // regionName/state remain the single primary region for back-compat.
+  regions: MarkingRegion[];
   earliestSeen: string | null;
+  earliestSeenGranularity: string | null;
+  earliestSeenCoverId: number | null;
   latestSeen: string | null;
+  latestSeenGranularity: string | null;
+  latestSeenCoverId: number | null;
+  // All MARKING-scoped DateSeen rows the catalog records for this marking (one
+  // per observed date), ordered by date. Detail view only; used to render a
+  // "Dates Seen" listing when there are multiple dates (issue #25).
+  datesSeen: AssociatedDateSeen[];
   mainImage: MarkingImage | null;
   secondImage: MarkingImage | null;
   images: MarkingImage[];
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
+  // Whether a state editor has personally vetted this record (Issue #22).
+  isReviewed: boolean;
+  /** Submitter opted in to show their name on the public marking detail page. */
+  displaySubmitterName: boolean;
+  /** Submitter display name; null unless they opted in (server-gated). */
+  submitterName: string | null;
   // Contributor's "comment for editor" and the editor's review feedback, sourced
   // from the marking's approved Contribution. The backend returns "" to anyone
   // who is not that contributor or an editor, so a non-empty value is safe to show.
@@ -470,6 +619,32 @@ function mapCitationList(raw: unknown): MarkingCitation[] {
 }
 
 /**
+ * Display string for the "State/Territory" row: every territory a town belonged
+ * to, current-first, comma-separated (multi-territory support, #24). Falls back
+ * to the single primary region (`state`) when the regions list is absent (e.g.
+ * search-list payloads that don't include it). Exported for unit testing.
+ */
+export function regionsDisplay(
+  record: Pick<MarkingRecord, "regions" | "state">,
+): string {
+  const names = record.regions.map((r) => r.name.trim()).filter((n) => n !== "");
+  return names.length > 0 ? names.join(", ") : record.state;
+}
+
+function mapRegionList(raw: unknown): MarkingRegion[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((r): MarkingRegion | null => {
+      const o = (r && typeof r === "object" ? r : {}) as Record<string, unknown>;
+      const id = toIdOrNull(o.id);
+      const name = toStr(o.name);
+      if (id == null || !name) return null;
+      return { id, name, abbrev: toStr(o.abbrev), regionTier: toStr(o.region_tier) };
+    })
+    .filter((x): x is MarkingRegion => x !== null);
+}
+
+/**
  * Convert a /markings/ list or detail payload into MarkingRecord.
  * Single-pass mapper: snake_case in, camelCase out, no fallbacks. The API
  * is now the canonical shape; if a field is missing, the empty default is
@@ -511,14 +686,34 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     colorName: toStr(o.color_name),
     postOfficeName: toStr(o.post_office_name),
     regionName: toStr(o.region_name),
+    regions: mapRegionList(o.regions),
     earliestSeen: typeof o.earliest_seen === "string" && o.earliest_seen ? o.earliest_seen : null,
+    earliestSeenGranularity:
+      typeof o.earliest_seen_granularity === "string" && o.earliest_seen_granularity
+        ? o.earliest_seen_granularity
+        : null,
+    earliestSeenCoverId: toIdOrNull(o.earliest_seen_cover_id),
     latestSeen: typeof o.latest_seen === "string" && o.latest_seen ? o.latest_seen : null,
+    latestSeenGranularity:
+      typeof o.latest_seen_granularity === "string" && o.latest_seen_granularity
+        ? o.latest_seen_granularity
+        : null,
+    latestSeenCoverId: toIdOrNull(o.latest_seen_cover_id),
+    datesSeen: (Array.isArray(o.dates_seen) ? o.dates_seen : [])
+      .map(mapAssociatedDateSeen)
+      .filter((x): x is AssociatedDateSeen => x !== null),
     mainImage,
     secondImage,
     images,
     citations: mapCitationList(o.citations),
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
+    isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    submitterName:
+      typeof o.submitter_name === "string" && o.submitter_name
+        ? o.submitter_name
+        : null,
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
   };
@@ -538,7 +733,12 @@ export async function getMarkingsPage(
     town?: string;
     beginYear?: string;
     endYear?: string;
+    height?: string;
+    width?: string;
     hasImages?: boolean;
+    institutional?: boolean;
+    referenceWorkCode?: string;
+    reviewed?: "reviewed" | "unreviewed";
     deferCount?: boolean;
     ordering?: string;
   }
@@ -557,7 +757,13 @@ export async function getMarkingsPage(
   if (opt.town?.trim()) params.town = opt.town.trim();
   if (opt.beginYear?.trim()) params.earliest_use_year_min = opt.beginYear.trim();
   if (opt.endYear?.trim()) params.latest_use_year_max = opt.endYear.trim();
+  if (opt.height?.trim()) params.height = opt.height.trim();
+  if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
+  if (opt.institutional === true) params.institutional = "true";
+  if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
+  if (opt.reviewed === "reviewed") params.reviewed = "true";
+  else if (opt.reviewed === "unreviewed") params.reviewed = "false";
   if (opt.deferCount === true) params.include_count = "false";
   if (opt.ordering?.trim()) params.ordering = opt.ordering.trim();
 
@@ -677,7 +883,7 @@ export async function getMarkingByIdRaw(markingId: number): Promise<Record<strin
 }
 
 /**
- * PATCH /api/v2/images/{image_id}/ — update display_order on a single image.
+ * PATCH /api/v2/images/{image_id}/ -- update display_order on a single image.
  * Returns the updated MarkingImage on success, or null on failure.
  *
  * Used by the editor reorder controls on the Record Detail page. The
@@ -766,8 +972,11 @@ export async function restoreMarkingVersion(
  */
 export interface AssociatedDateSeen {
   id: number;
-  date: string;
-  granularity: "DAY" | "MONTH" | "YEAR";
+  date: string | null;
+  granularity: DateSeenGranularity;
+  dateYear: number | null;
+  dateMonth: number | null;
+  dateDay: number | null;
 }
 
 /** Cover attributes shown inside an Associated Cover row. */
@@ -786,6 +995,9 @@ export interface AssociatedCoverDetails {
   height: string | null;
   hasAdhesive: boolean | null;
   isInstitutional: boolean | null;
+  displaySubmitterName: boolean;
+  /** Free-text description / notes; prefilled into the cover edit form. */
+  description: string;
   datesSeen: AssociatedDateSeen[];
 }
 
@@ -794,7 +1006,7 @@ export type CoverMarkingReviewStatus = "pending" | "approved" | "rejected" | "ne
 
 export interface AssociatedCover {
   id: number;
-  /** Editor moderation for this cover↔marking link (defaults to approved for legacy rows). */
+  /** Editor moderation for this cover<->marking link (defaults to approved for legacy rows). */
   reviewStatus: CoverMarkingReviewStatus;
   reviewNotes: string | null;
   reviewedAt: string | null;
@@ -809,7 +1021,7 @@ export interface AssociatedCover {
    * Thumbnail opens the cover editor with `?edit={id}`.
    */
   contributionDraftId?: number;
-  /** Contribution.status for draft rows (`draft`, `needs_revision`, …). */
+  /** Contribution.status for draft rows (`draft`, `needs_revision`, ...). */
   contributionStatus?: string;
   /** Human-readable title for draft rows (from submitted_data). */
   displayLabel?: string;
@@ -832,12 +1044,27 @@ function mapAssociatedDateSeen(raw: unknown): AssociatedDateSeen | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const id = toIdOrNull(o.id);
-  const date = typeof o.date === "string" ? o.date : "";
-  if (id == null || !date) return null;
+  const date = typeof o.date === "string" && o.date.trim() ? o.date : null;
+  const dateYear = toNumOrNull(o.date_year ?? o.dateYear);
+  const dateMonth = toNumOrNull(o.date_month ?? o.dateMonth);
+  const dateDay = toNumOrNull(o.date_day ?? o.dateDay);
+  if (id == null || (!date && dateYear == null && dateMonth == null && dateDay == null)) return null;
   const gRaw = String(o.granularity ?? "").toUpperCase();
   const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return { id, date, granularity };
+    gRaw === "MONTH"
+      ? "MONTH"
+      : gRaw === "YEAR"
+        ? "YEAR"
+        : gRaw === "MONTH_ONLY"
+          ? "MONTH_ONLY"
+          : gRaw === "DAY_ONLY"
+            ? "DAY_ONLY"
+            : gRaw === "YEAR_DAY"
+              ? "YEAR_DAY"
+              : gRaw === "MONTH_DAY"
+                ? "MONTH_DAY"
+                : "DAY";
+  return { id, date, granularity, dateYear, dateMonth, dateDay };
 }
 
 function mapAssociatedCoverDetails(raw: unknown): AssociatedCoverDetails | null {
@@ -863,6 +1090,8 @@ function mapAssociatedCoverDetails(raw: unknown): AssociatedCoverDetails | null 
     height: decimalToString(o.height),
     hasAdhesive: o.has_adhesive == null ? null : Boolean(o.has_adhesive),
     isInstitutional: o.is_institutional == null ? null : Boolean(o.is_institutional),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    description: typeof o.description === "string" ? o.description : "",
     datesSeen,
   };
 }
@@ -957,7 +1186,7 @@ export async function getMarkingCovers(markingId: number): Promise<MarkingCovers
   }
 }
 
-/** Cover↔marking link row from GET /cover-markings/?cover={id}. */
+/** Cover<->marking link row from GET /cover-markings/?cover={id}. */
 export interface CoverMarkingLink {
   id: number;
   coverId: number;
@@ -989,7 +1218,7 @@ export type CoverMarkingsByCoverResult = {
   error: string | null;
 };
 
-/** GET /cover-markings/?cover={id} — markings linked to a cover. */
+/** GET /cover-markings/?cover={id} -- markings linked to a cover. */
 export async function getCoverMarkingsByCover(
   coverId: number,
 ): Promise<CoverMarkingsByCoverResult> {
@@ -1073,13 +1302,17 @@ function resolveCoverSubmissionThumbnail(
 }
 
 function datesSeenFromCoverSubmission(sd: Record<string, unknown>): AssociatedDateSeen[] {
-  const raw = sd.cover_date ?? sd.coverDate;
-  if (raw == null || String(raw).trim() === "") return [];
-  const date = String(raw).trim();
-  const gRaw = String(sd.date_granularity ?? sd.dateGranularity ?? "DAY").toUpperCase();
-  const granularity: AssociatedDateSeen["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return [{ id: 0, date, granularity }];
+  const input = partialDateInputFromSubmittedData(sd);
+  const parsed = validatePartialDate(input);
+  if (!parsed.ok || parsed.value.unknown || parsed.value.granularity == null) return [];
+  return [{
+    id: 0,
+    date: parsed.value.legacyDate,
+    granularity: parsed.value.granularity,
+    dateYear: parsed.value.year,
+    dateMonth: parsed.value.month,
+    dateDay: parsed.value.day,
+  }];
 }
 
 function mapCoverContributionToAssociatedCover(
@@ -1152,6 +1385,8 @@ function mapCoverContributionToAssociatedCover(
           : typeof sd.isInstitutional === "boolean"
             ? sd.isInstitutional
             : null,
+      displaySubmitterName: Boolean(sd.display_submitter_name ?? sd.displaySubmitterName),
+      description: typeof sd.description === "string" ? sd.description : "",
       datesSeen: datesSeenFromCoverSubmission(sd),
     },
     defaultImageUrl: resolveCoverSubmissionThumbnail(sd, contrib),
@@ -1174,21 +1409,19 @@ export async function getCoverContributionDraftsForMarking(
   }
 }
 
-/** Cover-marking rows plus saved cover contribution drafts for a marking. */
+/** Approved cover-marking rows for a marking (record-detail Associated Covers). */
 export async function loadAssociatedCoversForMarking(
   markingId: number,
 ): Promise<MarkingCoversResult> {
   const { covers, error } = await getMarkingCovers(markingId);
-  const drafts = await getCoverContributionDraftsForMarking(markingId);
-  // Rejected and returned-for-revision links are not real associations, so they
-  // are hidden from the marking's Associated Covers panel (and its count).
-  // Approved and pending links (and pending drafts) stay visible. Resubmission
-  // of a returned/rejected cover happens via the Contribute edit flow reached
-  // from My Submissions, not from this panel.
-  const merged = [...covers, ...drafts].filter(
-    (c) => c.reviewStatus !== "rejected" && c.reviewStatus !== "needs_revision",
-  );
-  const enriched = await enrichAssociatedCoversWithDefaultImages(merged);
+  // Only editor-approved cover-marking links appear on the record's Associated
+  // Covers panel (and its count). Covers still pending review (or rejected /
+  // returned-for-revision) are hidden, mirroring how an unapproved marking
+  // contribution does not appear on the record. The contributor's own cover
+  // drafts -- pending, returned, or unsubmitted -- are reached from Dashboard /
+  // My Submissions, NOT from this panel.
+  const approved = covers.filter((c) => c.reviewStatus === "approved");
+  const enriched = await enrichAssociatedCoversWithDefaultImages(approved);
   return { covers: enriched, error };
 }
 

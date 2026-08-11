@@ -1,18 +1,24 @@
 {
   "name": "vite_react_shadcn_ts",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.8.9",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "NODE_NO_WARNINGS=1 vite build",
     "build:dev": "NODE_NO_WARNINGS=1 vite build --mode development",
     "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
     "preview": "vite preview",
     "test": "jest",
     "test:watch": "jest --watchAll",
     "test:coverage": "jest --coverage",
     "test:auth-live": "RUN_LIVE_AUTH_TEST=1 jest --runInBand src/pages/Auth.login.live.test.tsx"
+  },
+  "jest": {
+    "moduleNameMapper": {
+      "^@/(.*)$": "<rootDir>/src/$1"
+    }
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -61,6 +67,7 @@
     "react-day-picker": "^8.10.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.61.1",
+    "react-image-crop": "^11.1.2",
     "react-resizable-panels": "^2.1.9",
     "react-router-dom": "^6.30.1",
     "recharts": "^2.15.4",

@@ -1,90 +1,163 @@
 # WorldCovers
 
+WorldCovers is a Django and React application for cataloging stampless covers
+and postal markings.
 
-Welcome to _**WorldCovers**_, a stampless cover and postmark catalog application
+The staging/beta host runs at [woco.dev](https://woco.dev/). Production
+deployment is currently `hellowoco.app`.
 
-This build, nicknamed _Warp_, is version **2.0.0** (beta).
-
-> Another success is the post-office, with its educating energy augmented by cheapness and guarded by a certain religious sentiment in mankind; so that the power of a wafer or a drop of wax or gluten to guard a letter, as it flies over sea over land and comes to its address as if a battalion of artillery brought it, I look upon as a fine meter of civilization.
+> "Another success is the post-office, with its educating energy augmented by cheapness and guarded by a certain religious sentiment in mankind; so that the power of a wafer or a drop of wax or gluten to guard a letter, as it flies over sea over land and comes to its address as if a battalion of artillery brought it, I look upon as a fine meter of civilization."
 
 &nbsp;&nbsp;&nbsp;&nbsp;-- _Ralph Waldo Emerson_
 
-## Table of Contents
-- [Project Overview](#project-overview)
-- [Building](#building)
-- [Configuration](#configuration)
-- [Execution](#execution)
-- [Errata](#errata)
-
-
 ## Project Overview
 
-Version strings follow the **MAJOR**(\d+) . **MINOR**(\d+) . **REVISION**(\d+) format.
+WorldCovers has three main code areas:
 
-Current planned Milestones are `alpha`, `beta`, and `rtm`.  
+- [Common model](./backend/common): shared models, admin resources,
+  API, and management commands.
+- [WoCo server](./backend/woco): Django settings, URL routing, and server
+  entry points.
+- [Web UI](./frontend): React SPA served by Django in production and by Vite
+  during frontend development.
 
-Currently only tested on Chromium (TODO: version?) on Windows 11, and Brave (1.82.170-arm64) on macOS Sequoia & Tahoe.
+Public Help content is served from Markdown files in [docs](./docs) by
+`backend/common/api/help.py`. Files under `docs/devel/` are internal
+developer and operator docs and are not exposed in the live Help page.
 
-For licensing details, see [LICENSE](LICENSE)
+For design and scope details, see [docs/devel/design.md](./docs/devel/design.md)
 
-###  **Apps**:
-* [Common Model](./backend/common)
-  * The core of the application. Describes Django data structures used by both server and clients.
-* [WoCo Server](./backend/woco)
-  * The Django application powering the REST interface and URL routing. Contains configuration in `settings.py`.
-* [Web UI](./frontend)
-  * The public UI at [hellowoco.app](https://hellowoco.app) is a React SPA (e.g. from Lovable) contained in `frontend`. Django serves it as the site home and all frontend routes, with API and admin staying under the `/api/` and `/admin/` URLs.
+## Quickstart
 
+Prerequisites:
 
-For more details see [design.md](./docs/design.md)
+- Local development has been tested on macOS. Linux should work with the same
+  commands when the prerequisites below are installed.
+- Python 3.13, pinned by [.python-version](./.python-version)
+- `uv`, installed with `curl -LsSf https://astral.sh/uv/install.sh | sh`
+- Node.js and npm for the frontend build
+- MySQL 8, running locally. `./woco setup dev` needs either `sudo mysql`
+  access or the MySQL root password to create the local database and app user.
 
+From the repo root, run the one-command setup:
 
-## Building
-
-### Quickstart
-
-This project uses `uv` (Python toolchain + venv manager) and `django`. Install uv with `curl -LsSf https://astral.sh/uv/install.sh | sh`; it auto-installs the Python version pinned in `.python-version` (3.13). All Django commands use `woco <cmd>` -- for example `./woco runserver`. (`./woco` is a bash shim at the repo root; symlink it onto your PATH if you want it available from anywhere.)
-
-For full setup instructions (dependencies, database credentials, frontend build, migrations), see [docs/BUILD.md](./docs/BUILD.md).
-
-To have the site home and routes served by the React app (e.g. at hellowoco.app), add your frontend in [frontend/](./frontend) and **run `npm run build` there before deployment**. The built output (`frontend/dist/`) is not in git, so your **deploy must run the frontend build** (e.g. `cd frontend && npm ci && npm run build`) before starting Django. See [docs/DEPLOY.md](./docs/DEPLOY.md) and [frontend/README.md](./frontend/README.md).
-
-
-## Configuration
-
-### TODO
-
-## Execution
-
-To run **WorldCovers** in production, deploy with `tools/deploy.sh` then manage the process via systemd:
 ```sh
-sudo systemctl start worldcovers
+./woco setup dev
 ```
 
-To run in development, use the one-command launcher (frontend HMR + Django autoreload, sharing one terminal, single Ctrl+C kills both):
+On a fresh clone this installs dependencies, creates `.env` with a generated
+secret key, prompts for local database settings, creates the MySQL database
+and app user, writes `mysql.cnf`, builds the frontend, runs migrations, and
+collects static files. Press Enter at the app-password prompt to generate a
+random password. The command is idempotent -- safe to re-run any time.
+
+For unattended setup, pass the values as environment variables:
+
 ```sh
-woco dev
+WOCO_DB_PASSWORD=<app-db-password> \
+WOCO_MYSQL_ROOT_PASSWORD=<mysql-root-password> \
+./woco setup dev
 ```
 
-`woco dev` reads Django's `DEBUG`: with `DEBUG=True` (the default) it runs the Vite dev server on :8080 and Django on :8000 -- open `http://localhost:8080`. With `DEBUG=False` it builds `frontend/dist/` and lets Django serve it at :8000 (useful for a final pre-push sanity check). See [docs/devel/BUILD.md](./docs/devel/BUILD.md) for details.
+`WOCO_DB_NAME` and `WOCO_DB_USER` are optional; defaults are `worldcovers`
+and `wocod`. Omit `WOCO_MYSQL_ROOT_PASSWORD` when `sudo mysql` works locally.
 
-For day-to-day operator tasks (restarts, imports, backups, approving contributions), see [docs/RUNBOOK.md](./docs/RUNBOOK.md).
+Then start the dev server:
 
-For data import and management commands, see [docs/TOOLS.md](./docs/TOOLS.md).
+```sh
+./woco dev
+```
 
+The equivalent manual steps, if you prefer to run them yourself:
 
-## Errata
+```sh
+uv sync
+# Edit the password in tools/setup_worldcovers_db.sql first, then:
+sudo mysql < tools/setup_worldcovers_db.sql
+cp mysql.cnf.example mysql.cnf   # then fill in the same user and password
+cp .env.example .env             # then set DJANGO_SECRET_KEY (see below)
+./woco secretkey                 # prints a fresh secret key
+cd frontend && npm ci && npm run build && cd ..
+./woco migrate
+./woco collectstatic --noinput
+./woco dev
+```
 
-TODO:  Links to repo wiki
+Paste the generated secret key into the `DJANGO_SECRET_KEY=` line of `.env`
+before running `./woco migrate` -- Django refuses to start without it.
 
-TODO:  Links to user documentation
+`./woco` is the repo-local CLI shim for Django management commands on macOS
+and Linux. It wraps `uv run woco`, which calls `woco_cli.py` and then
+Django's `execute_from_command_line`. `woco.bat` is included as a convenience
+wrapper for Windows cmd.exe and PowerShell; use `.\woco.bat` in place of
+`./woco` on Windows systems.
 
-TODO:  Links to developer/contributor documentation
+For full setup details and troubleshooting, see
+[docs/devel/BUILD.md](./docs/devel/BUILD.md). For a task-oriented index of
+all developer and operator docs, see
+[docs/devel/README.md](./docs/devel/README.md).
 
-Of course, make sure you also visit our sponsor [The US Philatelic Classics Society](https://www.uspcs.org/), and see [our live version of this app](https://hellowoco.app/)!
+## Development
 
-> For any issues or contributions to **WorldCovers**, please refer to our [issue tracker](#) or [contributing guide](#).
+For day-to-day development, run:
 
-> Parts of this codebase were generated by AI.  No PRs are automatically accepted without human review, and a good faith effort is being made to avoid leaked proprietary code and usage without attribution.  Do not hesitate to contact us with questions/comments/concerns!
+```sh
+./woco dev
+```
 
-_We hope you enjoy WorldCovers!_
+With `DEBUG=True`, this starts Vite on `http://localhost:8080` and Django on
+`http://127.0.0.1:8000`. Open the Vite URL for frontend hot reload. API,
+admin, media, and static requests are proxied to Django.
+
+With `DEBUG=False`, `./woco dev` builds `frontend/dist/` and serves the built
+SPA through Django at `http://127.0.0.1:8000`.
+
+## Deployment And Operations
+
+Hosted deploys target Ubuntu 24.04 LTS servers with systemd, nginx, MySQL 8,
+Node 22, uv, and Python 3.13. The checked-in provisioning script is written
+for that host profile.
+
+The deployment source of truth is:
+
+- [.github/workflows/build-and-deploy.yml](./.github/workflows/build-and-deploy.yml)
+- [.github/workflows/deploy-prod.yml](./.github/workflows/deploy-prod.yml)
+- [deploy/provision.sh](./deploy/provision.sh)
+- [deploy/deploy.sh](./deploy/deploy.sh)
+- [deploy/worldcovers.service](./deploy/worldcovers.service)
+- [deploy/worldcovers-apply-unit.sh](./deploy/worldcovers-apply-unit.sh)
+
+GitHub Actions stops and starts the `worldcovers` service around each deploy.
+Staging can apply a changed systemd unit through the audited helper; production
+fails closed until a root operator reviews and applies unit changes manually.
+`deploy/deploy.sh` runs dependency sync, migrations, frontend build, and
+Django static collection.
+
+For deployment details, see [docs/devel/DEPLOY.md](./docs/devel/DEPLOY.md).
+For operator tasks, see [docs/devel/RUNBOOK.md](./docs/devel/RUNBOOK.md).
+For ETL and management commands, see [docs/devel/TOOLS.md](./docs/devel/TOOLS.md).
+For the ASCC catalog pipeline, see [docs/devel/PIPELINE.md](./docs/devel/PIPELINE.md).
+
+## Versioning
+
+The app version is a single string in [VERSION](./VERSION) at the repo root.
+`pyproject.toml` reads it dynamically via `[tool.hatch.version]`, and
+`frontend/vite.config.ts` reads the same file to build the `__APP_VERSION__`
+constant shown in the site footer. To release a new version, edit `VERSION`
+only -- nothing else needs to change.
+
+`frontend/package.json` also carries a `version` field because npm requires
+one; it is not read by the app and can drift. Treat `VERSION` as canonical.
+
+## License And Contributions
+
+For licensing details, see [LICENSE](./LICENSE).
+
+Contribution policy and public issue-tracker links are not yet formalized. Coordinate changes through the project team.
+
+Parts of this codebase were generated with AI assistance. Changes still require
+human review before acceptance.
+
+---
+
+_**We hope you enjoy WoCo!**_

@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { Info, Loader2, Pencil, Trash2 } from "lucide-react";
+import { CheckCircle, Info, Loader2, MessageSquare, Pencil, Plus, Trash2, XCircle } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type CarouselApi } from "@/components/ui/carousel";
-import { formatCatalogDate } from "@/lib/catalogRecordDisplay";
+import { formatDateSeen } from "@/lib/catalogRecordDisplay";
 import { EntryDetailLayout } from "@/components/entry-detail/EntryDetailLayout";
 import { EntryImageGalleryCard } from "@/components/entry-detail/EntryImageGalleryCard";
 import { EntryAssociatedThumbnailsCard } from "@/components/entry-detail/EntryAssociatedThumbnailsCard";
@@ -20,9 +21,12 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
   getImagesForSubject,
+  getMarkingById,
   getMarkingChangelog,
   getCoverMarkingsByCover,
+  deleteImage,
   loadAssociatedMarkingsForCover,
+  moveImageSubject,
   normalizeImageUrl,
   postCoverMarkingReview,
   reorderImages,
@@ -54,12 +58,16 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  createCoverMarking,
   getCoverById,
   removeCover,
   restoreCover,
   type CoverDetail,
   type CoverDateSeenItem,
 } from "@/services/covers";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { parseMarkingIdInput } from "@/lib/recordLinking";
 import { listCitationsForSubject } from "@/services/citations";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import { SUBMISSION_LABELS } from "@/labels/submission";
@@ -68,6 +76,8 @@ const EMPTY = "-";
 
 type CoverDetailLocationState = {
   from?: string;
+  fromDashboard?: boolean;
+  dashboardTab?: "submissions" | "editor";
   markingId?: number;
   coverMarkingId?: number;
 };
@@ -89,14 +99,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: CoverDateSeenItem): string {
-  const raw = d.date || "";
-  const truncated =
-    d.granularity === "YEAR"
-      ? raw.slice(0, 4)
-      : d.granularity === "MONTH"
-        ? raw.slice(0, 7)
-        : raw.slice(0, 10);
-  return formatCatalogDate(truncated) || truncated;
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 
@@ -152,15 +159,25 @@ const CoverDetailPage = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
-  const [coverReviewOpen, setCoverReviewOpen] = useState(false);
-  const [coverReviewKind, setCoverReviewKind] = useState<CoverMarkingReviewActionApi | null>(null);
   const [coverReviewNotes, setCoverReviewNotes] = useState("");
+  const [coverReviewError, setCoverReviewError] = useState<string | null>(null);
   const [coverReviewBusy, setCoverReviewBusy] = useState(false);
   const [removeOpen, setRemoveOpen] = useState(false);
   const [removeReason, setRemoveReason] = useState("");
   const [removing, setRemoving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
+  const [linkMarkingOpen, setLinkMarkingOpen] = useState(false);
+  const [linkMarkingInput, setLinkMarkingInput] = useState("");
+  const [linkMarkingIsBackstamp, setLinkMarkingIsBackstamp] = useState(false);
+  const [linkMarkingBusy, setLinkMarkingBusy] = useState(false);
+  const [linkMarkingError, setLinkMarkingError] = useState<string | null>(null);
+  const [moveImageIndex, setMoveImageIndex] = useState<number | null>(null);
+  const [moveImageTargetMarkingId, setMoveImageTargetMarkingId] = useState("");
+  const [moveImageView, setMoveImageView] = useState("FULL");
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
+  const [moveImageError, setMoveImageError] = useState<string | null>(null);
 
   const isStaff =
     !!user &&
@@ -195,28 +212,19 @@ const CoverDetailPage = () => {
     setCoverMarkingLink(link);
   }, [coverPk, markingId]);
 
-  const openCoverReview = (kind: CoverMarkingReviewActionApi) => {
-    setCoverReviewKind(kind);
-    setCoverReviewNotes("");
-    setCoverReviewOpen(true);
-  };
-
-  const submitCoverReview = async () => {
-    if (!coverMarkingLink || !coverReviewKind) return;
-    if (coverReviewKind === "request-revision" && !coverReviewNotes.trim()) {
-      toast({
-        title: "Comment required",
-        description: "Explain what should change before the contributor resubmits.",
-        variant: "destructive",
-      });
+  const submitCoverReview = async (kind: CoverMarkingReviewActionApi) => {
+    if (!coverMarkingLink) return;
+    if (kind !== "approve" && !coverReviewNotes.trim()) {
+      setCoverReviewError("A comment is required to reject or request revision.");
       return;
     }
+    setCoverReviewError(null);
     setCoverReviewBusy(true);
     try {
       const res = await postCoverMarkingReview(
         coverMarkingLink.id,
-        coverReviewKind,
-        coverReviewNotes,
+        kind,
+        coverReviewNotes.trim() || undefined,
       );
       if (!res.ok) {
         toast({
@@ -229,14 +237,12 @@ const CoverDetailPage = () => {
       toast({
         title: "Cover review saved",
         description:
-          coverReviewKind === "approve"
+          kind === "approve"
             ? "This cover link is now visible to everyone on the catalog record."
-            : coverReviewKind === "reject"
+            : kind === "reject"
               ? "The contributor will see this cover as rejected on the record."
               : "The contributor can edit the cover and resubmit it for review.",
       });
-      setCoverReviewOpen(false);
-      setCoverReviewKind(null);
       setCoverReviewNotes("");
       await refreshCoverMarkingLink();
     } finally {
@@ -263,7 +269,11 @@ const CoverDetailPage = () => {
         setRemoveReason("");
         await reloadCover();
       } else {
-        toast({ title: "Could not remove", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not remove",
+          description: "message" in res ? res.message : "Could not remove cover.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRemoving(false);
@@ -280,7 +290,11 @@ const CoverDetailPage = () => {
         setRestoreOpen(false);
         await reloadCover();
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore cover.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoring(false);
@@ -288,15 +302,12 @@ const CoverDetailPage = () => {
   };
 
   const handleBack = () => {
-    if (state?.from) {
-      navigate(state.from);
+    const associatedMarkingId = markingId ?? associatedMarkings[0]?.marking.id ?? null;
+    if (associatedMarkingId != null) {
+      navigate(`/record/${associatedMarkingId}`);
       return;
     }
-    if (markingId != null) {
-      navigate(`/record/${markingId}`);
-      return;
-    }
-    navigate(-1);
+    navigate("/search");
   };
 
   useEffect(() => {
@@ -388,7 +399,7 @@ const CoverDetailPage = () => {
         if (!data) {
           setHistoryEvents([]);
           setHistoryError(
-            "Unable to load record history (you may not be assigned to this region).",
+            "Direct import from catalog",
           );
           return;
         }
@@ -464,13 +475,131 @@ const CoverDetailPage = () => {
     const next = images.slice();
     const [picked] = next.splice(index, 1);
     next.unshift(picked);
+    setCurrent(0);
     void applyImageOrder(next);
   };
+
+  const handleDeleteImage = useCallback(
+    async (index: number) => {
+      if (coverPk == null) return;
+      const image = images[index];
+      if (!image || image.imageId <= 0) return;
+      const label = image.originalFilename || `image ${index + 1}`;
+      const confirmed = window.confirm(
+        `Delete ${label}? This removes the image from this cover.`,
+      );
+      if (!confirmed) return;
+      setDeletingImageId(image.imageId);
+      try {
+        const res = await deleteImage(image.imageId);
+        if (res.ok) {
+          toast({ title: "Image deleted" });
+          const refreshed = await getImagesForSubject({
+            subjectType: "COVER",
+            subjectId: coverPk,
+          });
+          setImages(refreshed);
+          setCurrent((prev) => Math.max(0, Math.min(prev, refreshed.length - 1)));
+        } else {
+          toast({
+            title: "Could not delete image",
+            description: "message" in res ? res.message : "Could not delete image.",
+            variant: "destructive",
+          });
+        }
+      } finally {
+        setDeletingImageId(null);
+      }
+    },
+    [coverPk, images, toast],
+  );
 
   const requireAuth = (): boolean => {
     if (user) return true;
     navigate("/auth", { state: { from: location } });
     return false;
+  };
+
+  // Reassigns an image from this cover to one of its associated markings
+  // (issue #48, reverse direction). Target list is restricted to markings
+  // already linked to this cover.
+  const handleMoveImageToMarking = async () => {
+    if (coverPk == null || moveImageIndex == null) return;
+    const image = images[moveImageIndex];
+    if (!image || image.imageId <= 0) return;
+    const targetId = parseInt(moveImageTargetMarkingId, 10);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+      setMoveImageError("Select a target marking.");
+      return;
+    }
+    setMoveImageBusy(true);
+    setMoveImageError(null);
+    try {
+      const res = await moveImageSubject(image.imageId, "MARKING", targetId, moveImageView);
+      if (res.ok === false) {
+        setMoveImageError(res.message);
+        return;
+      }
+      toast({ title: "Image moved", description: "Image reassigned to the marking." });
+      setMoveImageIndex(null);
+      const refreshed = await getImagesForSubject({
+        subjectType: "COVER",
+        subjectId: coverPk,
+      });
+      setImages(refreshed);
+      setCurrent((prev) => Math.max(0, Math.min(prev, refreshed.length - 1)));
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
+  // Creates a CoverMarking junction row between this cover and an
+  // already-existing marking. The endpoint is editor/admin-gated
+  // (IsEditorOrAdminWrite), so the button only renders for isStaff.
+  const handleLinkExistingMarking = async () => {
+    if (coverPk == null) return;
+    const markingIdTarget = parseMarkingIdInput(linkMarkingInput);
+    if (markingIdTarget == null) {
+      setLinkMarkingError("Enter a valid marking ID.");
+      return;
+    }
+    setLinkMarkingBusy(true);
+    setLinkMarkingError(null);
+    try {
+      const marking = await getMarkingById(markingIdTarget);
+      if (!marking) {
+        setLinkMarkingError(`Marking ${markingIdTarget} not found.`);
+        return;
+      }
+      await createCoverMarking({
+        cover: coverPk,
+        marking: markingIdTarget,
+        is_backstamp: linkMarkingIsBackstamp,
+      });
+      toast({
+        title: "Marking linked",
+        description: `Marking ${marking.code ?? markingIdTarget} is now linked to this cover.`,
+      });
+      setLinkMarkingOpen(false);
+      setLinkMarkingInput("");
+      setLinkMarkingIsBackstamp(false);
+      const linksResult = await getCoverMarkingsByCover(coverPk);
+      const linkForMarking =
+        markingId != null
+          ? linksResult.links.find((l) => l.markingId === markingId) ?? null
+          : linksResult.links[0] ?? null;
+      setCoverMarkingLink(linkForMarking);
+      const markings = await loadAssociatedMarkingsForCover(linksResult.links);
+      setAssociatedMarkings(markings);
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string; non_field_errors?: string[] } } };
+      const detail = ax.response?.data?.detail ?? ax.response?.data?.non_field_errors?.[0];
+      setLinkMarkingError(
+        typeof detail === "string" ? detail : "Could not link marking. It may already be linked.",
+      );
+    } finally {
+      setLinkMarkingBusy(false);
+    }
   };
 
   const openEditCover = () => {
@@ -517,6 +646,7 @@ const CoverDetailPage = () => {
   }
 
   const galleryImages = buildCoverGalleryImages(images);
+  const canManageImages = isStaff && !cover.isRemoved;
   // A removed (recycle-binned) cover is read-only: no edits until it is restored
   // (mirrors the marking record UI).
   const canSubmitEdit =
@@ -552,16 +682,34 @@ const CoverDetailPage = () => {
               carouselApi={api}
               setCarouselApi={setApi}
               currentIndex={current}
+              canSetDefaultImage={canManageImages}
+              settingDefaultImage={reorderingImages}
+              onSetDefaultImage={setImageAsDefault}
             />
             <EntryAssociatedThumbnailsCard
               images={galleryImages}
               carouselApi={api}
               currentIndex={current}
               emptyMessage="No images linked to this cover yet."
-              canReorder={isStaff && !cover.isRemoved}
+              canReorder={canManageImages && galleryImages.length > 1}
               reorderingImages={reorderingImages}
+              deletingImageId={deletingImageId}
               onMoveBy={moveImageBy}
               onSetDefault={setImageAsDefault}
+              onDeleteImage={canManageImages ? handleDeleteImage : undefined}
+              onMoveImage={
+                canManageImages && !cover.isRemoved && associatedMarkings.length > 0
+                  ? (index) => {
+                      setMoveImageIndex(index);
+                      setMoveImageTargetMarkingId(
+                        String(associatedMarkings[0]?.marking.id ?? ""),
+                      );
+                      setMoveImageView("FULL");
+                      setMoveImageError(null);
+                    }
+                  : undefined
+              }
+              moveImageLabel="Move to marking"
             />
             {canViewHistory && (
               <EntryRecordHistoryCard
@@ -590,7 +738,7 @@ const CoverDetailPage = () => {
             <Card className="shadow-archival-md">
               <CardHeader>
                 <div className="flex items-center justify-between gap-3">
-                  <CardTitle className="font-heading text-lg">Record Details</CardTitle>
+                  <CardTitle className="font-heading text-lg">Cover Details</CardTitle>
                   {canSubmitEdit && (
                     <Button variant="outline" size="sm" onClick={openEditCover}>
                       <Pencil className="mr-2 h-4 w-4" />
@@ -629,26 +777,9 @@ const CoverDetailPage = () => {
                   date={datesText}
                   institutionallyOwned={institutionalText}
                   backstamp={backstampText}
+                  submittedBy={cover.submitterName}
+                  description={cover.description}
                 />
-                {canReviewCover && (
-                  <div className="flex flex-wrap gap-2 mt-4 pt-4 border-t border-border">
-                    <Button type="button" size="sm" variant="default" onClick={() => openCoverReview("approve")}>
-                      Approve
-                    </Button>
-                    <Button type="button" size="sm" variant="secondary" onClick={() => openCoverReview("request-revision")}>
-                      Return for revision
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      className="text-destructive border-destructive/50 hover:bg-destructive/10"
-                      onClick={() => openCoverReview("reject")}
-                    >
-                      Reject
-                    </Button>
-                  </div>
-                )}
                 {cover.canRemove && (
                   <div className="mt-4 pt-4 border-t border-border flex justify-end">
                     {cover.isRemoved ? (
@@ -667,11 +798,88 @@ const CoverDetailPage = () => {
               </CardContent>
             </Card>
 
+            {canReviewCover && (
+              <Card className="shadow-archival-lg border-primary/20">
+                <CardHeader>
+                  <CardTitle className="font-heading text-lg">Review this cover</CardTitle>
+                  <p className="text-sm text-muted-foreground">
+                    Choose Approve, Reject, or Return.
+                  </p>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="cover-detail-review-notes">Comment</Label>
+                    <Textarea
+                      id="cover-detail-review-notes"
+                      placeholder="Optional for approvals, required for rejection/revision."
+                      rows={4}
+                      value={coverReviewNotes}
+                      onChange={(e) => {
+                        setCoverReviewNotes(e.target.value);
+                        if (coverReviewError && e.target.value.trim()) setCoverReviewError(null);
+                      }}
+                      disabled={coverReviewBusy}
+                      className={`resize-none ${coverReviewError ? "border-destructive" : ""}`}
+                    />
+                    {coverReviewError ? (
+                      <p className="text-sm text-destructive">{coverReviewError}</p>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-2">
+                    <Button
+                      type="button"
+                      onClick={() => void submitCoverReview("approve")}
+                      disabled={coverReviewBusy}
+                      className="bg-green-600 hover:bg-green-700"
+                    >
+                      <CheckCircle className="mr-2 h-4 w-4" />
+                      {coverReviewBusy ? "Submitting..." : "Approve"}
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="destructive"
+                      onClick={() => void submitCoverReview("reject")}
+                      disabled={coverReviewBusy}
+                    >
+                      <XCircle className="mr-2 h-4 w-4" />
+                      Reject
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void submitCoverReview("request-revision")}
+                      disabled={coverReviewBusy}
+                    >
+                      <MessageSquare className="mr-2 h-4 w-4" />
+                      Return
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
             <Card className="shadow-archival-md">
               <CardHeader>
-                <CardTitle className="font-heading text-lg">
-                  Associated Markings ({associatedMarkingCount})
-                </CardTitle>
+                <div className="flex items-center justify-between gap-3">
+                  <CardTitle className="font-heading text-lg">
+                    Associated Markings ({associatedMarkingCount})
+                  </CardTitle>
+                  {isStaff && !cover.isRemoved && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setLinkMarkingInput("");
+                        setLinkMarkingIsBackstamp(false);
+                        setLinkMarkingError(null);
+                        setLinkMarkingOpen(true);
+                      }}
+                    >
+                      <Plus className="mr-2 h-4 w-4" />
+                      Link Existing Marking
+                    </Button>
+                  )}
+                </div>
               </CardHeader>
               <CardContent className="space-y-4 pt-0">
                 {markingsLoadError && (
@@ -705,67 +913,146 @@ const CoverDetailPage = () => {
       />
 
       <Dialog
-        open={coverReviewOpen}
+        open={moveImageIndex != null}
         onOpenChange={(open) => {
-          if (coverReviewBusy) return;
-          setCoverReviewOpen(open);
+          if (moveImageBusy) return;
+          if (!open) setMoveImageIndex(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Image to Marking</DialogTitle>
+            <DialogDescription>
+              Reassign this image from the cover to one of its associated markings.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-id">Target marking</Label>
+              <Select
+                value={moveImageTargetMarkingId}
+                onValueChange={(v) => {
+                  setMoveImageTargetMarkingId(v);
+                  setMoveImageError(null);
+                }}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-marking-id">
+                  <SelectValue placeholder="Select a marking…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {associatedMarkings.map(({ marking }) => (
+                    <SelectItem key={marking.id} value={String(marking.id)}>
+                      {marking.code ?? `Marking #${marking.id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-view">Image view</Label>
+              <Select
+                value={moveImageView}
+                onValueChange={(v) => setMoveImageView(v)}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-marking-view">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FULL">Full</SelectItem>
+                  <SelectItem value="DETAIL">Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {moveImageError && <p className="text-sm text-destructive">{moveImageError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoveImageIndex(null)}
+              disabled={moveImageBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleMoveImageToMarking()}
+              disabled={moveImageBusy || !moveImageTargetMarkingId}
+            >
+              {moveImageBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Moving…
+                </>
+              ) : (
+                "Move Image"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={linkMarkingOpen}
+        onOpenChange={(open) => {
+          if (linkMarkingBusy) return;
+          setLinkMarkingOpen(open);
           if (!open) {
-            setCoverReviewKind(null);
-            setCoverReviewNotes("");
+            setLinkMarkingInput("");
+            setLinkMarkingIsBackstamp(false);
+            setLinkMarkingError(null);
           }
         }}
       >
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>
-              {coverReviewKind === "approve"
-                ? "Approve this cover link"
-                : coverReviewKind === "reject"
-                  ? "Reject this cover link"
-                  : "Return this cover for revision"}
-            </DialogTitle>
+            <DialogTitle>Link Existing Marking</DialogTitle>
+            <DialogDescription>
+              Enter the marking ID to link it to this cover.
+            </DialogDescription>
           </DialogHeader>
-          <div className="space-y-2 py-2">
-            <Label htmlFor="cover-detail-review-notes">
-              Note to contributor{" "}
-              <span className="text-destructive">
-                {coverReviewKind === "request-revision" ? "(required)" : "(optional)"}
-              </span>
-            </Label>
-            <Textarea
-              id="cover-detail-review-notes"
-              rows={4}
-              value={coverReviewNotes}
-              onChange={(e) => setCoverReviewNotes(e.target.value)}
-              disabled={coverReviewBusy}
-              placeholder={
-                coverReviewKind === "request-revision"
-                  ? "Describe what needs to change before this cover can be approved."
-                  : "Optional context for the contributor."
-              }
+          <div className="space-y-3 py-2">
+            <Input
+              placeholder="Marking ID"
+              value={linkMarkingInput}
+              onChange={(e) => {
+                setLinkMarkingInput(e.target.value);
+                setLinkMarkingError(null);
+              }}
+              disabled={linkMarkingBusy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleLinkExistingMarking();
+                }
+              }}
+              autoFocus
             />
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={linkMarkingIsBackstamp}
+                onCheckedChange={(value) => setLinkMarkingIsBackstamp(value === true)}
+                disabled={linkMarkingBusy}
+              />
+              Backstamp
+            </label>
+            {linkMarkingError && <p className="text-sm text-destructive">{linkMarkingError}</p>}
           </div>
-          <DialogFooter className="gap-2 sm:gap-0">
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => setCoverReviewOpen(false)}
-              disabled={coverReviewBusy}
-            >
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkMarkingOpen(false)} disabled={linkMarkingBusy}>
               Cancel
             </Button>
             <Button
-              type="button"
-              onClick={() => void submitCoverReview()}
-              disabled={coverReviewBusy}
+              onClick={() => void handleLinkExistingMarking()}
+              disabled={linkMarkingBusy || !linkMarkingInput.trim()}
             >
-              {coverReviewBusy ? (
+              {linkMarkingBusy ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Saving…
+                  Linking…
                 </>
               ) : (
-                "Confirm"
+                "Link Marking"
               )}
             </Button>
           </DialogFooter>

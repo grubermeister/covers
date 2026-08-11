@@ -7,6 +7,18 @@ from django.apps import apps
 import reversion
 
 
+# Append-only audit/snapshot tables maintained by common/audit.py. Registering
+# them with reversion would double-store every custom snapshot (history of
+# history), so they are excluded from version tracking.
+REVERSION_EXCLUDED_MODELS = frozenset({
+    "submissiontransaction",
+    "markingversion",
+    "coverversion",
+    "markingrecyclebin",
+    "coverrecyclebin",
+})
+
+
 class CommonConfig(AppConfig):
     default_auto_field = "django.db.models.BigAutoField"
     name = "common"
@@ -18,6 +30,8 @@ class CommonConfig(AppConfig):
 
         for model in app_config.get_models():
             if model._meta.abstract:
+                continue
+            if model._meta.model_name in REVERSION_EXCLUDED_MODELS:
                 continue
             if not reversion.is_registered(model):
                 reversion.register(model)

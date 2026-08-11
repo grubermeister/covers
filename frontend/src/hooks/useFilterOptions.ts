@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { ColorOption } from '@/lib/api';
 import { getColors } from '@/services/colors';
 import { getShapes } from '@/services/shapes';
@@ -41,7 +41,7 @@ export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOp
   const [error, setError] = useState<string | null>(null);
   const assignedStatesOnly = options?.assignedStatesOnly ?? false;
 
-  const fetchOptions = async () => {
+  const fetchOptions = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
@@ -63,11 +63,11 @@ export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOp
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [assignedStatesOnly]);
 
   useEffect(() => {
     fetchOptions();
-  }, [assignedStatesOnly]);
+  }, [fetchOptions]);
 
   return {
     colorOptions,

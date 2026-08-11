@@ -23,9 +23,10 @@ REPO_ROOT = BASE_DIR.parent
 # SECURITY WARNING: keep the secret key used in production secret!
 # Read from env (decouple). No default -- the app refuses to start if
 # DJANGO_SECRET_KEY is missing, which is the correct behaviour for a
-# secret. Generate a new value with:
-#   python -c "from django.core.management.utils import get_random_secret_key; print(get_random_secret_key())"
-# and put it in the local .env (dev) or /srv/woco/.env (prod).
+# secret. Generate a new value with './woco secretkey' from the repo root
+# and put it in the repo-root .env (dev) or backend/.env (deployed hosts;
+# written by deploy/provision.sh). decouple searches upward from this
+# directory, so backend/.env wins when both exist.
 SECRET_KEY = config("DJANGO_SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
@@ -69,10 +70,6 @@ INSTALLED_APPS = [
     "reversion_compare",
 
     "common.apps.CommonConfig",
-    # Empty shell. The postmarks app no longer carries any models or admin
-    # registrations; this entry exists so Django can resolve historical
-    # migration dependencies in common/migrations/0012_state_fk_to_location_proxy.
-    "postmarks.apps.PostmarksConfig",
 ]
 if not TESTING:
     # django_debug_toolbar cannot be present in automated testing
@@ -176,7 +173,7 @@ USE_TZ = True
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
 
-# React SPA (frontend) – built output served as site home
+# React SPA (frontend) - built output served as site home
 # Put your React app in frontend/ and run `npm run build`; index.html + /assets/ served from here
 FRONTEND_DIST = REPO_ROOT / "frontend" / "dist"
 
@@ -196,6 +193,12 @@ DJANGO_ADMIN_LOGS_DELETETABLE = True
 
 # Don't clutter production logs with unchanged object saves
 DJANGO_ADMIN_LOGS_IGNORE_UNCHANGED = False if DEBUG else True 
+
+# Reversion pruning policy (used by the prune_revisions management command).
+# Delete version rows older than RETENTION_DAYS, but always keep the most
+# recent KEEP_PER_OBJECT versions for every object.
+REVERSION_PRUNE_RETENTION_DAYS = 180
+REVERSION_PRUNE_KEEP_PER_OBJECT = 3
 
 # REST Framework settings (if using API)
 REST_FRAMEWORK = {
@@ -228,7 +231,7 @@ REST_FRAMEWORK = {
 # API Documentation
 SPECTACULAR_SETTINGS = {
     "TITLE": "WorldCovers API",
-    "DESCRIPTION": "WorldCovers REST interface for postmark and stampless cover data",
+    "DESCRIPTION": "WorldCovers REST interface for postal marking and stampless cover data",
     "VERSION": "2.0.0",
     "SWAGGER_UI_SETTINGS": {
         "supportedSubmitMethods": [],
@@ -245,9 +248,9 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
 DATA_UPLOAD_MAX_MEMORY_SIZE = 104857600  # 100MB
 
 # Image Processing Settings
-POSTMARK_IMAGE_MAX_WIDTH = 4000
-POSTMARK_IMAGE_MAX_HEIGHT = 4000
-POSTMARK_IMAGE_QUALITY = 95
+MARKING_IMAGE_MAX_WIDTH = 4000
+MARKING_IMAGE_MAX_HEIGHT = 4000
+MARKING_IMAGE_QUALITY = 95
 
 # Logging Configuration
 DJANGO_LOG_LEVEL = "DEBUG" if DEBUG else config("DJANGO_LOG_LEVEL", default="WARNING")

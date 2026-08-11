@@ -1,0 +1,110 @@
+# On push to main: build, check, and deploy to hellowoco.app.
+# Production systemd unit updates require a manual root apply.
+name: Build and deploy to production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Opt JS-based actions into the node24 runtime ahead of GitHub's forced flip.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Malware fingerprint scan
+        run: bash tools/fingerprint.sh
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v8.2.0
+        with:
+          version: "0.11.2"
+          enable-cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: uv sync --no-dev --frozen
+
+      - name: Verify frontend
+        run: |
+          cd frontend
+          npm ci
+          # Gate at high: the residual moderates are react-router's, whose fix
+          # is a 6 -> 7 major bump on the SPA's routing library. Tracked
+          # separately; restore --audit-level=moderate once that lands.
+          npm audit --audit-level=high
+          npm run lint
+          npm run typecheck
+          npm test -- --runInBand
+          npm run build
+
+      - name: Verify tools
+        run: |
+          cd tools
+          uv run python -m unittest discover -s tests
+
+      - name: Django system checks
+        env:
+          DJANGO_SECRET_KEY: ci-dummy-not-a-real-secret-do-not-use-anywhere
+        run: uv run python backend/manage.py check
+
+      - name: Upload frontend build
+        uses: actions/upload-artifact@v7
+        with:
+          name: frontend-dist
+          path: frontend/dist/
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to hellowoco.app
+        uses: appleboy/ssh-action@v1.2.5
+        with:
+          host: hellowoco.app
+          username: wocod
+          key: ${{ secrets.PROD_DEPLOY_SSH_KEY }}
+          command_timeout: 20m
+          script: |
+            set -euo pipefail
+            export PATH="$HOME/.local/bin:$PATH"
+
+            git -C /srv/woco fetch origin
+            git -C /srv/woco reset --hard origin/main
+            git -C /srv/woco clean -fd backend/common/migrations
+
+            if ! diff -q /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
+                echo "Production systemd unit differs from git."
+                echo "Apply manually as root after review:"
+                echo "  systemd-analyze verify /srv/woco/deploy/worldcovers.service"
+                echo "  install -m 644 /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service"
+                echo "  systemctl daemon-reload"
+                exit 1
+            fi
+
+            service_stopped=0
+            restart_if_stopped() {
+                if [ "$service_stopped" -eq 1 ]; then
+                    sudo -n /bin/systemctl start worldcovers || true
+                fi
+            }
+            trap restart_if_stopped EXIT
+
+            sudo -n /bin/systemctl stop worldcovers
+            service_stopped=1
+            cd /srv/woco && ./deploy/deploy.sh
+            sudo -n /bin/systemctl start worldcovers
+            service_stopped=0
+            trap - EXIT

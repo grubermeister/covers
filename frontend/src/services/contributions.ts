@@ -4,22 +4,22 @@
  *
  * Single source for the contribution transport that used to be copy-pasted as
  * raw fetch() across ContributionDetail, CoverContributionDetail, Dashboard,
- * Contribute, CoverEdit, and EditSubmissionDialog. Each of those sites manually
+ * Contribute, and CoverEdit. Each of those sites manually
  * re-read VITE_API_URL, read the CSRF cookie, hand-built headers, parsed res.ok,
  * and re-implemented camelCase/snake_case normalization. All of that lives here
  * now and goes through the configured apiClient.
  *
- * The backend renders responses with CamelCaseJSONRenderer, so reads tolerate
+ * The backend renders responses with CamelCaseJSONRenderer, so reads use
  * camelCase first and fall back to snake_case. ensureCsrfToken() runs before
  * every unsafe verb so a freshly-landed user does not 403 on the first write.
  */
 import apiClient, { ensureCsrfToken } from "@/lib/api";
 
+const CONTRIBUTION_UPLOAD_TIMEOUT_MS = 300000;
+
 /**
  * One contribution row off the wire. Tolerates camelCase (renderer) and
- * snake_case, plus the long tail of optional display fields the editor lists
- * read. Kept loose on purpose -- this is the union of every shape the API has
- * historically returned for a contribution.
+ * snake_case, plus the optional display fields the editor lists read.
  */
 export interface ContributionApiItem {
   id: number;
@@ -36,11 +36,10 @@ export interface ContributionApiItem {
   submittedData?: Record<string, unknown>;
   display_name?: string;
   displayName?: string;
-  postmark?: number | null;
-  postmark_id?: number | null;
-  postmarkId?: number | null;
   marking_id?: number | null;
   markingId?: number | null;
+  cover_id?: number | null;
+  coverId?: number | null;
   // ContributionDetailSerializer exposes the approved marking link as plain
   // "marking" (the FK pk), distinct from the list serializer's "marking_id".
   marking?: number | null;
@@ -71,9 +70,16 @@ export interface Contribution {
   createdAt: string;
   submittedData: Record<string, unknown>;
   displayName?: string;
-  /** Unified postmark / postmark_id / postmarkId (set once approved). */
-  postmarkId: number | null;
   markingId: number | null;
+  coverId: number | null;
+}
+
+export interface CatalogCodeSuggestion {
+  catalogCode: string;
+  prefix: string;
+  referenceCode: string;
+  regionAbbrev: string;
+  subjectType: "MARKING" | "COVER";
 }
 
 function toNumberOrNull(v: unknown): number | null {
@@ -111,11 +117,9 @@ export function mapApiItemToContribution(item: ContributionApiItem): Contributio
     submittedData,
     displayName: (item.display_name ?? item.displayName) as string | undefined,
     // "marking" is what the detail serializer returns; without it the detail
-    // page sees a null marking id and the approved->record redirect never fires.
-    postmarkId: toNumberOrNull(
-      firstDefined(item.postmark_id, item.postmarkId, item.postmark, item.marking_id, item.markingId, item.marking),
-    ),
+    // page sees a null marking id and the approved-to-record redirect never fires.
     markingId: toNumberOrNull(firstDefined(item.marking_id, item.markingId, item.marking)),
+    coverId: toNumberOrNull(firstDefined(item.cover_id, item.coverId)),
   };
 }
 
@@ -124,7 +128,6 @@ export interface ContributionListParams {
   mode?: "editor";
   status?: string;
   state?: string;
-  kind?: "suggestion";
   page?: number;
   pageSize?: number;
   ordering?: string;
@@ -146,7 +149,6 @@ export async function listContributions(
   if (params?.mode) query.mode = params.mode;
   if (params?.status) query.status = params.status;
   if (params?.state) query.state = params.state;
-  if (params?.kind) query.kind = params.kind;
   if (params?.page != null) query.page = params.page;
   if (params?.pageSize != null) query.page_size = params.pageSize;
   if (params?.ordering) query.ordering = params.ordering;
@@ -175,7 +177,8 @@ export async function getContribution(id: number): Promise<Contribution> {
 /** Minimal write result; `raw` is the untouched response for any field not unified here. */
 export interface ContributionWriteResult {
   contributionId: number | null;
-  postmarkId: number | null;
+  markingId: number | null;
+  coverId: number | null;
   raw: Record<string, unknown>;
 }
 
@@ -185,7 +188,8 @@ function mapWriteResult(raw: unknown): ContributionWriteResult {
     contributionId: toNumberOrNull(
       firstDefined(o.contributionId, o.contribution_id, o.id),
     ),
-    postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark)),
+    markingId: toNumberOrNull(firstDefined(o.marking_id, o.markingId)),
+    coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
 }
@@ -203,7 +207,12 @@ export async function createContribution(
   body: FormData | Record<string, unknown>,
 ): Promise<ContributionWriteResult> {
   await ensureCsrfToken();
-  const res = await apiClient.post("/contributions/", body);
+  const isMultipart = typeof FormData !== "undefined" && body instanceof FormData;
+  const res = await apiClient.post(
+    "/contributions/",
+    body,
+    isMultipart ? { timeout: CONTRIBUTION_UPLOAD_TIMEOUT_MS } : undefined,
+  );
   return mapWriteResult(res.data);
 }
 
@@ -226,10 +235,13 @@ export interface DecideOptions {
   reviewNotes?: string;
   /** Approve only; sent only when provided. */
   estimatedValue?: number;
+  /** Approve only; editor-owned catalog code. Empty means regenerate. */
+  catalogCode?: string | null;
 }
 
 export interface DecideResult {
-  postmarkId: number | null;
+  markingId: number | null;
+  coverId: number | null;
   raw: Record<string, unknown>;
 }
 
@@ -249,18 +261,69 @@ export async function decideContribution(
   const notes = opts?.reviewNotes?.trim();
   if (notes) body.review_notes = notes;
   if (opts?.estimatedValue != null) body.estimated_value = opts.estimatedValue;
+  if (opts && "catalogCode" in opts) body.catalog_code = opts.catalogCode ?? "";
 
   const res = await apiClient.post(`/contributions/${id}/${actionPath}/`, body);
   const o = res.data && typeof res.data === "object" ? (res.data as Record<string, unknown>) : {};
   return {
-    postmarkId: toNumberOrNull(firstDefined(o.postmark_id, o.postmarkId, o.postmark)),
+    markingId: toNumberOrNull(firstDefined(o.marking_id, o.markingId)),
+    coverId: toNumberOrNull(firstDefined(o.cover_id, o.coverId)),
     raw: o,
   };
 }
 
-// DELETE /contributions/{id}/  -- hard-deletes a draft; backend enforces IsDraftOwner
-// (status must be "draft" and requester must be owner or superuser). No response body.
-export async function deleteDraftContribution(contributionId: number): Promise<void> {
+function mapCatalogCodeSuggestion(raw: unknown): CatalogCodeSuggestion {
+  const o = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  return {
+    catalogCode: String(o.catalog_code ?? o.catalogCode ?? ""),
+    prefix: String(o.prefix ?? ""),
+    referenceCode: String(o.reference_code ?? o.referenceCode ?? ""),
+    regionAbbrev: String(o.region_abbrev ?? o.regionAbbrev ?? ""),
+    subjectType:
+      String(o.subject_type ?? o.subjectType ?? "MARKING").toUpperCase() === "COVER"
+        ? "COVER"
+        : "MARKING",
+  };
+}
+
+export async function getContributionCatalogCodeSuggestion(
+  contributionId: number,
+  opts?: { force?: boolean },
+): Promise<CatalogCodeSuggestion> {
+  await ensureCsrfToken();
+  const res = await apiClient.post(
+    `/contributions/${contributionId}/catalog-code-suggestion/`,
+    opts?.force ? { force: true } : {},
+  );
+  return mapCatalogCodeSuggestion(res.data);
+}
+
+export async function getDirectCatalogCodeSuggestion(payload: {
+  subjectType: "MARKING" | "COVER";
+  state?: string;
+  regionId?: number | null;
+  markingId?: number | null;
+  referenceWorkId?: number | null;
+  referenceWorkIds?: number[];
+  excludeId?: number | null;
+}): Promise<CatalogCodeSuggestion> {
+  await ensureCsrfToken();
+  const res = await apiClient.post("/catalog-code-suggestions/", {
+    subject_type: payload.subjectType,
+    state: payload.state,
+    region_id: payload.regionId ?? undefined,
+    marking_id: payload.markingId ?? undefined,
+    reference_work_id: payload.referenceWorkId ?? undefined,
+    reference_work_ids: payload.referenceWorkIds,
+    exclude_id: payload.excludeId ?? undefined,
+  });
+  return mapCatalogCodeSuggestion(res.data);
+}
+
+// DELETE /contributions/{id}/  -- hard-deletes (withdraws) an unapproved
+// contribution; backend enforces IsOwnDeletableContribution (status must NOT be
+// "approved" and requester must be the owner or a superuser). No response body.
+export async function deleteOwnContribution(contributionId: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/contributions/${contributionId}/`);
 }

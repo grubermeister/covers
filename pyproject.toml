@@ -1,51 +1,51 @@
 [project]
 name = "worldcovers"
-version = "0.0.0"
+dynamic = ["version"]
 requires-python = "==3.13.*"
 dependencies = [
-    "asgiref==3.10.0",
+    "asgiref==3.11.1",
     "astroid==3.3.11",
     "attrs==25.4.0",
-    "build==1.3.0",
-    "click==8.3.0",
+    "build==1.5.0",
+    "click==8.4.2",
     "diff-match-patch==20241021",
-    "dill==0.4.0",
+    "dill==0.4.1",
     "django==5.2.7",
-    "django-admin-logs==1.4.0",
-    "django-allauth==65.13.0",
+    "django-admin-logs==1.5.0",
+    "django-allauth==65.18.0",
     "django-colorfield==0.14.0",
     "django-cors-headers==4.9.0",
     "django-debug-toolbar==6.0.0",
     "django-extensions==4.1",
     "django-filter==25.2",
-    "django-import-export==4.3.14",
+    "django-import-export==4.4.1",
     "django-reversion",
     "django-reversion-compare",
-    "django-types==0.22.0",
-    "djangorestframework==3.16.1",
+    "django-types==0.24.0",
+    "djangorestframework==3.17.1",
     "dotenv-cli==3.4.1",
     "drf-spectacular==0.29.0",
     "gunicorn==21.2.0",
     "inflection==0.5.1",
     "isort==6.1.0",
-    "jsonschema==4.25.1",
+    "jsonschema==4.26.0",
     "jsonschema-specifications==2025.9.1",
     "mccabe==0.7.0",
-    "mysqlclient==2.2.7",
+    "mysqlclient==2.2.8",
     "packaging==25.0",
     "pandas",
-    "pillow==12.0.0",
-    "platformdirs==4.5.0",
+    "pillow==12.3.0",
+    "platformdirs==4.10.0",
     "pylint==3.3.9",
-    "pylint-django==2.6.1",
+    "pylint-django==2.7.0",
     "pylint-plugin-utils==0.9.0",
     "pyproject-hooks==1.2.0",
     "python-decouple==3.8",
-    "python-dotenv==1.1.1",
+    "python-dotenv==1.2.2",
     "pyyaml==6.0.3",
     "referencing==0.37.0",
     "rpds-py==0.28.0",
-    "sqlparse==0.5.3",
+    "sqlparse==0.5.5",
     "tablib==3.9.0",
     "tomlkit==0.13.3",
     "types-psycopg2==2.9.21.20251012",
@@ -64,6 +64,13 @@ woco = "woco_cli:main"
 # console script above to land in .venv/bin/.
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+# Single source of truth for the app version, shared with the frontend
+# (frontend/vite.config.ts reads this same file to build __APP_VERSION__).
+# Bump the VERSION file at repo root to release a new version.
+path = "VERSION"
+pattern = "^(?P<version>.+)$"
 
 [tool.hatch.build.targets.wheel]
 # Only ship the CLI shim. backend/ stays on PYTHONPATH at runtime via

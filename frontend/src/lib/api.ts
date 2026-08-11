@@ -56,7 +56,13 @@ apiClient.interceptors.request.use((config) => {
 
 function extractErrorMessage(data: unknown): string | null {
   if (!data) return null;
-  if (typeof data === 'string') return data;
+  if (typeof data === 'string') {
+    const trimmed = data.trim();
+    if (/^<!doctype html/i.test(trimmed) || /^<html[\s>]/i.test(trimmed)) {
+      return 'The server returned an unexpected error page. Please try again.';
+    }
+    return trimmed.length > 500 ? `${trimmed.slice(0, 500)}...` : trimmed;
+  }
   if (Array.isArray(data)) {
     const first = data.find((v) => typeof v === 'string');
     return typeof first === 'string' ? first : null;

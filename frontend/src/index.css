@@ -133,6 +133,10 @@ All colors MUST be HSL.
 }
 
 @layer base {
+  html {
+    font-size: 110%;
+  }
+
   * {
     @apply border-border;
   }

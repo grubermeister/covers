@@ -2,9 +2,12 @@ import { History, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { MarkingChangelogEvent } from "@/services/markings";
+import { formatDiffValue, humanizeFieldKey } from "./historyDiffFormatting";
 
-const HISTORY_COLLAPSED_LIMIT = 1;
+const HISTORY_COLLAPSED_LIMIT = 3;
 const HISTORY_EXPANDED_LIMIT = 10;
+// Cap the per-event field-change list so a large edit does not flood the card.
+const DIFF_FIELD_LIMIT = 6;
 
 function formatHistoryTimestamp(raw: string | null | undefined): string {
   if (!raw) return "";
@@ -85,6 +88,22 @@ export function EntryRecordHistoryCard({
                   <div className="mt-1 text-xs text-muted-foreground break-all">
                     {historyActorDisplay(event)}
                   </div>
+                  {/* Field-level changes. Gate on version_no > 1 so the initial
+                      create approval (version 1, before == empty) does not list
+                      every field; reject/return events carry empty diffs. */}
+                  {event.diff.length > 0 && event.version_no != null && event.version_no > 1 && (
+                    <ul className="mt-2 space-y-0.5 text-xs text-muted-foreground">
+                      {event.diff.slice(0, DIFF_FIELD_LIMIT).map((change) => (
+                        <li key={change.field} className="break-all">
+                          <span className="font-medium text-foreground">{humanizeFieldKey(change.field)}</span>
+                          {`: ${formatDiffValue(change.before)} -> ${formatDiffValue(change.after)}`}
+                        </li>
+                      ))}
+                      {event.diff.length > DIFF_FIELD_LIMIT && (
+                        <li className="italic">+{event.diff.length - DIFF_FIELD_LIMIT} more</li>
+                      )}
+                    </ul>
+                  )}
                 </li>
               ))}
             </ul>
@@ -92,7 +111,7 @@ export function EntryRecordHistoryCard({
               <div className="mt-3 flex items-center justify-between gap-3">
                 <Button type="button" variant="ghost" size="sm" onClick={onToggleExpanded}>
                   {expanded
-                    ? "Show only latest"
+                    ? `Show latest ${HISTORY_COLLAPSED_LIMIT}`
                     : `Show recent history (up to ${HISTORY_EXPANDED_LIMIT})`}
                 </Button>
                 {expanded && historyOverflow > 0 && (

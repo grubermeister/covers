@@ -66,6 +66,16 @@ def build_marking_snapshot(marking: Marking | None) -> dict[str, Any]:
         "reference_work_id",
         "citation_detail",
     )
+    dates_seen = DateSeen.objects.filter(
+        subject_type=DateSeen.SUBJECT_MARKING,
+        subject_id=marking.pk,
+    ).order_by("date", "date_year", "date_month", "date_day", "granularity").values(
+        "date",
+        "granularity",
+        "date_year",
+        "date_month",
+        "date_day",
+    )
 
     return _json_safe(
         {
@@ -91,6 +101,7 @@ def build_marking_snapshot(marking: Marking | None) -> dict[str, Any]:
             "rate_val": marking.rate_val,
             "images": list(images),
             "citations": list(citations),
+            "dates_seen": list(dates_seen),
             "captured_at": timezone.now(),
         }
     )
@@ -215,7 +226,7 @@ def restore_marking_from_snapshot(marking: Marking, snapshot: dict[str, Any], ac
     marking.post_office_id = snapshot.get("post_office_id")
     marking.shape_id = snapshot.get("shape_id")
     marking.lettering_id = snapshot.get("lettering_id")
-    marking.color_id = snapshot.get("color_id") or 1
+    marking.color_id = snapshot.get("color_id")
     marking.is_manuscript = bool(snapshot.get("is_manuscript"))
     marking.impression = snapshot.get("impression")
     marking.is_irreg = snapshot.get("is_irreg")
@@ -271,8 +282,8 @@ def build_cover_snapshot(cover: Cover | None) -> dict[str, Any]:
     )
     dates_seen = (
         DateSeen.objects.filter(subject_type="COVER", subject_id=cover.pk)
-        .order_by("date")
-        .values("date", "granularity")
+        .order_by("date", "date_year", "date_month", "date_day", "granularity")
+        .values("date", "granularity", "date_year", "date_month", "date_day")
     )
     citations = (
         Citation.objects.filter(subject_type="COVER", subject_id=cover.pk)

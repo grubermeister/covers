@@ -1,32 +1,31 @@
 """ascc_page_processor.py -- merged ASCC catalog page processor.
 
 Replaces apmc_page_split.ipynb + halfpage_image_cutter.ipynb with one
-script that runs end-to-end on OpenRouter (matches the call style of
-apmc_page_extract.ipynb).
+script that runs end-to-end through the selected LLM provider.
 
 Pipeline (three stages, gateable from the CLI):
 
-    A. render  -- pdftoppm renders the PDF into wip/cache/<BASE>_full/
+    A. render  -- pdftoppm renders the PDF into tools/wip/cache/<BASE>_full/
                   page-NNNN.png (NNNN is the PDF page index).
     B. halves  -- per page: deterministic vertical-rule detection +
                   vision page-number call (header+footer strip) +
                   vision single-column-confirm fallback when no rule;
-                  crop to wip/cache/<BASE>_halves/page-NNNN-{L,R}.png
+                  crop to tools/wip/cache/<BASE>_halves/page-NNNN-{L,R}.png
                   (or page-NNNN.png for single-column pages, where NNNN
                   is the catalog page number).
     C. chunks  -- per half: deterministic row-by-row dark/blank block
                   detector inside the half + vision per-block classify
                   (illustration vs text) + cut at the top of every
-                  illustration block; write slices into wip/out/<BASE>/
-                  as page-NNNN-MMMM.png with MMMM running 1..N across
-                  L then R per catalog page (matches what
-                  apmc_page_extract.ipynb already consumes).
+                  illustration block; write slices into
+                  tools/wip/cache/<BASE>_chunks/ as page-NNNN-MMMM.png with
+                  MMMM running 1..N across L then R per catalog page (matches
+                  what ascc_page_extract.py consumes).
 
 Usage:
 
-    uv run python ascc_page_processor.py [--stages STAGES]
-                                              [--pages RANGE]
-                                              [--force STAGES]
+    uv run python tools/ascc_page_processor.py <BASE> [--stages STAGES]
+                                                        [--pages RANGE]
+                                                        [--force STAGES]
 
 See main() for argument details.
 """
@@ -35,7 +34,6 @@ import argparse
 import base64
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -47,15 +45,27 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 from dotenv import load_dotenv
-from openai import OpenAI
+
+from pipeline_llm import (
+    DEFAULT_OPENROUTER_MODEL,
+    PROVIDERS,
+    make_pipeline_llm,
+    resolve_model,
+    resolve_provider,
+)
 
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-# Repo-root .env (this script's cwd is tools/).
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+# Script-root paths let this tool run from any cwd while preserving the
+# historical tools/wip layout.
+TOOLS_DIR = Path(__file__).resolve().parent
+WIP_DIR = TOOLS_DIR / "wip"
+
+# Repo-root .env.
+load_dotenv(TOOLS_DIR.parent / ".env")
 
 # Per-run paths are derived from --basename in main(); see Paths dataclass below.
 
@@ -69,6 +79,10 @@ RULE_BAND_TOP_FRAC     = 0.20   # ignore top 20% of page (header)
 RULE_BAND_BOTTOM_FRAC  = 0.85   # ignore bottom 15% of page (footer)
 RULE_DARK_THRESHOLD    = 128    # pixel value below which we count as 'dark'
 RULE_MIN_DARK_FRACTION = 0.70   # column must be dark for >=70% of band height
+# Used only after vision has confirmed a page is two-column. Some scans have a
+# real printed rule that is broken/faint enough to miss the strict pass, but
+# still clearly dominates the center search band.
+RULE_WEAK_MIN_DARK_FRACTION = 0.50
 RULE_CENTER_TOLERANCE  = 0.05   # rule must lie within +/- 5% of width//2
 
 # Pass-1 vision strip sizes (300 DPI -> 1 inch = 300 px).
@@ -82,14 +96,28 @@ ROW_DARK_MIN_PIXELS = 2     # row counts as non-blank if it has >= this many dar
 BLANK_RUN           = 5     # rows of blank to start/end a block
 CENTER_FRACTION     = 0.90  # scan only the center 90% of width
 
+# Some straight-line markings look like display text to the LLM classifier.
+# Promote a text-classified block to illustration only when its geometry looks
+# like a centered marking between a prior listing and a following listing.
+PROMOTE_MAX_MARKING_HEIGHT_PX = 90
+PROMOTE_EDGE_IGNORE_FRACTION = 0.04
+PROMOTE_MAX_BBOX_WIDTH_FRACTION = 0.55
+PROMOTE_CENTER_TOLERANCE_FRACTION = 0.18
+PROMOTE_MIN_LEFT_MARGIN_FRACTION = 0.20
+PROMOTE_MAX_RIGHT_MARGIN_FRACTION = 0.80
+PROMOTE_RIGHT_AREA_FRACTION = 0.72
+PROMOTE_MIN_RIGHT_DARK_PIXELS = 25
+PROMOTE_MIN_LISTING_WIDTH_FRACTION = 0.55
+
 # Minimum slice height. Anything thinner than this gets merged into the
 # previous slice rather than emitted as its own chunk; protects the
 # extract step from receiving a 12-pixel-tall sliver.
 MIN_SLICE_HEIGHT_PX = 60
 
-# OpenRouter model id. Override per run with --model. Cache files invalidate
-# automatically whenever the model id (or prompt version) changes.
-DEFAULT_MODEL = "anthropic/claude-sonnet-4.6"
+# Backward-compatible OpenRouter model id. Override per run with --model.
+# Cache files invalidate automatically whenever provider, model id, or prompt
+# version changes.
+DEFAULT_MODEL = DEFAULT_OPENROUTER_MODEL
 
 # Per-call prompt versions. Bump to invalidate the corresponding disk cache
 # without changing the model id.
@@ -223,17 +251,6 @@ Output JSON only."""
 
 
 # ---------------------------------------------------------------------------
-# OpenRouter client
-# ---------------------------------------------------------------------------
-
-assert os.environ.get("OPENROUTER_API_KEY"), "OPENROUTER_API_KEY not set in .env"
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=os.environ["OPENROUTER_API_KEY"],
-)
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -266,8 +283,8 @@ def _parse_strict_json(text):
     return json.loads(t)
 
 
-def _vision_call(model, system_prompt, user_text, image_b64, max_tokens):
-    """Common OpenRouter vision call; returns the raw assistant text.
+def _vision_call(llm, model, system_prompt, user_text, image_b64, max_tokens):
+    """Common provider vision call; returns the raw assistant text.
 
     Retries once on empty content, which a reasoning model occasionally
     returns with finish_reason='stop' when reasoning tokens consume the
@@ -275,24 +292,16 @@ def _vision_call(model, system_prompt, user_text, image_b64, max_tokens):
     """
     last_finish = None
     for attempt in range(2):
-        resp = client.chat.completions.create(
+        content = llm.vision_text(
             model=model,
             max_tokens=max_tokens,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": [
-                    {"type": "image_url", "image_url": {
-                        "url": f"data:image/png;base64,{image_b64}",
-                    }},
-                    {"type": "text", "text": user_text},
-                ]},
-            ],
+            system_prompt=system_prompt,
+            user_text=user_text,
+            image_b64=image_b64,
         )
-        choice = resp.choices[0]
-        content = choice.message.content or ""
         if content:
             return content
-        last_finish = choice.finish_reason
+        last_finish = "empty"
         print(f"    WARNING: empty content (finish_reason={last_finish!r}), "
               f"retrying ({attempt + 1}/2)")
     raise ValueError(
@@ -308,18 +317,35 @@ def _idx(p):
     return int(m.group(1)) if m else 0
 
 
-def load_cache(path, model, version):
-    """Load a cache file, invalidating it if model/prompt_version changed."""
+def load_cache(path, provider, model, version):
+    """Load a cache file, invalidating it if provider/model/prompt changed."""
     if not path.exists():
-        return {"model": model, "prompt_version": version, "responses": {}}
+        return {
+            "provider": provider,
+            "model": model,
+            "prompt_version": version,
+            "responses": {},
+        }
     cache = json.loads(path.read_text())
-    if cache.get("model") != model or cache.get("prompt_version") != version:
+    cache_provider = cache.get("provider", "openrouter")
+    if (
+        cache_provider != provider
+        or cache.get("model") != model
+        or cache.get("prompt_version") != version
+    ):
         print(
             f"cache invalidated at {path.name} "
-            f"(was model={cache.get('model')!r}, "
+            f"(was provider={cache_provider!r}, "
+            f"model={cache.get('model')!r}, "
             f"prompt={cache.get('prompt_version')!r})"
         )
-        return {"model": model, "prompt_version": version, "responses": {}}
+        return {
+            "provider": provider,
+            "model": model,
+            "prompt_version": version,
+            "responses": {},
+        }
+    cache["provider"] = cache_provider
     return cache
 
 
@@ -330,15 +356,19 @@ def save_cache(path, cache):
 class Paths:
     """Per-run filesystem layout, derived from --basename."""
     def __init__(self, basename):
+        # basename becomes a path component under tools/wip/; reject anything
+        # that could escape it (e.g. "../../x").
+        if not basename or "/" in basename or "\\" in basename or ".." in basename:
+            raise ValueError(f"invalid basename {basename!r}: must be a bare name")
         self.basename     = basename
-        self.pdf          = Path(f"./wip/in/{basename}.pdf")
-        self.full_dir     = Path(f"./wip/cache/{basename}_full")
-        self.halves_dir   = Path(f"./wip/cache/{basename}_halves")
-        self.halves_cache = Path(f"./wip/cache/{basename}_split_halves.json")
-        self.blocks_cache = Path(f"./wip/cache/{basename}_blocks.json")
-        self.review_cache = Path(f"./wip/cache/{basename}_review.json")
-        self.run_log      = Path(f"./wip/cache/{basename}_run.log")
-        self.output_dir   = Path(f"./wip/out/{basename}")
+        self.pdf          = WIP_DIR / "in" / f"{basename}.pdf"
+        self.full_dir     = WIP_DIR / "cache" / f"{basename}_full"
+        self.halves_dir   = WIP_DIR / "cache" / f"{basename}_halves"
+        self.page_halves_cache    = WIP_DIR / "cache" / f"{basename}_page_halves.json"
+        self.block_classify_cache = WIP_DIR / "cache" / f"{basename}_block_classify.json"
+        self.chunk_cuts_cache     = WIP_DIR / "cache" / f"{basename}_chunk_cuts.json"
+        self.run_log      = WIP_DIR / "cache" / f"{basename}_run.log"
+        self.output_dir   = WIP_DIR / "cache" / f"{basename}_chunks"
 
 
 class _Tee:
@@ -428,7 +458,7 @@ def stage_render(paths, force):
 # Stage B -- halves (rule detection + page number + L/R crop)
 # ---------------------------------------------------------------------------
 
-def detect_rule_x(im):
+def detect_rule_x(im, min_dark_fraction=RULE_MIN_DARK_FRACTION):
     """Locate the printed vertical rule between the two text columns.
 
     Returns x in full-page coords, or None if no column qualifies.
@@ -447,7 +477,7 @@ def detect_rule_x(im):
     x_hi = min(w, cx + half_search)
 
     col_dark = (band[:, x_lo:x_hi] < RULE_DARK_THRESHOLD).sum(axis=0)
-    min_dark = int(band_h * RULE_MIN_DARK_FRACTION)
+    min_dark = int(band_h * min_dark_fraction)
     qualifying = np.where(col_dark >= min_dark)[0]
 
     if qualifying.size == 0:
@@ -472,10 +502,11 @@ def build_header_footer_strip(im):
     return out
 
 
-def detect_page_number(strip_im, model):
+def detect_page_number(strip_im, llm, model):
     """Vision call: read the printed catalog page number from the strip."""
     img_b64 = _img_to_b64_png(strip_im)
     raw = _vision_call(
+        llm,
         model,
         PAGE_NUMBER_SYSTEM_PROMPT,
         "Read the printed catalog page number. Return JSON only.",
@@ -484,15 +515,17 @@ def detect_page_number(strip_im, model):
     )
     data = _parse_strict_json(raw)
     pn = data["page_number"]
-    assert isinstance(pn, int) and pn >= 1, f"bad page_number {pn!r}"
+    if not (isinstance(pn, int) and pn >= 1):
+        raise ValueError(f"bad page_number {pn!r}")
     return pn
 
 
-def confirm_single_column(im, model):
+def confirm_single_column(im, llm, model):
     """Vision call: confirm whether the page has two columns (used as a
     fallback when the deterministic rule detector returns None)."""
     img_b64 = _img_to_b64_png(im)
     raw = _vision_call(
+        llm,
         model,
         SINGLE_COL_SYSTEM_PROMPT,
         "Is this page laid out as two columns with a printed vertical rule? Return JSON only.",
@@ -501,21 +534,28 @@ def confirm_single_column(im, model):
     )
     data = _parse_strict_json(raw)
     htc = data["has_two_columns"]
-    assert isinstance(htc, bool), f"bad has_two_columns {htc!r}"
+    if not isinstance(htc, bool):
+        raise ValueError(f"bad has_two_columns {htc!r}")
     return htc
 
 
-def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
+def stage_halves(paths, provider, model, llm, full_pages, force, page_filter,
+                 verbose=False):
     """Run stage B. page_filter, if not None, is a (kind, set_of_ints) tuple
     where kind is 'pdf' (PDF page indices) or 'catalog' (catalog page nums).
     Filtering applies to which halves get WRITTEN; page-number detection
     runs for every page in full_pages so the catalog<->pdf mapping stays
     complete (cached anyway after the first run)."""
     paths.halves_dir.mkdir(parents=True, exist_ok=True)
-    paths.halves_cache.parent.mkdir(parents=True, exist_ok=True)
+    paths.page_halves_cache.parent.mkdir(parents=True, exist_ok=True)
 
-    halves_cache = load_cache(paths.halves_cache, model, HALVES_PROMPT_VER)
-    responses = halves_cache["responses"]
+    page_halves_cache = load_cache(
+        paths.page_halves_cache,
+        provider,
+        model,
+        HALVES_PROMPT_VER,
+    )
+    responses = page_halves_cache["responses"]
 
     # If --force halves was set, drop in-scope cache entries up front so the
     # loop re-queries them. Without --pages, every PDF page is in scope.
@@ -538,7 +578,7 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
             for key in to_drop:
                 del responses[key]
             print(f"halves: --force halves set, cleared {len(to_drop)} cache entries in scope")
-        save_cache(paths.halves_cache, halves_cache)
+        save_cache(paths.page_halves_cache, page_halves_cache)
 
     calls = 0
     rule_failures = []
@@ -548,6 +588,21 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
             iw, ih = im.size
             if key in responses:
                 rec = responses[key]
+                if (
+                    rec.get("has_two_columns")
+                    and rec.get("rule_source") == "vision_single_col_failed"
+                    and rec.get("rule_x") == rec.get("image_width", iw) // 2
+                ):
+                    weak_rule_x = detect_rule_x(
+                        im,
+                        min_dark_fraction=RULE_WEAK_MIN_DARK_FRACTION,
+                    )
+                    if weak_rule_x is not None:
+                        rec = dict(rec)
+                        rec["rule_x"] = weak_rule_x
+                        rec["rule_source"] = "vision_confirmed_weak_rule"
+                        responses[key] = rec
+                        save_cache(paths.page_halves_cache, page_halves_cache)
             else:
                 rule_x = detect_rule_x(im)
 
@@ -555,7 +610,7 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
                 if verbose:
                     log_only(f"  {key}: calling {model} for page-number...")
                 t0 = time.time()
-                pn = detect_page_number(hf_strip, model)
+                pn = detect_page_number(hf_strip, llm, model)
                 if verbose:
                     print(f"  {key}:   ... {time.time() - t0:.1f}s -> pn={pn}",
                           flush=True)
@@ -569,15 +624,23 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
                         log_only(f"  {key}: no rule found, calling {model} "
                                  f"for single-col confirm...")
                     t0 = time.time()
-                    htc = confirm_single_column(im, model)
+                    htc = confirm_single_column(im, llm, model)
                     if verbose:
                         print(f"  {key}:   ... {time.time() - t0:.1f}s -> "
                               f"has_two_columns={htc}", flush=True)
                     calls += 1
                     if htc:
-                        rule_x = iw // 2
-                        rule_source = "vision_single_col_failed"
-                        rule_failures.append((key, pn))
+                        weak_rule_x = detect_rule_x(
+                            im,
+                            min_dark_fraction=RULE_WEAK_MIN_DARK_FRACTION,
+                        )
+                        if weak_rule_x is not None:
+                            rule_x = weak_rule_x
+                            rule_source = "vision_confirmed_weak_rule"
+                        else:
+                            rule_x = iw // 2
+                            rule_source = "vision_single_col_failed"
+                            rule_failures.append((key, pn))
                     else:
                         rule_x = -1
                         rule_source = "vision_single_col"
@@ -591,7 +654,7 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
                     "image_height":    ih,
                 }
                 responses[key] = rec
-                save_cache(paths.halves_cache, halves_cache)
+                save_cache(paths.page_halves_cache, page_halves_cache)
 
         pn = rec["page_number"]
         if rec["has_two_columns"]:
@@ -606,8 +669,9 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
         print("=== WARNING: deterministic rule detector failed on these two-column pages ===")
         for key, pn in rule_failures:
             print(f"  {key} catalog {pn}")
-        print(f"rule_x has been set to image_width//2 as a fallback; inspect the")
-        print(f"halves output and hand-edit {paths.halves_cache} if the split is off.")
+        print(f"no weak rule candidate was found; rule_x has been set to")
+        print(f"image_width//2 as a fallback. Inspect the")
+        print(f"halves output and hand-edit {paths.page_halves_cache} if the split is off.")
 
     # Duplicate-page-number guard runs BEFORE any writes.
     by_pn = {}
@@ -619,7 +683,7 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
     if dups:
         raise RuntimeError(
             f"duplicate catalog page_number(s) detected in halves cache: {dups}.\n"
-            f"Edit {paths.halves_cache} to fix the misread page_number(s) and re-run."
+            f"Edit {paths.page_halves_cache} to fix the misread page_number(s) and re-run."
         )
 
     # Decide which pages to (re)write.
@@ -671,6 +735,18 @@ def stage_halves(paths, model, full_pages, force, page_filter, verbose=False):
 
 # ---------------------------------------------------------------------------
 # Stage C -- chunks (block detection + classify + cut)
+#
+# Terminology used throughout this stage and its cache files:
+#   block  -- a dark-pixel band found by the row scanner (in-memory only;
+#              never written to disk). The scanner groups contiguous dark rows
+#              separated by blank runs into blocks, then sends each block to
+#              the LLM to classify it as "illustration" or "text".
+#              Cache: _block_classify.json (one entry per block image hash).
+#   chunk  -- a final output PNG slice written to _chunks/. After all blocks
+#              are classified, cut decisions are made and each resulting region
+#              is saved as a chunk file. A second LLM pass reviews each
+#              tentative chunk and may insert additional cuts.
+#              Cache: _chunk_cuts.json (one entry per tentative-chunk hash).
 # ---------------------------------------------------------------------------
 
 def find_blocks(img_gray):
@@ -721,7 +797,7 @@ def find_blocks(img_gray):
     return blocks
 
 
-def classify_block(block_im, blocks_cache, model, verbose=False, label=""):
+def classify_block(block_im, block_classify_cache, llm, model, verbose=False, label=""):
     """Classify a single block crop as 'illustration' or 'text'.
 
     Cache key: SHA-256 of the block PNG bytes. Coordinate-keyed caching
@@ -735,7 +811,7 @@ def classify_block(block_im, blocks_cache, model, verbose=False, label=""):
     png_bytes = buf.getvalue()
     key = hashlib.sha256(png_bytes).hexdigest()
 
-    responses = blocks_cache["responses"]
+    responses = block_classify_cache["responses"]
     if key in responses:
         if verbose:
             print(f"    {label} CACHE HIT -> {responses[key]['kind']}")
@@ -747,6 +823,7 @@ def classify_block(block_im, blocks_cache, model, verbose=False, label=""):
                  f"({len(png_bytes):,} bytes png)...")
     t0 = time.time()
     raw = _vision_call(
+        llm,
         model,
         BLOCK_CLASSIFY_SYSTEM_PROMPT,
         "Classify this strip. Return JSON only.",
@@ -759,8 +836,9 @@ def classify_block(block_im, blocks_cache, model, verbose=False, label=""):
     try:
         data = _parse_strict_json(raw)
         kind = data["kind"]
-        assert kind in ("illustration", "text"), f"bad kind {kind!r}"
-    except (json.JSONDecodeError, KeyError, AssertionError) as e:
+        if kind not in ("illustration", "text"):
+            raise ValueError(f"bad kind {kind!r}")
+    except (json.JSONDecodeError, KeyError, ValueError) as e:
         # Fallback: word-search on the raw text. The original notebook took
         # this path always; we use it only when JSON parse fails so a single
         # malformed response does not abort the whole run.
@@ -771,6 +849,119 @@ def classify_block(block_im, blocks_cache, model, verbose=False, label=""):
 
     responses[key] = {"kind": kind}
     return kind, True  # cache miss -> caller should save
+
+
+def block_dark_metrics(block_im):
+    """Return geometry metrics for dark pixels in one detected block."""
+    arr = np.array(block_im.convert("L"))
+    H, W = arr.shape
+    mask = arr < DARK_BRIGHTNESS_MAX
+    edge = int(W * PROMOTE_EDGE_IGNORE_FRACTION)
+    if edge > 0:
+        mask = mask.copy()
+        mask[:, :edge] = False
+        mask[:, W - edge:] = False
+    dark_pixels = int(mask.sum())
+    if dark_pixels == 0:
+        return {
+            "height": H,
+            "width": W,
+            "dark_pixels": 0,
+            "bbox_left_frac": 0.0,
+            "bbox_right_frac": 0.0,
+            "bbox_width_frac": 0.0,
+            "bbox_center_frac": 0.0,
+            "right_dark_pixels": 0,
+        }
+
+    rows, cols = np.where(mask)
+    left = int(cols.min())
+    right = int(cols.max())
+    bbox_width = right - left + 1
+    right_area_start = int(W * PROMOTE_RIGHT_AREA_FRACTION)
+    right_dark_pixels = int(mask[:, right_area_start:].sum())
+    return {
+        "height": H,
+        "width": W,
+        "dark_pixels": dark_pixels,
+        "bbox_left_frac": left / W,
+        "bbox_right_frac": (right + 1) / W,
+        "bbox_width_frac": bbox_width / W,
+        "bbox_center_frac": (left + right + 1) / (2 * W),
+        "right_dark_pixels": right_dark_pixels,
+    }
+
+
+def has_price_or_dotleader_footprint(metrics):
+    """Return True when a block has dark pixels in the right value area."""
+    return metrics["right_dark_pixels"] >= PROMOTE_MIN_RIGHT_DARK_PIXELS
+
+
+def looks_like_centered_marking(metrics):
+    """Return True for narrow centered display-like marking geometry."""
+    if metrics["dark_pixels"] == 0:
+        return False
+    if metrics["height"] > PROMOTE_MAX_MARKING_HEIGHT_PX:
+        return False
+    if metrics["bbox_width_frac"] > PROMOTE_MAX_BBOX_WIDTH_FRACTION:
+        return False
+    if metrics["bbox_left_frac"] < PROMOTE_MIN_LEFT_MARGIN_FRACTION:
+        return False
+    if metrics["bbox_right_frac"] > PROMOTE_MAX_RIGHT_MARGIN_FRACTION:
+        return False
+    if abs(metrics["bbox_center_frac"] - 0.5) > PROMOTE_CENTER_TOLERANCE_FRACTION:
+        return False
+    if has_price_or_dotleader_footprint(metrics):
+        return False
+    return True
+
+
+def looks_like_listing_text(metrics):
+    """Return True when a block spans the column and reaches the value area."""
+    if metrics["dark_pixels"] == 0:
+        return False
+    if metrics["bbox_width_frac"] < PROMOTE_MIN_LISTING_WIDTH_FRACTION:
+        return False
+    return has_price_or_dotleader_footprint(metrics)
+
+
+def apply_text_marking_overrides(block_records, label_prefix=""):
+    """Promote display-text-like markings that the model called text.
+
+    The override is intentionally local: it requires a prior listing text block
+    in the current slice and a following listing text block. This catches cases
+    like page 419's straight-line NORFOLK marking without changing cached LLM
+    classifications.
+    """
+    promoted = []
+    saw_listing_text_since_cut = False
+    for i, rec in enumerate(block_records):
+        rec = dict(rec)
+        if rec["kind"] == "text":
+            next_rec = None
+            for candidate in block_records[i + 1:]:
+                if candidate["metrics"]["dark_pixels"] > 0:
+                    next_rec = candidate
+                    break
+            if (
+                saw_listing_text_since_cut
+                and looks_like_centered_marking(rec["metrics"])
+                and next_rec is not None
+                and looks_like_listing_text(next_rec["metrics"])
+            ):
+                print(
+                    f"    {label_prefix}promote text block "
+                    f"y={rec['y0']}-{rec['y1']} to illustration: "
+                    f"narrow centered mark before listing text"
+                )
+                rec["kind"] = "illustration"
+                saw_listing_text_since_cut = False
+            else:
+                saw_listing_text_since_cut = True
+        elif rec["kind"] == "illustration":
+            saw_listing_text_since_cut = False
+        promoted.append(rec)
+    return promoted
 
 
 def drop_orphan_illustration_cuts(cut_ys, kinds, H, label_prefix=""):
@@ -865,7 +1056,7 @@ def snap_cut_to_blank_run(cut_y, blank_runs, tolerance=SNAP_TOLERANCE_PX):
     return best_mid
 
 
-def review_slice(slice_im, review_cache, model, verbose=False, label=""):
+def review_slice(slice_im, chunk_cuts_cache, llm, model, verbose=False, label=""):
     """Per-slice entry-aware review.
 
     Returns (cuts, was_call). cuts is a list of LOCAL y-offsets where the
@@ -878,7 +1069,7 @@ def review_slice(slice_im, review_cache, model, verbose=False, label=""):
     png_bytes = buf.getvalue()
     key = hashlib.sha256(png_bytes).hexdigest()
 
-    responses = review_cache["responses"]
+    responses = chunk_cuts_cache["responses"]
     if key in responses:
         cuts = responses[key]["cuts"]
         if verbose:
@@ -893,6 +1084,7 @@ def review_slice(slice_im, review_cache, model, verbose=False, label=""):
                  f"({len(png_bytes):,} bytes png, h={h})...")
     t0 = time.time()
     raw = _vision_call(
+        llm,
         model,
         REVIEW_SLICE_SYSTEM_PROMPT,
         f"Image height: {h} px. Decide if this chunk is one entry or "
@@ -908,7 +1100,8 @@ def review_slice(slice_im, review_cache, model, verbose=False, label=""):
     try:
         data = _parse_strict_json(raw)
         cuts = data["cuts"]
-        assert isinstance(cuts, list), f"cuts not a list: {cuts!r}"
+        if not isinstance(cuts, list):
+            raise ValueError(f"cuts not a list: {cuts!r}")
         # Validate and sanitize: ints, in (0, h), strictly ascending.
         clean = []
         for c in cuts:
@@ -932,12 +1125,12 @@ def review_slice(slice_im, review_cache, model, verbose=False, label=""):
     return cuts, True
 
 
-def stage_chunks(paths, model, force, page_filter, verbose=False,
+def stage_chunks(paths, provider, model, llm, force, page_filter, verbose=False,
                  skip_review=False):
     """Run stage C. page_filter, if not None, is a (kind, set_of_ints).
     'kind' for chunks is always interpreted as catalog page numbers
     because halves are named by catalog page; a 'pdf' filter raises."""
-    paths.blocks_cache.parent.mkdir(parents=True, exist_ok=True)
+    paths.block_classify_cache.parent.mkdir(parents=True, exist_ok=True)
     paths.output_dir.mkdir(parents=True, exist_ok=True)
 
     halves = sorted(paths.halves_dir.glob("page-*.png"))
@@ -970,22 +1163,32 @@ def stage_chunks(paths, model, force, page_filter, verbose=False,
             )
         pages = {pn: v for pn, v in pages.items() if pn in ids}
 
-    blocks_cache = load_cache(paths.blocks_cache, model, BLOCKS_PROMPT_VER)
-    review_cache = load_cache(paths.review_cache, model, REVIEW_PROMPT_VER)
+    block_classify_cache = load_cache(
+        paths.block_classify_cache,
+        provider,
+        model,
+        BLOCKS_PROMPT_VER,
+    )
+    chunk_cuts_cache = load_cache(
+        paths.chunk_cuts_cache,
+        provider,
+        model,
+        REVIEW_PROMPT_VER,
+    )
 
     # --force chunks: wipes BOTH the per-block classifier cache AND the
     # per-slice review cache. Both are content-hash keyed (no page field), so
     # there is no honest way to scope the wipe to a page subset; the user
     # signalled they want everything reclassified.
     if force:
-        nb = len(blocks_cache["responses"])
-        nr = len(review_cache["responses"])
+        nb = len(block_classify_cache["responses"])
+        nr = len(chunk_cuts_cache["responses"])
         print(f"chunks: --force chunks set, clearing {nb} block cache entries "
               f"and {nr} review cache entries")
-        blocks_cache["responses"].clear()
-        review_cache["responses"].clear()
-        save_cache(paths.blocks_cache, blocks_cache)
-        save_cache(paths.review_cache, review_cache)
+        block_classify_cache["responses"].clear()
+        chunk_cuts_cache["responses"].clear()
+        save_cache(paths.block_classify_cache, block_classify_cache)
+        save_cache(paths.chunk_cuts_cache, chunk_cuts_cache)
 
     # Wipe in-scope output files first so stale chunks do not linger.
     for pn in pages:
@@ -1024,22 +1227,38 @@ def stage_chunks(paths, model, force, page_filter, verbose=False,
                     print(f"  {side}: {img_path.name} {W}x{H}, "
                           f"{len(blocks)} blocks detected", flush=True)
 
-                cut_ys = []
-                kinds = []
+                block_records = []
                 for i, (y0, y1) in enumerate(blocks, 1):
                     block_im = im.crop((0, y0, W, y1 + 1))
                     label = (f"[{pn:04d}-{side} block {i}/{len(blocks)} "
                              f"y={y0}-{y1} h={y1 - y0 + 1}]")
                     kind, was_call = classify_block(
-                        block_im, blocks_cache, model,
+                        block_im, block_classify_cache, llm, model,
                         verbose=verbose, label=label,
                     )
                     if was_call:
-                        save_cache(paths.blocks_cache, blocks_cache)
+                        save_cache(paths.block_classify_cache, block_classify_cache)
                         calls += 1
-                    kinds.append((y0, y1, kind))
-                    if kind == "illustration":
-                        cut_ys.append(y0)
+                    block_records.append({
+                        "y0": y0,
+                        "y1": y1,
+                        "kind": kind,
+                        "metrics": block_dark_metrics(block_im),
+                    })
+
+                block_records = apply_text_marking_overrides(
+                    block_records,
+                    label_prefix=f"[{pn:04d}-{side}] ",
+                )
+                kinds = [
+                    (rec["y0"], rec["y1"], rec["kind"])
+                    for rec in block_records
+                ]
+                cut_ys = [
+                    rec["y0"]
+                    for rec in block_records
+                    if rec["kind"] == "illustration"
+                ]
 
                 # Drop cuts that would create chunks containing only an
                 # illustration (no text below the marking). This catches
@@ -1094,11 +1313,11 @@ def stage_chunks(paths, model, force, page_filter, verbose=False,
                     sw, sh = sl.size
                     rlabel = (f"[{pn:04d}-{side} slice {si}/{n_slices} h={sh}]")
                     extra_cuts, was_call = review_slice(
-                        sl, review_cache, model,
+                        sl, chunk_cuts_cache, llm, model,
                         verbose=verbose, label=rlabel,
                     )
                     if was_call:
-                        save_cache(paths.review_cache, review_cache)
+                        save_cache(paths.chunk_cuts_cache, chunk_cuts_cache)
                         review_calls += 1
                     if not extra_cuts:
                         final_pieces.append(sl)
@@ -1275,16 +1494,26 @@ def main(argv=None):
         "basename",
         help=("base name shared by the input PDF, the cache directories, and "
               "the output directory. The PDF is read from "
-              "wip/in/<basename>.pdf; halves land in "
-              "wip/cache/<basename>_halves/; chunks land in wip/out/<basename>/."),
+              "tools/wip/in/<basename>.pdf; halves land in "
+              "tools/wip/cache/<basename>_halves/; chunks land in "
+              "tools/wip/cache/<basename>_chunks/."),
     )
     parser.add_argument(
         "--model",
-        default=DEFAULT_MODEL,
-        help=(f"OpenRouter model id used for every vision call (page-number "
-              f"read, single-column confirm, per-block classify). Default: "
-              f"{DEFAULT_MODEL}. Cache files are tagged with the model id and "
-              f"invalidate automatically on change."),
+        default=None,
+        help=("model id used for every vision call (page-number read, "
+              "single-column confirm, per-block classify). Default: "
+              "PIPELINE_LLM_MODEL if set, otherwise provider-specific "
+              f"default ({DEFAULT_MODEL} for OpenRouter). Cache files are "
+              "tagged with the provider and model id and invalidate "
+              "automatically on change."),
+    )
+    parser.add_argument(
+        "--provider",
+        choices=PROVIDERS,
+        default=None,
+        help=("LLM provider for vision calls. Default: "
+              "PIPELINE_LLM_PROVIDER if set, otherwise openrouter."),
     )
     parser.add_argument(
         "--stages",
@@ -1329,7 +1558,8 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     paths = Paths(args.basename)
-    model = args.model
+    provider = resolve_provider(args.provider)
+    model = resolve_model(provider, args.model)
 
     # In verbose mode, tee everything to a per-basename log file in the cache
     # dir so re-running just to re-read the log is unnecessary.
@@ -1351,6 +1581,9 @@ def main(argv=None):
         if args.verbose:
             print(f"verbose log: tee-ing to {paths.run_log}")
         print(f"basename: {paths.basename}")
+        print(f"provider: {provider}")
+        log_only(f"provider: {provider}")
+        print(f"model:    {model}")
         log_only(f"model:    {model}")
         print(f"stages:   {','.join(args.stages)}")
         if args.pages is not None:
@@ -1365,12 +1598,15 @@ def main(argv=None):
         print()
 
         full_pages = None
+        llm = None
 
         for stage in args.stages:
             print(f"=== stage: {stage} ===")
             if stage == "render":
                 full_pages = stage_render(paths, force=("render" in args.force))
             elif stage == "halves":
+                if llm is None:
+                    llm = make_pipeline_llm(provider)
                 if full_pages is None:
                     full_pages = sorted(paths.full_dir.glob("page-*.png"), key=_idx)
                     if not full_pages:
@@ -1380,16 +1616,22 @@ def main(argv=None):
                         )
                 stage_halves(
                     paths,
+                    provider,
                     model,
+                    llm,
                     full_pages,
                     force=("halves" in args.force),
                     page_filter=args.pages,
                     verbose=args.verbose,
                 )
             elif stage == "chunks":
+                if llm is None:
+                    llm = make_pipeline_llm(provider)
                 stage_chunks(
                     paths,
+                    provider,
                     model,
+                    llm,
                     force=("chunks" in args.force),
                     page_filter=args.pages,
                     verbose=args.verbose,

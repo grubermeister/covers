@@ -5,6 +5,13 @@
 
 import type { MarkingTypeValue } from "@/services/markings";
 
+// A chip rendered in place of a row's plain-text value. `to`, when set, makes
+// the chip a router Link (e.g. a territory tag that runs a filtered search).
+export interface MarkingFieldTag {
+  label: string;
+  to?: string;
+}
+
 export interface MarkingFieldRow {
   label: string;
   // Pre-formatted display string. "" means blank; the renderer decides
@@ -14,19 +21,37 @@ export interface MarkingFieldRow {
   // hasDisplayValue filter even when blank). ContributionDetail ignores it
   // and shows every row.
   alwaysShow: boolean;
+  // Optional router target for a single linked field value.
+  to?: string;
+  // When non-empty, the renderer shows these chips instead of `value`. `value`
+  // is still the visibility key (hasDisplayValue) and the fallback when no tags
+  // are supplied (e.g. ContributionDetail). (issue #28)
+  tags?: MarkingFieldTag[];
 }
 
 export interface MarkingFieldInput {
   type: MarkingTypeValue | null;
   isManuscript: boolean;
   state: string;
+  // All territory/state affiliations as chips for the State/Territory row,
+  // current-first. Optional: only RecordDetail supplies them (from
+  // record.regions); ContributionDetail omits them and the comma-joined
+  // `state` string renders instead. (issue #28)
+  regionTags?: MarkingFieldTag[];
   town: string;
   inscriptionTxt: string;
-  // Already trimmed to year only (e.g. "1880" or "").
+  // Already formatted according to DateSeen granularity.
   earliestSeen: string;
+  earliestSeenTo?: string;
   latestSeen: string;
+  latestSeenTo?: string;
+  // Pre-formatted comma-joined list of all observed dates (via
+  // formatDatesSeenList), populated only when a marking has multiple distinct
+  // dates; "" otherwise. Optional so the contribution path (a single
+  // submission) need not supply it. (issue #25)
+  datesSeen?: string;
   shapeName: string;
-  // Pre-formatted via formatRateValue (e.g. "0.03" or "").
+  // Pre-formatted via formatRateValue (e.g. "3 cents" or "").
   rateValFormatted: string;
   dateFmt: string;
   // Already mapped: empty string for the default "Normal" impression so
@@ -66,11 +91,19 @@ export function buildMarkingFields(
   const rows: MarkingFieldRow[] = [
     { label: "Type", value: typeLabel(i.type), alwaysShow: false },
     { label: "Manuscript", value: i.isManuscript ? "Yes" : "No", alwaysShow: false },
-    { label: "State/Territory", value: i.state, alwaysShow: false },
+    {
+      label: "State/Territory",
+      value: i.state,
+      alwaysShow: false,
+      tags: i.regionTags && i.regionTags.length > 0 ? i.regionTags : undefined,
+    },
     { label: "Town", value: i.town, alwaysShow: false },
     { label: inscriptionLabel(i.type), value: i.inscriptionTxt, alwaysShow: false },
-    { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true },
-    { label: "Latest Seen", value: i.latestSeen, alwaysShow: true },
+    { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true, to: i.earliestSeenTo },
+    { label: "Latest Seen", value: i.latestSeen, alwaysShow: true, to: i.latestSeenTo },
+    // Only populated (and only shown) when the marking has multiple distinct
+    // dates; the helper returns "" otherwise so this row collapses. (issue #25)
+    { label: "Dates Seen", value: i.datesSeen ?? "", alwaysShow: false },
   ];
   if (showPhysical) {
     rows.push({ label: "Shape", value: i.shapeName, alwaysShow: false });
@@ -90,8 +123,8 @@ export function buildMarkingFields(
   }
   if (opts.isStaff) {
     rows.push({ label: "Catalog text", value: i.catalogTxt, alwaysShow: false });
+    rows.push({ label: "Catalog code", value: i.code, alwaysShow: false });
   }
-  rows.push({ label: "Catalog code", value: i.code, alwaysShow: false });
   return rows;
 }
 

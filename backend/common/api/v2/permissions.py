@@ -4,23 +4,50 @@ DRF permission classes backed by real Django RBAC.
 Role mapping (see plan in
 .claude/plans/currently-the-system-has-prancy-wilkinson.md):
 
-    Guest          → anonymous request
-    Contributor    → in `Contributors` group
-    Editor         → in `Editors` group (has `common.review_contribution`)
-    Administrator  → `is_superuser` (single-person admin per design)
+    Guest          -> anonymous request
+    Contributor    -> in `Contributors` group
+    Editor         -> assigned to at least one Collection, or has
+                      `common.review_contribution`
+    Administrator  -> `is_superuser` (single-person admin per design)
 
 `IsAdminUser` (DRF built-in) is used directly in views for Administrator-only
-endpoints — there is no separate Administrator group.
+endpoints -- there is no separate Administrator group.
 """
 from __future__ import annotations
 
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 
-from common.models import Contribution, Region
+from common.models import Contribution, Image, Region
 
 
 REVIEW_CONTRIBUTION_PERM = "common.review_contribution"
 APPROVE_IMAGE_PERM = "common.approve_image"
+
+
+def user_assigned_collection_ids(user) -> set[int]:
+    """Return the set of Collection IDs this user is assigned to as an Editor."""
+    if not user or not user.is_authenticated:
+        return set()
+    return set(
+        user.collection_assignments.values_list("collection_id", flat=True)
+    )
+
+
+def user_can_review_contributions(user) -> bool:
+    """
+    Return True when the user can enter review flows.
+
+    CollectionAssignment is the scoped editor source of truth. The
+    `common.review_contribution` permission is retained for legacy group-based
+    editor accounts and broad catalog tooling.
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        return True
+    return bool(user_assigned_collection_ids(user))
 
 
 def _get_user_assigned_regions(user):
@@ -34,7 +61,7 @@ def _user_is_responsible_for_marking(user, marking):
         return False
     if user.is_superuser:
         return True
-    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+    if not user_can_review_contributions(user):
         return False
     if not marking or not marking.post_office_id:
         return False
@@ -48,18 +75,22 @@ def _user_is_responsible_for_cover(user, cover):
     """
     A cover has no region of its own; its regions are derived from the markings
     linked to it (CoverMarking -> Marking -> post_office -> region). An editor
-    is responsible for the cover if any of those regions is in their assigned
-    regions. A cover with no linked markings has no region, so only a superuser
-    can act on it.
+    is responsible for the whole cover only if every one of those regions is in
+    their assigned regions. This prevents an editor from removing a multi-state
+    cover through one assigned marking while lacking authority over its other
+    markings. A cover with no linked markings has no region, so only a
+    superuser can act on it.
     """
     if not user or not user.is_authenticated:
         return False
     if user.is_superuser:
         return True
-    if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+    if not user_can_review_contributions(user):
         return False
-    assigned = _get_user_assigned_regions(user)
-    if not assigned.exists():
+    assigned_ids = set(
+        _get_user_assigned_regions(user).values_list("pk", flat=True)
+    )
+    if not assigned_ids:
         return False
     region_ids = set()
     for cm in cover.cover_markings.select_related("marking__post_office").all():
@@ -70,21 +101,12 @@ def _user_is_responsible_for_cover(user, cover):
             region_ids.add(region.pk)
     if not region_ids:
         return False
-    return assigned.filter(pk__in=region_ids).exists()
-
-
-def user_assigned_collection_ids(user) -> set[int]:
-    """Return the set of Collection IDs this user is assigned to as an Editor."""
-    if not user or not user.is_authenticated:
-        return set()
-    return set(
-        user.collection_assignments.values_list("collection_id", flat=True)
-    )
+    return region_ids.issubset(assigned_ids)
 
 
 class IsEditor(BasePermission):
     """
-    Granted to users in the `Editors` group OR superusers.
+    Granted to assigned editors, users with the review permission, or superusers.
 
     This is a pure role check; it does NOT scope to a specific Collection.
     Use `CanReviewContribution` when you need to also verify the user is
@@ -95,7 +117,77 @@ class IsEditor(BasePermission):
         user = request.user
         if not user or not user.is_authenticated:
             return False
-        return user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM)
+        return user_can_review_contributions(user)
+
+
+class IsEditorOrAdminWrite(IsEditor):
+    """
+    Public reads pass; unsafe writes require an Editor or Administrator.
+
+    Use this for direct catalog endpoints where contributors must go through
+    the contribution review flow, but editors are allowed to enter live catalog
+    vocabulary and records.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        return super().has_permission(request, view)
+
+
+def user_is_responsible_for_image(user, image):
+    """Whether ``user`` may act on ``image``, via the subject it hangs off.
+
+    Image is polymorphic on (subject_type, subject_id) with no FK, so the
+    subject has to be looked up before the ordinary marking/cover checks apply.
+    A row pointing at a subject that no longer exists is superuser-only: there
+    is no region to reason about. (Deleting a Marking or Cover orphans its
+    Image rows silently -- there is no cascade.)
+    """
+    if not user or not user.is_authenticated:
+        return False
+    if user.is_superuser:
+        return True
+    if image is None:
+        return False
+    from common.models import Cover, Marking
+
+    if image.subject_type == Image.SUBJECT_MARKING:
+        marking = Marking.all_objects.filter(pk=image.subject_id).first()
+        return _user_is_responsible_for_marking(user, marking)
+    if image.subject_type == Image.SUBJECT_COVER:
+        cover = Cover.all_objects.filter(pk=image.subject_id).first()
+        if cover is None:
+            return False
+        return _user_is_responsible_for_cover(user, cover)
+    return False
+
+
+class IsResponsibleForImageSubject(BasePermission):
+    """
+    Object-level write check for Image rows, scoped to the subject's region.
+
+    ImageViewSet carried only the role check (IsEditorOrAdminWrite), so any
+    editor could mutate any image in any state -- unlike MarkingViewSet, which
+    also applies IsResponsibleForRegion. Applied to the crop action (issue #77);
+    widening it to the whole viewset is tracked separately so that change can be
+    reviewed on its own.
+    """
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        user = request.user
+        return bool(
+            user
+            and user.is_authenticated
+            and (user.is_superuser or user_can_review_contributions(user))
+        )
+
+    def has_object_permission(self, request, view, obj):
+        if request.method in SAFE_METHODS:
+            return True
+        return user_is_responsible_for_image(request.user, obj)
 
 
 class CanReviewContribution(BasePermission):
@@ -104,7 +196,8 @@ class CanReviewContribution(BasePermission):
 
     Allowed if:
     - superuser, or
-    - has `common.review_contribution` AND is assigned to the contribution's Collection.
+    - is assigned to the contribution's Collection, with legacy support for
+      users carrying `common.review_contribution`.
 
     For collection-listing actions (no object yet), allow any authenticated user
     in the Editors group; per-object filtering happens in get_queryset.
@@ -127,12 +220,12 @@ class CanReviewContribution(BasePermission):
         if request.method in SAFE_METHODS:
             if getattr(obj, "contributor_id", None) == user.id:
                 return True
-            if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+            if not user_can_review_contributions(user):
                 return False
             return obj.collection_id in user_assigned_collection_ids(user)
 
-        # Write access (approve/reject/edit): must have perm AND be assigned to this Collection.
-        if not user.has_perm(REVIEW_CONTRIBUTION_PERM):
+        # Write access (approve/reject/edit): must be assigned to this Collection.
+        if not user_can_review_contributions(user):
             return False
         return obj.collection_id in user_assigned_collection_ids(user)
 
@@ -163,6 +256,35 @@ class IsDraftOwner(BasePermission):
         return getattr(obj, "contributor_id", None) == user.id
 
 
+class IsOwnDeletableContribution(BasePermission):
+    """
+    Object-level: a user may hard-DELETE (withdraw) a Contribution they own as
+    long as it has NOT been approved. Draft, pending, needs_revision and
+    rejected contributions have no published Marking of their own yet -- the
+    catalog row is only created/updated on approval -- so deleting them has no
+    downstream catalog impact, the same rationale that made draft delete safe.
+    An approved contribution can never be hard-deleted through this path (not
+    even by a superuser); removing the resulting published marking goes through
+    the marking REMOVE / recycle-bin flow instead. The owner (contributor) may
+    delete their own; superusers may delete any non-approved contribution.
+    """
+
+    def has_permission(self, request, view):
+        user = request.user
+        return bool(user and user.is_authenticated)
+
+    def has_object_permission(self, request, view, obj):
+        user = request.user
+        if not user or not user.is_authenticated:
+            return False
+        # Approved contributions are off-limits to this true-delete path.
+        if getattr(obj, "status", None) == Contribution.STATUS_APPROVED:
+            return False
+        if user.is_superuser:
+            return True
+        return getattr(obj, "contributor_id", None) == user.id
+
+
 class CanManageReferenceWorks(BasePermission):
     """
     Reads: anyone authenticated.
@@ -183,6 +305,6 @@ class CanManageReferenceWorks(BasePermission):
         if request.method in ("PUT", "PATCH"):
             return user.has_perm("common.change_referencework")
         if request.method == "DELETE":
-            # Spec says "add and edit" only — delete is admin-only.
+            # Spec says "add and edit" only -- delete is admin-only.
             return False
         return False

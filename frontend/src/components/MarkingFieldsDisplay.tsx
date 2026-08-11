@@ -1,5 +1,7 @@
+import { Link } from "react-router-dom";
 import type { MarkingFieldRow } from "@/lib/markingFields";
 import { hasDisplayValue } from "@/lib/markingFields";
+import { Badge } from "@/components/ui/badge";
 
 const EMPTY = "-";
 
@@ -26,9 +28,39 @@ export function MarkingFieldsDisplay({ rows, mode }: Props) {
           className={`flex justify-between py-2 ${idx === visible.length - 1 ? "" : "border-b border-border"}`}
         >
           <dt className="text-muted-foreground font-medium">{row.label}</dt>
-          <dd className="text-foreground whitespace-pre-line text-right">
-            {row.value && row.value.trim() !== "" ? row.value : EMPTY}
-          </dd>
+          {row.tags && row.tags.length > 0 ? (
+            <dd className="flex flex-wrap gap-1.5 justify-end">
+              {row.tags.map((tag, tagIdx) =>
+                tag.to ? (
+                  <Link key={`${tag.label}-${tagIdx}`} to={tag.to}>
+                    <Badge
+                      variant="secondary"
+                      className="cursor-pointer hover:bg-secondary/80"
+                    >
+                      {tag.label}
+                    </Badge>
+                  </Link>
+                ) : (
+                  <Badge key={`${tag.label}-${tagIdx}`} variant="secondary">
+                    {tag.label}
+                  </Badge>
+                ),
+              )}
+            </dd>
+          ) : row.to && hasDisplayValue(row.value) ? (
+            <dd className="text-right">
+              <Link
+                to={row.to}
+                className="text-primary underline-offset-4 hover:underline"
+              >
+                {row.value}
+              </Link>
+            </dd>
+          ) : (
+            <dd className="text-foreground whitespace-pre-line text-right">
+              {row.value && row.value.trim() !== "" ? row.value : EMPTY}
+            </dd>
+          )}
         </div>
       ))}
     </dl>

@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { ArrowLeft, Loader2, CheckCircle, XCircle, MessageSquare, ExternalLink, Pencil, Trash2 } from "lucide-react";
 import {
@@ -24,13 +25,25 @@ import { useAuth } from "@/hooks/useAuth";
 import { normalizeImageUrl } from "@/services/markings";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious, type CarouselApi } from "@/components/ui/carousel";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
-import { getDateFormats, type DateFormatOption } from "@/constants/postmarkEnums";
+import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
 import { isCoverContributionData } from "@/lib/contributionDisplay";
 import CoverContributionDetail from "@/pages/CoverContributionDetail";
-import { buildMarkingFields } from "@/lib/markingFields";
+import { CatalogRecordFields } from "@/components/CatalogRecordFields";
+import {
+  buildCatalogSearchTitleFromParts,
+  displayCatalogField,
+  markingTypeLabel,
+  type CatalogFieldValues,
+} from "@/lib/catalogRecordDisplay";
 import { submittedDataToFieldInput } from "@/lib/contributionToFields";
-import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
-import { type Contribution, getContribution, decideContribution, deleteDraftContribution } from "@/services/contributions";
+import type { MarkingFieldInput } from "@/lib/markingFields";
+import {
+  type Contribution,
+  getContribution,
+  decideContribution,
+  deleteOwnContribution,
+  getContributionCatalogCodeSuggestion,
+} from "@/services/contributions";
 
 
 /** Shape of the per-image metadata blobs stored in a contribution's submitted_data. */
@@ -40,6 +53,30 @@ type ContributionImageMeta = {
   storageFilename?: string;
   originalFilename?: string;
 };
+
+function buildContributionCatalogFields(input: MarkingFieldInput): CatalogFieldValues {
+  return {
+    type: displayCatalogField(markingTypeLabel(input.type) || ""),
+    town: displayCatalogField(input.town),
+    state: displayCatalogField(input.state),
+    regionAbbrev: displayCatalogField(input.state),
+    manuscript: displayCatalogField(input.isManuscript ? "Yes" : "No"),
+    desc: displayCatalogField(input.catalogTxt),
+    markingTextLines: [],
+    markingTextSingle: displayCatalogField(input.inscriptionTxt),
+    shape: displayCatalogField(input.shapeName),
+    lettering: displayCatalogField(input.letteringName),
+    impression: displayCatalogField(input.impression),
+    irregular: displayCatalogField(
+      input.isIrreg == null ? null : input.isIrreg ? "Yes" : "No",
+    ),
+    dimensions: displayCatalogField(input.dimensions),
+    color: displayCatalogField(input.colorName),
+    rateValue: displayCatalogField(input.rateValFormatted),
+    earliestSeen: displayCatalogField(input.earliestSeen),
+    latestSeen: displayCatalogField(input.latestSeen),
+  };
+}
 
 const ContributionDetail = () => {
   const navigate = useNavigate();
@@ -51,21 +88,28 @@ const ContributionDetail = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Editor form state (only Value and Comment; lettering/framing/date format come from contribution's submitted_data when approving)
   const [comment, setComment] = useState("");
   const [commentError, setCommentError] = useState<string | null>(null);
+  const [catalogCode, setCatalogCode] = useState("");
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  // Draft delete (recycle) -- only a draft the contributor owns can be deleted;
-  // the backend enforces IsDraftOwner on DELETE /contributions/{id}/.
+  // Withdraw/delete -- the contributor may delete any of their own UNapproved
+  // submissions; the backend enforces IsOwnDeletableContribution on
+  // DELETE /contributions/{id}/ (status must not be "approved").
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
-  // Options to display names for lettering/framing/date format in Submitted data
   const [letteringOptions, setLetteringOptions] = useState<LetteringOption[]>([]);
   const [dateFormatOptions, setDateFormatOptions] = useState<DateFormatOption[]>([]);
   const [carouselApi, setCarouselApi] = useState<CarouselApi>();
   const [carouselCurrent, setCarouselCurrent] = useState(0);
   const [carouselCount, setCarouselCount] = useState(0);
-  const fromDashboard = location.state?.fromDashboard === true;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser;
   /** True if the logged-in user is the person who submitted this contribution (edit/review UI is for other editors only). */
@@ -135,19 +179,51 @@ const ContributionDetail = () => {
     };
   }, []);
 
-  // Approved submissions live on the entry detail page now (it carries the
-  // comment-for-editor / editor-feedback cards plus the edit/remove buttons), so
-  // send approved contributions there. Top-level effect (not in render body) to
-  // keep hook order stable; reads the contribution state directly.
-  useEffect(() => {
-    if (contribution?.status === "approved" && contribution.postmarkId != null) {
-      navigate(`/record/${contribution.postmarkId}`, {
-        replace: true,
-        state: { fromDashboard: true },
-      });
-    }
-  }, [contribution, navigate]);
+  const contributionId = contribution?.id;
+  const contributionStatus = contribution?.status;
+  const contributionSubmittedData = contribution?.submittedData;
 
+  useEffect(() => {
+    if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
+    if (isCoverContributionData(contributionSubmittedData)) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getContributionCatalogCodeSuggestion(contributionId)
+      .then((suggestion) => {
+        if (!cancelled) setCatalogCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [contributionId, contributionStatus, contributionSubmittedData, isStateEditor, user]);
+
+  const ensureCatalogCode = async (): Promise<string> => {
+    if (!contribution) return "";
+    const current = catalogCode.trim();
+    if (current) return current;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    try {
+      const suggestion = await getContributionCatalogCodeSuggestion(contribution.id, { force: true });
+      setCatalogCode(suggestion.catalogCode);
+      return suggestion.catalogCode;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not generate catalog code.";
+      setCatalogCodeError(message);
+      throw err;
+    } finally {
+      setCatalogCodeLoading(false);
+    }
+  };
 
   const submitDecision = async (kind: "approve" | "reject" | "revision") => {
     if (!contribution) return;
@@ -159,13 +235,17 @@ const ContributionDetail = () => {
 
     setSubmitting(true);
     try {
+      const finalCatalogCode = kind === "approve" ? await ensureCatalogCode() : "";
       const result = await decideContribution(contribution.id, kind, {
         reviewNotes: comment.trim() || undefined,
+        ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
       toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && result.postmarkId != null) {
-        navigate(`/record/${result.postmarkId}`, { state: { fromDashboard: true } });
+      if (kind === "approve" && result.markingId != null) {
+        navigate(`/record/${result.markingId}`, {
+          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
+        });
         return;
       }
       navigate("/dashboard", { state: { tab: "editor" } });
@@ -182,7 +262,7 @@ const ContributionDetail = () => {
 
 
   const handleBack = () => {
-    if (fromDashboard) navigate("/dashboard", { state: { tab: "editor" } });
+    if (fromDashboard) navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
     else navigate("/dashboard");
   };
 
@@ -190,7 +270,7 @@ const ContributionDetail = () => {
     if (!contribution) return;
     setDeleting(true);
     try {
-      await deleteDraftContribution(contribution.id);
+      await deleteOwnContribution(contribution.id);
       toast({ title: "Draft deleted" });
       setDeleteOpen(false);
       navigate("/dashboard");
@@ -205,13 +285,7 @@ const ContributionDetail = () => {
     }
   };
 
-
-  // Approved submissions are being redirected to the entry page by the effect
-  // above; show the spinner rather than flashing the contribution view first.
-  const isRedirectingToRecord =
-    contribution?.status === "approved" && contribution.postmarkId != null;
-
-  if (loading || isRedirectingToRecord) {
+  if (loading) {
     return (
       <div className="min-h-screen flex flex-col">
         <Navigation />
@@ -251,10 +325,6 @@ const ContributionDetail = () => {
     );
   }
 
-  const state = String(sd.state ?? "").trim();
-  const town = String(sd.town ?? "").trim();
-  const shape = String(sd.shape ?? sd.type ?? "").trim();
-  const color = String(sd.color ?? "").trim();
   const contributorComment = String(
     sd.contributor_comment ??
       sd.contributorComment ??
@@ -265,8 +335,6 @@ const ContributionDetail = () => {
       sd.comment ??
       ""
   ).trim();
-  const title = [town, state].filter(Boolean).join(", ") || `Submission #${contribution.id}`;
-  const displayName = [title, shape].filter((x) => x && String(x).trim().toLowerCase() !== "unknown").join(" — ") || title;
   const baseImageUrl = (import.meta.env.VITE_IMAGE_URL ?? "").replace(/\/+$/, "");
   const imageRoot = baseImageUrl || "/media";
   const resolveStorageImageUrl = (storageFilename: string) =>
@@ -288,7 +356,6 @@ const ContributionDetail = () => {
       .filter((url) => url.length > 0);
   };
   const categorizedImageUrls = [
-    ...asImageUrlArray(sd.postmark_images ?? sd.postmarkImages ?? sd.PostmarkImages),
     ...asImageUrlArray(sd.ratemark_images ?? sd.ratemarkImages ?? sd.RatemarkImages),
     ...asImageUrlArray(sd.auxmark_images ?? sd.auxmarkImages ?? sd.AuxmarkImages),
   ];
@@ -349,40 +416,53 @@ const ContributionDetail = () => {
           : "rounded-full border border-yellow-600 bg-yellow-500 px-3 py-1 text-xs font-semibold text-black shadow-sm hover:bg-yellow-500";
   const canReview = isStateEditor && isPending && !!user;
 
-  // Build the canonical field-row list from submitted_data. Both editors
-  // and contributors now see this read-only view; editors act on it via
-  // Approve / Reject / Return rather than inline edits.
-  let fieldRows: ReturnType<typeof buildMarkingFields> | null = null;
+  // Build the catalog-search-style field block from submitted_data. The review
+  // header/details intentionally mirror Catalog Search cards so the same entry
+  // is recognizable before and after approval.
+  let contributionCatalogFields: CatalogFieldValues | null = null;
+  let displayName = `Submission #${contribution.id}`;
   let fieldRowsError: string | null = null;
   try {
+    const fieldData = { ...sd };
+    delete fieldData.display_submitter_name;
+    delete fieldData.displaySubmitterName;
     const fieldInput = submittedDataToFieldInput(
-      sd,
+      fieldData,
       { letteringOptions, dateFormatOptions },
       { contributionId: contribution.id },
     );
-    fieldRows = buildMarkingFields(fieldInput, { isStaff: !!isStateEditor });
+    contributionCatalogFields = buildContributionCatalogFields(fieldInput);
+    displayName = buildCatalogSearchTitleFromParts({
+      town: fieldInput.town,
+      region: fieldInput.state,
+      inscription: fieldInput.inscriptionTxt,
+      code: fieldInput.code,
+    });
   } catch (err) {
     fieldRowsError = err instanceof Error ? err.message : String(err);
   }
   const showEditorFeedbackCard =
     contribution.status !== "pending" || !!(contribution.reviewNotes && contribution.reviewNotes.trim());
   // Unified edit/remove buttons (mirror the entry detail page). Edit is offered
-  // for any still-editable status; Delete only for a draft the contributor owns
-  // (the only thing the backend permits removing).
+  // for any still-editable status; Delete (withdraw) is offered to the
+  // contributor for any of their own UNAPPROVED submissions -- the backend
+  // (IsOwnDeletableContribution) permits removing draft/pending/needs_revision/
+  // rejected, but never an approved contribution.
   const canContributorEdit =
     isContributor &&
     (contribution.status === "draft" ||
+      contribution.status === "pending" ||
       contribution.status === "needs_revision" ||
       contribution.status === "rejected");
-  const canDeleteDraft = isContributor && contribution.status === "draft";
-  const postmarkId = contribution.postmarkId;
+  const canDeleteOwn = isContributor && contribution.status !== "approved";
+  const markingId = contribution.markingId;
 
   return (
     <div className="min-h-screen flex flex-col">
       <Navigation />
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* Breadcrumb + View record when approved — same as RecordDetail */}
+          {/* Breadcrumb + View record when approved -- same as RecordDetail */}
           <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
             <Button variant="ghost" onClick={handleBack} className="sm:-ml-4">
               <ArrowLeft className="mr-2 h-4 w-4" />
@@ -390,9 +470,9 @@ const ContributionDetail = () => {
             </Button>
             <div className="flex flex-wrap items-center justify-end gap-2">
               <Badge className={statusBadgeClassName}>{statusLabel}</Badge>
-              {postmarkId != null && (
+              {markingId != null && (
                 <Button variant="outline" size="sm" asChild>
-                  <Link to={`/record/${postmarkId}`} state={{ fromDashboard: true }}>
+                  <Link to={`/record/${markingId}`} state={{ fromDashboard: true, dashboardTab }}>
                     <ExternalLink className="mr-2 h-4 w-4" />
                     View record
                   </Link>
@@ -408,7 +488,7 @@ const ContributionDetail = () => {
                   Edit
                 </Button>
               )}
-              {canDeleteDraft && (
+              {canDeleteOwn && (
                 <Button
                   variant="destructive"
                   size="sm"
@@ -422,7 +502,7 @@ const ContributionDetail = () => {
             </div>
           </div>
 
-          {/* Main Content — max-lg: flex + order → image → meta → review → feedback. lg: 2 columns, 1 row; left cell is a
+          {/* Main Content -- max-lg: flex + order -> image -> meta -> review -> feedback. lg: 2 columns, 1 row; left cell is a
               flex stack so Review sits directly under the image (no multi-row grid splitting the form height). */}
           <div className="flex flex-col gap-8 mb-8 min-w-0 lg:grid lg:grid-cols-2 lg:gap-8 lg:items-start">
             <div className="contents lg:flex lg:flex-col lg:gap-8 lg:min-w-0">
@@ -432,17 +512,28 @@ const ContributionDetail = () => {
                   <Carousel setApi={setCarouselApi} className="w-full">
                     <CarouselContent>
                       {images.length > 0 ? (
-                        images.map((img, index) => (
-                          <CarouselItem key={index}>
-                            <div className="flex w-full aspect-[4/3] items-center justify-center rounded border border-border bg-muted overflow-hidden">
-                              <img
-                                src={img.imageUrl}
-                                alt={img.originalFilename || `Submission image ${index + 1}`}
-                                className="w-full h-full object-contain"
-                              />
-                            </div>
-                          </CarouselItem>
-                        ))
+                        images.map((img, index) => {
+                          const alt = img.originalFilename || `Submission image ${index + 1}`;
+                          return (
+                            <CarouselItem key={index}>
+                              <a
+                                href={img.imageUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                aria-label={`Open ${alt} in new tab`}
+                                className="block"
+                              >
+                                <div className="flex w-full aspect-[4/3] items-center justify-center rounded border border-border bg-muted overflow-hidden">
+                                  <img
+                                    src={img.imageUrl}
+                                    alt={alt}
+                                    className="w-full h-full object-contain"
+                                  />
+                                </div>
+                              </a>
+                            </CarouselItem>
+                          );
+                        })
                       ) : (
                         <CarouselItem>
                           <div className="flex w-full aspect-[4/3] items-center justify-center rounded border border-border bg-muted overflow-hidden">
@@ -467,6 +558,7 @@ const ContributionDetail = () => {
                       {images.map((_, index) => (
                         <button
                           key={index}
+                          type="button"
                           onClick={() => carouselApi?.scrollTo(index)}
                           className={`h-2 rounded-full transition-all ${
                             index === carouselCurrent
@@ -494,6 +586,25 @@ const ContributionDetail = () => {
                     </p>
                   </CardHeader>
                   <CardContent className="space-y-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="contribution-catalog-code">Catalog code</Label>
+                      <Input
+                        id="contribution-catalog-code"
+                        value={catalogCode}
+                        onChange={(e) => {
+                          setCatalogCode(e.target.value);
+                          if (catalogCodeError) setCatalogCodeError(null);
+                        }}
+                        onBlur={() => {
+                          if (!catalogCode.trim()) void ensureCatalogCode();
+                        }}
+                        placeholder={catalogCodeLoading ? "Generating..." : "Catalog code"}
+                        disabled={submitting || catalogCodeLoading}
+                      />
+                      {catalogCodeError ? (
+                        <p className="text-sm text-destructive">{catalogCodeError}</p>
+                      ) : null}
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="contribution-comment">Comment</Label>
                       <Textarea
@@ -561,7 +672,7 @@ const ContributionDetail = () => {
                           ? "Your submission was not accepted. See the comment below for details."
                           : contribution.status === "needs_revision"
                             ? "The editor requested changes. Please update this submission and resubmit."
-                            : "The reviewer left a comment for you. Use this feedback to improve your submission or add a new postmark if requested."}
+                            : "The reviewer left a comment for you. Use this feedback to improve your submission or add a new marking if requested."}
                     </p>
                   </CardHeader>
                   <CardContent className="space-y-3">
@@ -597,8 +708,8 @@ const ContributionDetail = () => {
                     <p className="text-sm text-destructive rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
                       Failed to render submitted data: {fieldRowsError}
                     </p>
-                  ) : fieldRows && fieldRows.length > 0 ? (
-                    <MarkingFieldsDisplay rows={fieldRows} mode="contribution" />
+                  ) : contributionCatalogFields ? (
+                    <CatalogRecordFields row={contributionCatalogFields} variant="contribution" />
                   ) : (
                     <p className="text-sm text-muted-foreground py-2">
                       No submitted data returned for this contribution.
@@ -622,9 +733,13 @@ const ContributionDetail = () => {
       <AlertDialog open={deleteOpen} onOpenChange={(open) => !deleting && setDeleteOpen(open)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete draft</AlertDialogTitle>
+            <AlertDialogTitle>
+              {contribution.status === "draft" ? "Delete draft" : "Delete submission"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              This permanently deletes this draft submission. This cannot be undone.
+              {contribution.status === "pending"
+                ? "This withdraws your submission and permanently deletes it before it is reviewed. This cannot be undone."
+                : "This permanently deletes this submission. This cannot be undone."}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -637,7 +752,7 @@ const ContributionDetail = () => {
               disabled={deleting}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {deleting ? "Deleting..." : "Delete draft"}
+              {deleting ? "Deleting..." : "Delete"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
