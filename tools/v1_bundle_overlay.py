@@ -95,6 +95,9 @@ DATE_COLUMNS = [
     "subject_id",
     "date",
     "granularity",
+    "date_year",
+    "date_month",
+    "date_day",
     *AUDIT_TAIL,
 ]
 CITATION_COLUMNS = [
@@ -654,7 +657,7 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                     int(parsed["date_month"]),
                     int(parsed["date_day"]),
                 )
-                observations.append((str(observed), "DAY"))
+                observations.append((str(observed), "DAY", observed.year, observed.month, observed.day))
             elif gran == "MONTH":
                 if is_v1_sentinel_year(parsed.get("date_year_start")):
                     continue
@@ -663,24 +666,24 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                     int(parsed["date_month"]),
                     1,
                 )
-                observations.append((str(observed), "MONTH"))
+                observations.append((str(observed), "MONTH", observed.year, observed.month, ""))
             elif gran == "YEAR":
                 if is_v1_sentinel_year(parsed.get("date_year_start")):
                     continue
                 observed = date(int(parsed["date_year_start"]), 1, 1)
-                observations.append((str(observed), "YEAR"))
+                observations.append((str(observed), "YEAR", observed.year, "", ""))
             elif gran == "RANGE":
                 for year in (parsed.get("date_year_start"), parsed.get("date_year_end")):
                     if is_v1_sentinel_year(year):
                         continue
                     observed = date(int(year), 1, 1)
-                    observations.append((str(observed), "YEAR"))
+                    observations.append((str(observed), "YEAR", observed.year, "", ""))
             # Approximate dates stay out of dates_seen. The munger preserves
             # their exact source text in the marking description.
         except (TypeError, ValueError):
             continue
         for subject_id in subject_ids:
-            for date_text, granularity in observations:
+            for date_text, granularity, date_year, date_month, date_day in observations:
                 key = (subject_id, date_text, granularity)
                 if key in seen:
                     continue
@@ -690,6 +693,9 @@ def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str
                     "subject_id": subject_id,
                     "date": date_text,
                     "granularity": granularity,
+                    "date_year": date_year,
+                    "date_month": date_month,
+                    "date_day": date_day,
                 }
                 row.update(audit)
                 rows.append(row)

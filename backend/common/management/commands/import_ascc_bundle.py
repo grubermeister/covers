@@ -191,6 +191,11 @@ def _ensure_collections_for_regions(stdout):
 def _summarize_errors(result, max_errors=5):
     """Return a list of human-readable strings for the first N row/validation errors."""
     out = []
+    # Resource-level errors, for example missing import_id_fields headers.
+    for err in getattr(result, "base_errors", []):
+        out.append(f"base error: {err.error!s}")
+        if len(out) >= max_errors:
+            return out
     # Row-level exceptions (e.g. FK lookup failed, type cast failed)
     for row_num, errs in result.row_errors():
         for e in errs:

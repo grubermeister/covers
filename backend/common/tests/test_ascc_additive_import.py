@@ -191,8 +191,25 @@ class AsccAdditiveImportTests(TestCase):
         )
         _write_csv(
             self.bundle / "dates_seen.csv",
-            ["subject_type", "subject_id", "date", "granularity", *AUDIT_COLUMNS],
-            [_stamp({"subject_type": "MARKING", "subject_id": "ASCC1-VA-M1001", "date": "1850-01-01", "granularity": "YEAR"}, user)],
+            [
+                "subject_type",
+                "subject_id",
+                "date",
+                "granularity",
+                "date_year",
+                "date_month",
+                "date_day",
+                *AUDIT_COLUMNS,
+            ],
+            [_stamp({
+                "subject_type": "MARKING",
+                "subject_id": "ASCC1-VA-M1001",
+                "date": "1850-01-01",
+                "granularity": "YEAR",
+                "date_year": "1850",
+                "date_month": "",
+                "date_day": "",
+            }, user)],
         )
         _write_csv(
             self.bundle / "cover_markings.csv",
