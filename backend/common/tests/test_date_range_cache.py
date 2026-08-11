@@ -68,7 +68,13 @@ class DateRangeSignalTests(DateRangeCacheBase):
         row = self._date("MARKING", marking.pk, "1850-01-01")
         self.assertEqual(self._range(marking), (date(1850, 1, 1), "YEAR", date(1850, 1, 1), "YEAR"))
 
-        row.date = "1848-06-01"
+        # Update through the component fields, not `date`. Since the partial-date
+        # work, date_year/month/day are authoritative and `date` is derived from
+        # them (DateSeen.generated_date_for_parts), so assigning `date` on a row
+        # that already has components set is ignored and then trips the
+        # granularity cross-check. This mirrors contribution_apply, which keys
+        # every DateSeen write on the components.
+        row.date_year, row.date_month, row.date_day = 1848, 6, None
         row.granularity = "MONTH"
         row.save()
         self.assertEqual(self._range(marking), (date(1848, 6, 1), "MONTH", date(1848, 6, 1), "MONTH"))
