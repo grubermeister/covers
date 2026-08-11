@@ -424,10 +424,14 @@ export interface MarkingRecord {
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
-  /** Recycle-bin metadata; only populated by GET /markings/recycle-bin/ (#89). */
-  removedAt: string | null;
-  removedByUsername: string | null;
-  removalReason: string;
+  /**
+   * Recycle-bin metadata: only GET /markings/recycle-bin/ returns these, so they
+   * are optional rather than required -- a marking built from any other endpoint
+   * (or a test fixture) legitimately has no removal record (#89).
+   */
+  removedAt?: string | null;
+  removedByUsername?: string | null;
+  removalReason?: string;
   // Whether a state editor has personally vetted this record (Issue #22).
   isReviewed: boolean;
   /** Submitter opted in to show their name on the public marking detail page. */

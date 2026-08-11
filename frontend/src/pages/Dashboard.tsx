@@ -413,7 +413,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         setArchiveReason("");
         setSubmissionsRefetchKey((k) => k + 1);
       } else {
-        toast({ title: "Could not archive", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not archive",
+          description: "message" in res ? res.message : "Could not archive this entry.",
+          variant: "destructive",
+        });
       }
     } finally {
       setArchiving(false);
@@ -431,7 +435,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         toast({ title: "Marking restored", description: "It is back in the catalog." });
         setSubmissionsRefetchKey((k) => k + 1);
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore marking.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoringMarkingId(null);
@@ -447,7 +455,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         toast({ title: "Entry restored", description: "It is back in the review queue." });
         setSubmissionsRefetchKey((k) => k + 1);
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore this entry.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoringId(null);
