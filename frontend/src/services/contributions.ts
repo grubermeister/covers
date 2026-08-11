@@ -125,7 +125,8 @@ export function mapApiItemToContribution(item: ContributionApiItem): Contributio
 
 /** Query filters for GET /contributions/. camelCase here maps to snake_case params. */
 export interface ContributionListParams {
-  mode?: "editor";
+  /** "archived" is the editor recycle bin -- same scoping as "editor" (#89). */
+  mode?: "editor" | "archived";
   status?: string;
   state?: string;
   page?: number;
@@ -326,4 +327,46 @@ export async function getDirectCatalogCodeSuggestion(payload: {
 export async function deleteOwnContribution(contributionId: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/contributions/${contributionId}/`);
+}
+
+/** Result shape shared by the archive/restore actions; mirrors removeMarking. */
+type ArchiveResult = { ok: true } | { ok: false; message: string };
+
+function archiveError(err: unknown, fallback: string): ArchiveResult {
+  const ax = err as { response?: { data?: { detail?: string } } };
+  const detail = ax.response?.data?.detail;
+  return { ok: false, message: typeof detail === "string" ? detail : fallback };
+}
+
+/**
+ * Editor: POST /contributions/{id}/archive/ -- clear a reviewed entry off the
+ * review dashboard (Issue #89). Soft: the contribution is untouched and stays
+ * visible to its contributor. The backend rejects a pending contribution.
+ */
+export async function archiveContribution(
+  contributionId: number,
+  reason?: string,
+): Promise<ArchiveResult> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.post(`/contributions/${contributionId}/archive/`, {
+      reason: reason ?? "",
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    return archiveError(err, "Could not archive this entry.");
+  }
+}
+
+/** Editor: POST /contributions/{id}/restore/ -- put an archived entry back in the queue. */
+export async function restoreContribution(
+  contributionId: number,
+): Promise<ArchiveResult> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.post(`/contributions/${contributionId}/restore/`, {});
+    return { ok: true };
+  } catch (err: unknown) {
+    return archiveError(err, "Could not restore this entry.");
+  }
 }

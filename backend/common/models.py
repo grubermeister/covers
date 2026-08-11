@@ -245,6 +245,50 @@ class Contribution(TimestampedModel):
         return apply_contribution_to_catalog(self)
 
 
+class ContributionRecycleBin(models.Model):
+    """
+    Archive sidecar for Contribution (Issue #89). The presence of a row here
+    means the contribution has been cleared off the *editor* review dashboard;
+    the Contribution row itself is never mutated or deleted, so its status,
+    review notes and audit trail stay intact and it can be restored.
+
+    Deliberately NOT a manager override, unlike MarkingRecycleBin and
+    CoverRecycleBin. Archiving is editor-side housekeeping, not deletion: the
+    contributor must keep seeing their own submission and the editor's feedback
+    on it. Only the editor queue (_get_editor_contribution_queryset) filters on
+    this sidecar -- see the visibility notes on ContributionViewSet.get_queryset.
+
+    Only a REVIEWED contribution can be archived (approved / rejected /
+    needs_revision). A pending one has to be decided first, so nothing leaves
+    the review queue without a decision.
+    """
+    contribution = models.OneToOneField(
+        Contribution,
+        on_delete=models.CASCADE,
+        primary_key=True,
+        related_name="recycle_bin_entry",
+    )
+    archived_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="contributions_archived",
+    )
+    archived_at = models.DateTimeField(auto_now_add=True)
+    reason = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "contribution_recycle_bin"
+        verbose_name = "Archived Contribution"
+        verbose_name_plural = "Archived Contributions"
+        ordering = ["-archived_at"]
+        indexes = [
+            models.Index(fields=["archived_at"]),
+        ]
+
+    def __str__(self):
+        return f"Contribution #{self.contribution_id} archived at {self.archived_at}"
+
+
 class SubmissionTransaction(models.Model):
     """Immutable audit events for submission and moderation workflows."""
     ACTION_SUBMIT = "submit"
@@ -273,6 +317,11 @@ class SubmissionTransaction(models.Model):
     #   COVER_RESTORED -- a cover was restored from the recycle bin
     ACTION_COVER_REMOVED = "cover_removed"
     ACTION_COVER_RESTORED = "cover_restored"
+    # Editor dashboard housekeeping (see ContributionRecycleBin):
+    #   CONTRIBUTION_ARCHIVED  -- a reviewed contribution was cleared off the queue
+    #   CONTRIBUTION_RESTORED  -- ... and put back
+    ACTION_CONTRIBUTION_ARCHIVED = "contribution_archived"
+    ACTION_CONTRIBUTION_RESTORED = "contribution_restored"
     ACTION_CHOICES = [
         (ACTION_SUBMIT, "Record submitted"),
         (ACTION_EDIT_SUBMISSION, "Edited submission"),
@@ -290,6 +339,8 @@ class SubmissionTransaction(models.Model):
         (ACTION_MARKING_RESTORED, "Marking restored"),
         (ACTION_COVER_REMOVED, "Cover removed"),
         (ACTION_COVER_RESTORED, "Cover restored"),
+        (ACTION_CONTRIBUTION_ARCHIVED, "Contribution archived"),
+        (ACTION_CONTRIBUTION_RESTORED, "Contribution restored"),
     ]
 
     SOURCE_CONTRIBUTOR_PORTAL = "contributor_portal"

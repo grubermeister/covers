@@ -6,6 +6,15 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Pagination,
   PaginationContent,
@@ -15,7 +24,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { ArrowDown, ArrowUp, Calendar, Loader2, Pencil, Plus, Search as SearchIcon, SlidersHorizontal } from "lucide-react";
+import { Archive, ArchiveRestore, ArrowDown, ArrowUp, Calendar, Loader2, Pencil, Plus, Search as SearchIcon, SlidersHorizontal } from "lucide-react";
 import { useState, useEffect, useMemo, useRef } from "react";
 import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
@@ -28,9 +37,18 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { cn } from "@/lib/utils";
-import { normalizeImageUrl, getRecycleBinMarkings, type MarkingRecord } from "@/services/markings";
+import {
+  normalizeImageUrl,
+  getRecycleBinMarkings,
+  restoreMarking,
+  type MarkingRecord,
+} from "@/services/markings";
 import { getRecycleBinCovers, type RecycleBinCover } from "@/services/covers";
-import { listContributions } from "@/services/contributions";
+import {
+  archiveContribution,
+  listContributions,
+  restoreContribution,
+} from "@/services/contributions";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useFilterOptions } from "@/hooks/useFilterOptions";
 import {
@@ -158,6 +176,11 @@ interface EditorHistoryItem {
   review_notes: string | null;
   image_url: string | null;
   isCover?: boolean;
+  /** Issue #89 archive state; only populated on the archived (recycle bin) list. */
+  is_archived?: boolean;
+  archived_at?: string | null;
+  archived_by_username?: string | null;
+  archive_reason?: string;
 }
 
 type SortDir = "asc" | "desc";
@@ -368,6 +391,69 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     return (isSuperuser || isEditor) && s.marking_id != null;
   };
 
+  // Issue #89: clear a reviewed entry off the review queue without deleting it.
+  // Only approved / rejected / needs-revision qualify -- a pending entry has to
+  // be decided first, and the backend enforces that too.
+  const canArchive = (item: EditorHistoryItem): boolean =>
+    ["approved", "rejected", "needs_revision"].includes(
+      String(item.status || "").toLowerCase(),
+    );
+
+  const handleArchiveConfirm = async () => {
+    if (!archiveTarget || archiving) return;
+    setArchiving(true);
+    try {
+      const res = await archiveContribution(archiveTarget.id, archiveReason.trim() || undefined);
+      if (res.ok) {
+        toast({
+          title: "Entry archived",
+          description: "It is in the Archived list and can be restored at any time.",
+        });
+        setArchiveTarget(null);
+        setArchiveReason("");
+        setSubmissionsRefetchKey((k) => k + 1);
+      } else {
+        toast({ title: "Could not archive", description: res.message, variant: "destructive" });
+      }
+    } finally {
+      setArchiving(false);
+    }
+  };
+
+  // Restore a soft-removed catalog marking straight from the recycle-bin list.
+  // Previously this needed a trip to each record's detail page (#89).
+  const handleRestoreMarking = async (marking: MarkingRecord) => {
+    if (restoringMarkingId != null) return;
+    setRestoringMarkingId(marking.id);
+    try {
+      const res = await restoreMarking(marking.id);
+      if (res.ok) {
+        toast({ title: "Marking restored", description: "It is back in the catalog." });
+        setSubmissionsRefetchKey((k) => k + 1);
+      } else {
+        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+      }
+    } finally {
+      setRestoringMarkingId(null);
+    }
+  };
+
+  const handleRestoreArchived = async (item: EditorHistoryItem) => {
+    if (restoringId != null) return;
+    setRestoringId(item.id);
+    try {
+      const res = await restoreContribution(item.id);
+      if (res.ok) {
+        toast({ title: "Entry restored", description: "It is back in the review queue." });
+        setSubmissionsRefetchKey((k) => k + 1);
+      } else {
+        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+      }
+    } finally {
+      setRestoringId(null);
+    }
+  };
+
   const goOpenDashboardItem = (item: {
     id: number;
     status: string;
@@ -415,6 +501,13 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [removedCovers, setRemovedCovers] = useState<RecycleBinCover[]>([]);
   const [editorHistoryLoading, setEditorHistoryLoading] = useState(false);
   const [editorHistoryError, setEditorHistoryError] = useState<string | null>(null);
+  // Issue #89: archiving a reviewed entry off the queue. `archiveTarget` doubles
+  // as the dialog's open flag; `archivingId` disables the row being acted on.
+  const [archiveTarget, setArchiveTarget] = useState<EditorHistoryItem | null>(null);
+  const [archiveReason, setArchiveReason] = useState("");
+  const [archiving, setArchiving] = useState(false);
+  const [restoringId, setRestoringId] = useState<number | null>(null);
+  const [restoringMarkingId, setRestoringMarkingId] = useState<number | null>(null);
   const [editorHistoryStatusFilter, setEditorHistoryStatusFilter] = useState(
     initialParams.editor.status,
   );
@@ -663,8 +756,12 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       ["pending", "approved", "rejected", "needs_revision"].includes(editorHistoryStatusFilter)
         ? editorHistoryStatusFilter
         : undefined;
+    // "Archived" (Issue #89) is the same contribution list under a different
+    // lens, so it reuses this whole mapping path rather than a parallel branch
+    // the way "removed" (markings) has to.
+    const isArchivedView = editorHistoryStatusFilter === "archived";
     listContributions({
-      mode: "editor",
+      mode: isArchivedView ? "archived" : "editor",
       status: historyStatus,
       state: editorStateFilter !== "all" ? editorStateFilter : undefined,
       page: editorHistoryPage,
@@ -709,6 +806,16 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
             created_at: String(c.created_at ?? (c as { createdAt?: string }).createdAt ?? ""),
             review_notes: c.review_notes ?? (c as { reviewNotes?: string | null }).reviewNotes ?? null,
             image_url: resolveSubmissionImageUrl(c as Record<string, unknown>, submittedData as Record<string, unknown>),
+            is_archived: Boolean(c.is_archived ?? (c as { isArchived?: boolean }).isArchived),
+            archived_at:
+              c.archived_at ?? (c as { archivedAt?: string | null }).archivedAt ?? null,
+            archived_by_username:
+              c.archived_by_username ??
+              (c as { archivedByUsername?: string | null }).archivedByUsername ??
+              null,
+            archive_reason: String(
+              c.archive_reason ?? (c as { archiveReason?: string }).archiveReason ?? "",
+            ),
           };
         });
         // Filter out drafts from the editor history lists; drafts are only
@@ -1025,6 +1132,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     ro.observe(el);
     return () => ro.disconnect();
   }, [assignedCollectionsExpanded, user?.assigned_collections]);
+
+  // The editor recycle bin for entries (Issue #89). Unlike "removed" (which
+  // swaps to markings/covers), this is the same contribution list, so it renders
+  // through the normal row path with archive metadata and a Restore action.
+  const isArchivedView = editorHistoryStatusFilter === "archived";
 
   // In "removed" mode the rows on the page come from removedMarkings, not the
   // contribution list, so the page-end count must read that length instead.
@@ -1798,6 +1910,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                           <SelectItem value="approved">Approved</SelectItem>
                           <SelectItem value="rejected">Rejected</SelectItem>
                           <SelectItem value="needs_revision">Needs Revision</SelectItem>
+                          <SelectItem value="archived">Archived</SelectItem>
                           <SelectItem value="removed">Removed</SelectItem>
                         </SelectContent>
                       </Select>
@@ -2093,12 +2206,29 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                                     <span className="font-medium text-foreground block truncate">
                                       {displayLabel}
                                     </span>
+                                    <span className="text-xs text-muted-foreground block truncate">
+                                      Removed
+                                      {m.removedByUsername ? ` by ${m.removedByUsername}` : ""}
+                                      {m.removedAt
+                                        ? ` on ${new Date(m.removedAt).toLocaleDateString()}`
+                                        : ""}
+                                      {m.removalReason ? ` - ${m.removalReason}` : ""}
+                                    </span>
                                   </div>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                                   <Badge className="rounded-full px-3 py-1 text-xs font-semibold shadow-sm bg-muted text-muted-foreground hover:bg-muted">
                                     Removed
                                   </Badge>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => void handleRestoreMarking(m)}
+                                    disabled={restoringMarkingId === m.id}
+                                  >
+                                    <ArchiveRestore className="mr-2 h-4 w-4" />
+                                    {restoringMarkingId === m.id ? "Restoring..." : "Restore"}
+                                  </Button>
                                 </div>
                               </li>
                             );
@@ -2164,10 +2294,14 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                   <Card className="flex-1 flex items-center justify-center min-h-[200px]">
                     <CardContent className="text-center">
                       <p className="text-muted-foreground mb-1">
-                        No submissions in history for the selected status.
+                        {isArchivedView
+                          ? "Nothing archived yet."
+                          : "No submissions in history for the selected status."}
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        User contributions in your assigned states will appear here.
+                        {isArchivedView
+                          ? "Archiving a reviewed entry clears it off this queue without deleting it."
+                          : "User contributions in your assigned states will appear here."}
                       </p>
                     </CardContent>
                   </Card>
@@ -2216,6 +2350,16 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                                 {" - "}
                                 {new Date(item.created_at).toLocaleDateString()}
                               </span>
+                              {isArchivedView && (
+                                <span className="text-xs text-muted-foreground block truncate">
+                                  Archived
+                                  {item.archived_by_username ? ` by ${item.archived_by_username}` : ""}
+                                  {item.archived_at
+                                    ? ` on ${new Date(item.archived_at).toLocaleDateString()}`
+                                    : ""}
+                                  {item.archive_reason ? ` - ${item.archive_reason}` : ""}
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="flex flex-wrap items-center gap-2 shrink-0">
@@ -2228,6 +2372,32 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                                     ? "Rejected"
                                     : "Pending"}
                             </Badge>
+                            {isArchivedView ? (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => void handleRestoreArchived(item)}
+                                disabled={restoringId === item.id}
+                              >
+                                <ArchiveRestore className="mr-2 h-4 w-4" />
+                                {restoringId === item.id ? "Restoring..." : "Restore"}
+                              </Button>
+                            ) : (
+                              canArchive(item) && (
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  onClick={() => {
+                                    setArchiveReason("");
+                                    setArchiveTarget(item);
+                                  }}
+                                  aria-label={`Archive ${displayLabel}`}
+                                >
+                                  <Archive className="mr-2 h-4 w-4" />
+                                  Archive
+                                </Button>
+                              )
+                            )}
                           </div>
                         </li>
                       );
@@ -2370,6 +2540,40 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       </div>
       <Footer />
     </div>
+
+    <Dialog
+      open={archiveTarget != null}
+      onOpenChange={(open) => {
+        if (archiving) return;
+        if (!open) setArchiveTarget(null);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Archive this entry</DialogTitle>
+          <DialogDescription>
+            This clears the entry off your review queue without deleting it. The
+            submission, its status and your feedback are kept, the contributor
+            still sees it on their own dashboard, and you can restore it from the
+            Archived list at any time. Optionally record a reason.
+          </DialogDescription>
+        </DialogHeader>
+        <Textarea
+          placeholder="Reason (optional) - e.g. duplicate, not needed, blatantly wrong"
+          value={archiveReason}
+          onChange={(e) => setArchiveReason(e.target.value)}
+          disabled={archiving}
+        />
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setArchiveTarget(null)} disabled={archiving}>
+            Cancel
+          </Button>
+          <Button onClick={() => void handleArchiveConfirm()} disabled={archiving}>
+            {archiving ? "Archiving..." : "Archive Entry"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   </div>
   );
 };
