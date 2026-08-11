@@ -1,3 +1,11 @@
+/**
+ * @jest-environment jsdom
+ *
+ * Needed for the sessionStorage-backed return-href helpers: jest defaults to the
+ * node environment, where `sessionStorage` is not defined. (Newer Node versions
+ * happen to expose it as a global, so omitting this passes locally and fails on
+ * CI's Node 22.) Matches auth.test.ts / authRedirect.test.ts.
+ */
 import {
   DEFAULT_PAGE_SIZE,
   buildDashboardParams,
