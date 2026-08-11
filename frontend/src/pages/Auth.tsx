@@ -10,10 +10,11 @@ import { ForgotPasswordForm } from "@/components/ForgotPasswordForm";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff } from "lucide-react";
 import { Formik, Form, Field, FormikHelpers } from "formik";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { getStoredUser, setStoredUser } from "@/lib/auth";
 import apiClient, { ensureCsrfToken } from "@/lib/api";
+import { getRedirectPath } from "@/lib/authRedirect";
 
 interface AuthValues {
   email: string;
@@ -41,13 +42,15 @@ const Auth = () => {
   const [forgotPasswordOpen, setForgotPasswordOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { toast } = useToast();
+  const redirectPath = getRedirectPath(location.state);
 
   useEffect(() => {
     if (getStoredUser()) {
-      navigate("/");
+      navigate(redirectPath, { replace: true });
     }
-  }, [navigate]);
+  }, [navigate, redirectPath]);
 
   const handleSubmit = async (
     values: AuthValues,
@@ -78,7 +81,7 @@ const Auth = () => {
         title: "Welcome back!",
         description: "You have successfully signed in.",
       });
-      navigate("/");
+      navigate(redirectPath, { replace: true });
     } catch (err) {
       toast({
         title: "Sign in failed",
@@ -101,7 +104,7 @@ const Auth = () => {
               WorldCovers Account
             </CardTitle>
             <CardDescription className="text-center">
-              Sign in to access the catalog
+              Sign in below, or request access if you do not have an account yet
             </CardDescription>
           </CardHeader>
           <CardContent className="p-4 sm:p-6 pt-0">
@@ -180,20 +183,27 @@ const Auth = () => {
                   >
                     {isSubmitting ? "Signing in..." : "Sign In"}
                   </Button>
-
-                  <div className="text-center pt-2">
-                    <Button
-                      type="button"
-                      variant="link"
-                      className="text-sm"
-                      onClick={() => setRequestDialogOpen(true)}
-                    >
-                      Request a login
-                    </Button>
-                  </div>
                 </Form>
               )}
             </Formik>
+
+            {/* #70: a first-time editor arrives with no credentials, so the sign-in form above is
+                unusable to them. Keep this path visually distinct from the form rather than a link
+                buried under the submit button. */}
+            <div className="mt-6 border-t pt-4 space-y-2 text-center">
+              <p className="text-sm font-medium">New to the catalog?</p>
+              <p className="text-sm text-muted-foreground">
+                Editor accounts are created for you — request one and we will set it up.
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => setRequestDialogOpen(true)}
+              >
+                Request a login
+              </Button>
+            </div>
           </CardContent>
         </Card>
       </div>

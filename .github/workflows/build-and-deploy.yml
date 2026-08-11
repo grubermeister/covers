@@ -1,15 +1,13 @@
-# On push to staging: build frontend and optionally deploy.
-# The built frontend (frontend/dist/) is produced so your server or deploy step can use it.
-name: Build and deploy
+# On push to staging: build, check, and deploy to woco.dev.
+# Production deploys are handled by deploy-prod.yml on main.
+name: Build and deploy to staging
 
 on:
   push:
     branches: [staging]
   workflow_dispatch:
 
-# Opt JS-based actions (e.g. actions/upload-artifact@v5, still declared as
-# node20 in its action.yml) into the node24 runtime ahead of GitHub's
-# forced flip on 2026-06-02. No-op once node24 becomes the default.
+# Opt JS-based actions into the node24 runtime ahead of GitHub's forced flip.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
@@ -18,65 +16,52 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v7
 
-      # Fail fast if any known malware fingerprint is present in the tree.
-      # Runs before any install / build step so a compromised commit cannot
-      # execute code on the runner. Patterns are catalogued in
-      # tools/fingerprint.sh.
       - name: Malware fingerprint scan
         run: bash tools/fingerprint.sh
 
       - name: Set up uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@v8.2.0
         with:
-          # Pin uv version so CI is deterministic. Bump deliberately.
           version: "0.11.2"
           enable-cache: true
-          # Python version comes from .python-version at repo root (3.13).
 
       - name: Set up Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
           cache: "npm"
           cache-dependency-path: frontend/package-lock.json
 
       - name: Install Python dependencies
-        # Same flags as the server: locked resolution, no dev group.
         run: uv sync --no-dev --frozen
 
-      # Build the frontend before running Django system checks. Django's
-      # STATICFILES_DIRS points at frontend/dist/, and `manage.py check`
-      # raises staticfiles.W004 if that directory is missing. Building
-      # first keeps the check log clean.
-      - name: Build frontend
+      - name: Verify frontend
         run: |
           cd frontend
           npm ci
+          # Gate at high: the residual moderates are react-router's, whose fix
+          # is a 6 -> 7 major bump on the SPA's routing library. Tracked
+          # separately; restore --audit-level=moderate once that lands.
+          npm audit --audit-level=high
+          npm run lint
+          npm run typecheck
+          npm test -- --runInBand
           npm run build
 
-      # `migrate --check` was the original step here, but it needs a live
-      # MySQL to inspect django_migrations and CI doesn't provide one, so it
-      # was wrapped in `|| true` and silently masked every failure (model
-      # import errors, broken migrations, missing dependencies all slipped
-      # through). `manage.py check` is the right CI smoke test: it loads
-      # settings, validates models / URL conf / app registry, and runs
-      # without a DB connection. Failures here now break the build.
-      # If you want a real `migrate --check` against a live DB in CI, add a
-      # MySQL service block + DATABASE config; see the `services:` pattern
-      # in https://docs.github.com/en/actions/using-containerized-services.
+      - name: Verify tools
+        run: |
+          cd tools
+          uv run python -m unittest discover -s tests
+
       - name: Django system checks
-        # The runner has no /srv/woco/.env so we provide a literal dummy
-        # secret here. manage.py check does no crypto; it just needs
-        # settings.py to import. The real secret lives in /srv/woco/.env
-        # on the server and is loaded by decouple at runtime there.
         env:
           DJANGO_SECRET_KEY: ci-dummy-not-a-real-secret-do-not-use-anywhere
         run: uv run python backend/manage.py check
 
       - name: Upload frontend build
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: frontend-dist
           path: frontend/dist/
@@ -85,41 +70,37 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy to server (SSH)
-        uses: appleboy/ssh-action@v1.0.0
+      - name: Deploy to woco.dev
+        uses: appleboy/ssh-action@v1.2.5
         with:
-          host: hellowoco.app
-          # SSH as wocod (service account) directly. wocod has a narrow
-          # passwordless-sudo entry in /etc/sudoers.d/wocod-deploy granting
-          # exactly the four commands invoked below: systemctl stop/start
-          # worldcovers, systemctl daemon-reload, and install of the
-          # systemd unit file. Stealing this SSH key buys an attacker
-          # those four commands plus a shell as wocod (no general sudo).
+          host: woco.dev
           username: wocod
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          key: ${{ secrets.STAGING_DEPLOY_SSH_KEY }}
           command_timeout: 20m
           script: |
             set -euo pipefail
-            # Non-interactive SSH does not source .bashrc / .profile, so
-            # user-level installs (uv lives at ~/.local/bin/uv by default)
-            # are not on PATH. Add the standard user-bin directory so the
-            # deploy script can find uv without a system-wide install.
             export PATH="$HOME/.local/bin:$PATH"
-            # Stop the app so migrations can run without table locks
-            # (ALTER TABLE on Postmarks can block otherwise).
-            sudo -n /bin/systemctl stop worldcovers
-            # Pull the latest staging tip. wocod owns /srv/woco so no sudo
-            # is needed here.
+
             git -C /srv/woco fetch origin
             git -C /srv/woco reset --hard origin/staging
-            # Re-install the systemd unit file only when it has changed.
-            # The install path is pinned in sudoers so the exact source
-            # and destination must match the sudoers entry verbatim.
-            if ! diff -q /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
-                echo "Updating systemd unit file..."
-                sudo -n /usr/bin/install -m 644 /srv/woco/tools/worldcovers.service /etc/systemd/system/worldcovers.service
-                sudo -n /bin/systemctl daemon-reload
+            git -C /srv/woco clean -fd backend/common/migrations
+
+            if ! diff -q /srv/woco/deploy/worldcovers.service /etc/systemd/system/worldcovers.service > /dev/null 2>&1; then
+                echo "Updating staging systemd unit through root-owned helper..."
+                sudo -n /usr/local/sbin/worldcovers-apply-unit
             fi
-            # Run the actual deploy as wocod (we already are wocod).
-            cd /srv/woco && ./tools/deploy.sh
+
+            service_stopped=0
+            restart_if_stopped() {
+                if [ "$service_stopped" -eq 1 ]; then
+                    sudo -n /bin/systemctl start worldcovers || true
+                fi
+            }
+            trap restart_if_stopped EXIT
+
+            sudo -n /bin/systemctl stop worldcovers
+            service_stopped=1
+            cd /srv/woco && ./deploy/deploy.sh
             sudo -n /bin/systemctl start worldcovers
+            service_stopped=0
+            trap - EXIT

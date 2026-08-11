@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, History, Info, Loader2, MessageSquare, Pencil, Plus, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Crop, History, Info, Loader2, MessageSquare, Pencil, Plus, Recycle, Replace, Star, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Carousel,
@@ -16,17 +17,23 @@ import {
 } from "@/components/ui/carousel";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
-import { formatCatalogDate, markingTypeLabel } from "@/lib/catalogRecordDisplay";
+import { CropImageDialog } from "@/components/CropImageDialog";
+import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { buildMarkingFields } from "@/lib/markingFields";
+import { formatRateValue } from "@/lib/rateDisplay";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
 import {
   getMarkingById,
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
+  moveImageSubject,
   normalizeImageUrl,
+  regionsDisplay,
   removeMarking,
   reorderImages,
   restoreMarking,
+  updateMarkingReviewed,
   type AssociatedCover,
   type AssociatedDateSeen,
   type MarkingChangelogEvent,
@@ -34,6 +41,7 @@ import {
   type MarkingCitationReferenceWork,
   type MarkingImage,
   type MarkingRecord,
+  deleteImage,
 } from "@/services/markings";
 import {
   Dialog,
@@ -54,9 +62,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { useAuth } from "@/hooks/useAuth";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { createCoverMarking, getCoverById } from "@/services/covers";
+import { parseCoverIdInput } from "@/lib/recordLinking";
 
 type GalleryImage = {
   imageUrl: string | null;
@@ -80,23 +94,16 @@ type GalleryImage = {
 
 const EMPTY = "-";
 
-function isCircleShapeName(shapeName: string | null | undefined): boolean {
-  const s = String(shapeName ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  return s.includes("circle");
-}
-
 function dimensionsDisplay(record: MarkingRecord): string {
   const w = record.width?.trim() ?? "";
   const h = record.height?.trim() ?? "";
 
-  // Circle / Oval -> display the diameter, not WxH. Must run BEFORE the
+  // True circle-family shapes display as diameter, not WxH. Must run BEFORE the
   // sizeDisplay branch because the API serializer always populates
   // size_display as "WxH" (see common/api/v2/serializers.py
   // get_size_display); deferring this check would surface "28x28 mm" for
   // circles instead of "28 mm diameter" and disagree with the Search card.
-  if (!record.isManuscript && isCircleShapeName(record.shapeName)) {
+  if (!record.isManuscript && isTrueCircleShapeName(record.shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";
@@ -128,17 +135,11 @@ function coverTypeLabel(t: string | null): string {
 }
 
 function formatCoverDate(d: AssociatedDateSeen): string {
-  // Honor the dates_seen granularity: YEAR -> "1980", MONTH -> "01/1980",
-  // DAY -> "01/01/1980". Truncating the ISO string before formatting lets
-  // formatCatalogDate pick the matching display shape.
-  const raw = d.date || "";
-  const truncated =
-    d.granularity === "YEAR"
-      ? raw.slice(0, 4)
-      : d.granularity === "MONTH"
-        ? raw.slice(0, 7)
-        : raw.slice(0, 10);
-  return formatCatalogDate(truncated) || truncated;
+  return formatDateSeen(d.date, d.granularity, {
+    dateYear: d.dateYear,
+    dateMonth: d.dateMonth,
+    dateDay: d.dateDay,
+  }) || d.date || "";
 }
 
 function associatedCoverDatesDisplay(
@@ -178,20 +179,6 @@ function AssociatedCoverPreviewFields({ cover }: { cover: AssociatedCover }) {
       )}
     </dl>
   );
-}
-
-function yearOnly(value: string | null | undefined): string {
-  const s = value != null ? String(value).trim() : "";
-  if (!s) return "";
-  const m = /^(\d{4})/.exec(s);
-  return m ? m[1] : s;
-}
-
-function formatRateValue(cents: string | null | undefined): string {
-  if (cents == null || String(cents).trim() === "") return "";
-  const n = parseFloat(String(cents));
-  if (!Number.isFinite(n)) return "";
-  return (n / 100).toFixed(2);
 }
 
 /**
@@ -259,7 +246,7 @@ function buildGalleryImages(record: MarkingRecord): GalleryImage[] {
     imageUrl: normalizeImageUrl(img.imageUrl),
     originalFilename: img.originalFilename || undefined,
     subjectLabel: img.subjectType === "COVER" ? "Cover" : typeLabel,
-    // display_order=0 is the canonical "default" slot — matches the editor
+    // display_order=0 is the canonical "default" slot -- matches the editor
     // tooling on ContributionDetail.tsx where displayOrder===0 is what gets
     // labeled "Default" / "Set default".
     isDefault: img.displayOrder === 0,
@@ -321,6 +308,20 @@ const RecordDetail = () => {
   const [removing, setRemoving] = useState(false);
   const [restoreOpen, setRestoreOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [linkCoverOpen, setLinkCoverOpen] = useState(false);
+  const [linkCoverInput, setLinkCoverInput] = useState("");
+  const [linkCoverIsBackstamp, setLinkCoverIsBackstamp] = useState(false);
+  const [linkCoverBusy, setLinkCoverBusy] = useState(false);
+  const [linkCoverError, setLinkCoverError] = useState<string | null>(null);
+  const [moveImageDialogImg, setMoveImageDialogImg] = useState<MarkingImage | null>(null);
+  // Image whose marking an editor is cropping out of a whole-cover scan (#77).
+  const [cropImageTarget, setCropImageTarget] = useState<MarkingImage | null>(null);
+  const [moveImageTargetCoverId, setMoveImageTargetCoverId] = useState("");
+  const [moveImageView, setMoveImageView] = useState("FRONT");
+  const [moveImageBusy, setMoveImageBusy] = useState(false);
+  const [moveImageError, setMoveImageError] = useState<string | null>(null);
+  const [savingReviewed, setSavingReviewed] = useState(false);
+  const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
   const markingId = id ? parseInt(String(id).replace(/^api-/, ""), 10) : null;
 
@@ -414,7 +415,7 @@ const RecordDetail = () => {
         if (!data) {
           setHistoryEvents([]);
           setHistoryError(
-            "Unable to load record history (you may not be assigned to this region).",
+            "Direct import from catalog",
           );
           return;
         }
@@ -501,16 +502,18 @@ const RecordDetail = () => {
     const next = record.images.slice();
     const [picked] = next.splice(index, 1);
     next.unshift(picked);
+    setCurrent(0);
     void applyImageOrder(next);
   };
 
-  const fromDashboard = location.state?.fromDashboard;
+  const locationState = location.state as {
+    fromDashboard?: boolean;
+    dashboardTab?: "submissions" | "editor";
+  } | null;
+  const fromDashboard = locationState?.fromDashboard === true;
+  const dashboardTab = locationState?.dashboardTab;
   const handleBack = () => {
-    if (fromDashboard) {
-      navigate("/dashboard");
-    } else {
-      navigate(-1);
-    }
+    navigate("/search");
   };
 
   if (loading) {
@@ -543,14 +546,17 @@ const RecordDetail = () => {
   // contributor or an editor, so a non-empty string is already authorized to show.
   const commentForEditor = record.commentForEditor?.trim() ?? "";
   const editorFeedback = record.editorFeedback?.trim() ?? "";
+  const submitterName = record.submitterName?.trim() ?? "";
   const galleryImages = buildGalleryImages(record);
   const typeLabel = markingTypeLabel(record.type) || "Townmark";
 
   const goEdit = () =>
     navigate(`/edit/${record.id}?mode=suggestion`, {
       state: {
+        from: location.pathname + location.search,
         fromSearch: location.state?.fromSearch,
         fromDashboard,
+        dashboardTab,
         fromDashboardViaDetail: !!fromDashboard,
         mode: "suggestion",
       },
@@ -566,6 +572,55 @@ const RecordDetail = () => {
     if (refreshed) setRecord(refreshed);
   };
 
+  const handleDeleteImage = async (index: number) => {
+    if (!record) return;
+    const image = record.images[index];
+    if (!image || image.imageId <= 0) return;
+    const label = image.originalFilename || `image ${index + 1}`;
+    const confirmed = window.confirm(
+      `Delete ${label}? This removes the image from its catalog record.`,
+    );
+    if (!confirmed) return;
+    setDeletingImageId(image.imageId);
+    try {
+      const res = await deleteImage(image.imageId);
+      if (res.ok) {
+        toast({ title: "Image deleted" });
+        await refetchRecord();
+        setCurrent((prev) => Math.max(0, Math.min(prev, record.images.length - 2)));
+      } else {
+        toast({
+          title: "Could not delete image",
+          description: "message" in res ? res.message : "Could not delete image.",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setDeletingImageId(null);
+    }
+  };
+
+  // State-editor "reviewed/confirmed" toggle (Issue #22). Optimistically reflect
+  // the new value, persist, then re-pull so the displayed state matches the
+  // server (and reverts if the editor wasn't authorized for this region).
+  const handleReviewedToggle = async (next: boolean) => {
+    if (!record || savingReviewed) return;
+    setSavingReviewed(true);
+    const ok = await updateMarkingReviewed(record.id, next);
+    if (ok) {
+      setRecord({ ...record, isReviewed: next });
+      toast({ title: next ? "Marked as reviewed" : "Marked as not reviewed" });
+    } else {
+      toast({
+        title: "Could not update review status",
+        description: "You may not be the state editor for this record.",
+        variant: "destructive",
+      });
+      await refetchRecord();
+    }
+    setSavingReviewed(false);
+  };
+
   const handleRemoveConfirm = async () => {
     if (!record) return;
     setRemoving(true);
@@ -577,7 +632,11 @@ const RecordDetail = () => {
         setRemoveReason("");
         await refetchRecord();
       } else {
-        toast({ title: "Could not remove", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not remove",
+          description: "message" in res ? res.message : "Could not remove marking.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRemoving(false);
@@ -594,7 +653,11 @@ const RecordDetail = () => {
         setRestoreOpen(false);
         await refetchRecord();
       } else {
-        toast({ title: "Could not restore", description: res.message, variant: "destructive" });
+        toast({
+          title: "Could not restore",
+          description: "message" in res ? res.message : "Could not restore marking.",
+          variant: "destructive",
+        });
       }
     } finally {
       setRestoring(false);
@@ -602,8 +665,17 @@ const RecordDetail = () => {
   };
 
   const dimensionsValue = dimensionsDisplay(record) || EMPTY;
-  const earliestValue = yearOnly(record.earliestSeen);
-  const latestValue = yearOnly(record.latestSeen);
+  const earliestValue = formatDateSeen(record.earliestSeen, record.earliestSeenGranularity);
+  const latestValue = formatDateSeen(record.latestSeen, record.latestSeenGranularity);
+  const earliestSeenTo =
+    record.earliestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.earliestSeenCoverId}`
+      : undefined;
+  const latestSeenTo =
+    record.latestSeenCoverId != null
+      ? `/record/${record.id}/cover/${record.latestSeenCoverId}`
+      : undefined;
+  const datesSeenValue = formatDatesSeenList(record.datesSeen);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression
@@ -614,11 +686,11 @@ const RecordDetail = () => {
       user.role === "administrator" ||
       user.is_superuser === true);
 
-  // Record History display rule: collapsed by default we show only the most
-  // recent event; when expanded we cap at the 10 newest events. Backend
+  // Record History display rule: collapsed by default we show the three most
+  // recent events; when expanded we cap at the 10 newest events. Backend
   // already returns events sorted by timestamp DESC, so we slice from the
   // front to avoid an extra sort pass on every render.
-  const HISTORY_COLLAPSED_LIMIT = 1;
+  const HISTORY_COLLAPSED_LIMIT = 3;
   const HISTORY_EXPANDED_LIMIT = 10;
   const visibleHistoryEvents = historyExpanded
     ? historyEvents.slice(0, HISTORY_EXPANDED_LIMIT)
@@ -635,11 +707,21 @@ const RecordDetail = () => {
     {
       type: record.type,
       isManuscript: record.isManuscript,
-      state: record.state,
+      state: regionsDisplay(record),
+      // Each territory/state becomes a chip linking to a region-filtered
+      // search. The Search page's `state` param matches on region name, and
+      // its filter traverses the post_office_regions M2M. (issue #28)
+      regionTags: record.regions.map((r) => ({
+        label: r.name,
+        to: `/search?state=${encodeURIComponent(r.name)}`,
+      })),
       town: record.town,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
+      earliestSeenTo,
       latestSeen: latestValue,
+      latestSeenTo,
+      datesSeen: datesSeenValue,
       shapeName: record.shapeName,
       rateValFormatted: formatRateValue(record.rateVal),
       dateFmt: record.dateFmt,
@@ -668,6 +750,85 @@ const RecordDetail = () => {
     navigate(`/record/${markingId}/cover/new`, {
       state: { from: location.pathname + location.search },
     });
+  };
+
+  // Reassigns an image from this marking to one of its associated covers
+  // (issue #48: v1 attached every cover upload to the marking). Target list
+  // is restricted to covers already linked to this marking so images can't
+  // be scattered onto unrelated records from here.
+  const handleMoveImageToCover = async () => {
+    if (!moveImageDialogImg?.imageId) return;
+    const coverId = parseInt(moveImageTargetCoverId, 10);
+    if (!Number.isFinite(coverId) || coverId <= 0) {
+      setMoveImageError("Select a target cover.");
+      return;
+    }
+    setMoveImageBusy(true);
+    setMoveImageError(null);
+    try {
+      const res = await moveImageSubject(
+        moveImageDialogImg.imageId,
+        "COVER",
+        coverId,
+        moveImageView,
+      );
+      if (res.ok === false) {
+        setMoveImageError(res.message);
+        return;
+      }
+      toast({ title: "Image moved", description: "Image reassigned to the cover." });
+      setMoveImageDialogImg(null);
+      if (markingId != null) {
+        const refreshed = await getMarkingById(markingId);
+        if (refreshed) setRecord(refreshed);
+      }
+    } finally {
+      setMoveImageBusy(false);
+    }
+  };
+
+  // Creates a CoverMarking junction row between this marking and an
+  // already-existing cover. The endpoint is editor/admin-gated
+  // (IsEditorOrAdminWrite), so the button only renders for isStaff.
+  const handleLinkExistingCover = async () => {
+    if (markingId == null) return;
+    const coverId = parseCoverIdInput(linkCoverInput);
+    if (coverId == null) {
+      setLinkCoverError("Enter a valid cover ID (e.g. 42 or C-42).");
+      return;
+    }
+    setLinkCoverBusy(true);
+    setLinkCoverError(null);
+    try {
+      const cover = await getCoverById(coverId);
+      if (!cover) {
+        setLinkCoverError(`Cover ${coverId} not found.`);
+        return;
+      }
+      await createCoverMarking({
+        cover: coverId,
+        marking: markingId,
+        is_backstamp: linkCoverIsBackstamp,
+      });
+      toast({
+        title: "Cover linked",
+        description: `Cover ${cover.code ?? coverId} is now linked to this marking.`,
+      });
+      setLinkCoverOpen(false);
+      setLinkCoverInput("");
+      setLinkCoverIsBackstamp(false);
+      const { covers: rows, error: coversErr } = await loadAssociatedCoversForMarking(markingId);
+      setCoversLoadError(coversErr);
+      setAssociatedCovers(rows);
+    } catch (err: unknown) {
+      const ax = err as { response?: { data?: { detail?: string; non_field_errors?: string[] } } };
+      const detail = ax.response?.data?.detail ?? ax.response?.data?.non_field_errors?.[0];
+      setLinkCoverError(
+        typeof detail === "string" ? detail : "Could not link cover. It may already be linked.",
+      );
+    } finally {
+      setLinkCoverBusy(false);
+    }
   };
   const goCoverView = (cover: AssociatedCover) => {
     if (markingId == null) return;
@@ -717,7 +878,12 @@ const RecordDetail = () => {
                         const src = img.imageUrl || imageNotAvailable;
                         const alt = img.originalFilename || `Image ${index + 1}`;
                         const isPlaceholder = !img.imageUrl;
-                        const inner = (
+                        const canSetDefaultImage =
+                          isStaff &&
+                          !record.isRemoved &&
+                          img.imageId != null &&
+                          !isPlaceholder;
+                        const imageFrame = (
                           <div className="relative flex w-full aspect-[4/3] items-center justify-center rounded border border-border bg-muted overflow-hidden">
                             <img src={src} alt={alt} className="w-full h-full object-contain" />
                             <div className="absolute top-2 left-2 flex flex-wrap items-center gap-1">
@@ -729,19 +895,49 @@ const RecordDetail = () => {
                         );
                         return (
                           <CarouselItem key={index}>
-                            {img.imageUrl ? (
-                              <a
-                                href={img.imageUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                aria-label={`Open ${alt} in new tab`}
-                                className="block"
-                              >
-                                {inner}
-                              </a>
-                            ) : (
-                              inner
-                            )}
+                            <div className="relative">
+                              {img.imageUrl ? (
+                                <a
+                                  href={img.imageUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  aria-label={`Open ${alt} in new tab`}
+                                  className="block"
+                                >
+                                  {imageFrame}
+                                </a>
+                              ) : (
+                                imageFrame
+                              )}
+                              {canSetDefaultImage && (
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="icon"
+                                      className={
+                                        img.isDefault
+                                          ? "absolute right-2 top-2 h-8 w-8 border-amber-400 bg-amber-100 text-amber-700 hover:bg-amber-100 hover:text-amber-700 disabled:opacity-100"
+                                          : "absolute right-2 top-2 h-8 w-8 bg-background/90"
+                                      }
+                                      aria-label={
+                                        img.isDefault
+                                          ? "Default catalog image"
+                                          : "Set as default catalog image"
+                                      }
+                                      disabled={reorderingImages || img.isDefault}
+                                      onClick={() => setImageAsDefault(index)}
+                                    >
+                                      <Star className={`h-4 w-4 ${img.isDefault ? "fill-amber-500 text-amber-500" : ""}`} />
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>
+                                    {img.isDefault ? "Default catalog image" : "Set as default catalog image"}
+                                  </TooltipContent>
+                                </Tooltip>
+                              )}
+                            </div>
                           </CarouselItem>
                         );
                       })}
@@ -775,11 +971,15 @@ const RecordDetail = () => {
                       {galleryImages.map((img, idx) => {
                         // A removed marking is read-only: no image reordering
                         // either, only Restore.
-                        const canReorder =
+                        const canManageImage =
                           isStaff &&
                           !record.isRemoved &&
-                          img.imageId != null &&
-                          galleryImages.length > 1;
+                          img.imageId != null;
+                        const canReorder = canManageImage && galleryImages.length > 1;
+                        const canMoveToCover =
+                          canManageImage &&
+                          record.images[idx]?.subjectType === "MARKING" &&
+                          associatedCovers.some((c) => c.coverDetails?.id != null);
                         return (
                           <div
                             key={`${img.imageId ?? img.originalFilename ?? "img"}-${idx}`}
@@ -797,56 +997,123 @@ const RecordDetail = () => {
                                 className="h-full w-full object-cover"
                               />
                             </button>
-                            {canReorder && (
+                            {canManageImage && (
                               // Editor reorder strip. Each button issues a
                               // PATCH /api/v2/images/{id}/ via applyImageOrder
                               // (with optimistic UI). Star = move to position
                               // 0 = becomes the Catalog Search thumbnail.
                               <div className="flex items-center gap-0.5">
+                                {canReorder && (
+                                  <>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      aria-label="Move thumbnail left"
+                                      disabled={
+                                        reorderingImages || idx === 0
+                                      }
+                                      onClick={() => moveImageBy(idx, -1)}
+                                    >
+                                      <ArrowUp className="h-3 w-3 -rotate-90" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-6 w-6"
+                                      aria-label="Move thumbnail right"
+                                      disabled={
+                                        reorderingImages ||
+                                        idx === galleryImages.length - 1
+                                      }
+                                      onClick={() => moveImageBy(idx, 1)}
+                                    >
+                                      <ArrowDown className="h-3 w-3 -rotate-90" />
+                                    </Button>
+                                    <Button
+                                      type="button"
+                                      variant="ghost"
+                                      size="icon"
+                                      className={
+                                        img.isDefault
+                                          ? "h-6 w-6 text-amber-600 hover:text-amber-600 disabled:opacity-100"
+                                          : "h-6 w-6"
+                                      }
+                                      aria-label="Set as default catalog thumbnail"
+                                      title={
+                                        img.isDefault
+                                          ? "Default catalog thumbnail"
+                                          : "Set as default catalog thumbnail"
+                                      }
+                                      disabled={reorderingImages || img.isDefault}
+                                      onClick={() => setImageAsDefault(idx)}
+                                    >
+                                      <Star
+                                        className={`h-3 w-3 ${img.isDefault ? "fill-amber-500 text-amber-500" : ""}`}
+                                      />
+                                    </Button>
+                                  </>
+                                )}
+                                {canManageImage && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    aria-label="Crop the marking out of this image"
+                                    title="Crop marking"
+                                    disabled={reorderingImages}
+                                    onClick={() => {
+                                      const rawImg = record.images[idx];
+                                      if (!rawImg?.imageId) return;
+                                      setCropImageTarget(rawImg);
+                                    }}
+                                  >
+                                    <Crop className="h-3 w-3" />
+                                  </Button>
+                                )}
+                                {canMoveToCover && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    aria-label="Move image to a cover entry"
+                                    title="Move to cover"
+                                    disabled={reorderingImages}
+                                    onClick={() => {
+                                      const rawImg = record.images[idx];
+                                      if (!rawImg) return;
+                                      setMoveImageDialogImg(rawImg);
+                                      setMoveImageTargetCoverId(
+                                        String(
+                                          associatedCovers.find((c) => c.coverDetails?.id != null)
+                                            ?.coverDetails?.id ?? "",
+                                        ),
+                                      );
+                                      setMoveImageView("FRONT");
+                                      setMoveImageError(null);
+                                    }}
+                                  >
+                                    <Replace className="h-3 w-3" />
+                                  </Button>
+                                )}
                                 <Button
                                   type="button"
                                   variant="ghost"
                                   size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Move thumbnail left"
-                                  disabled={
-                                    reorderingImages || idx === 0
-                                  }
-                                  onClick={() => moveImageBy(idx, -1)}
-                                >
-                                  <ArrowUp className="h-3 w-3 -rotate-90" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Move thumbnail right"
+                                  className="h-6 w-6 text-destructive hover:text-destructive"
+                                  aria-label="Delete image"
+                                  title="Delete image"
                                   disabled={
                                     reorderingImages ||
-                                    idx === galleryImages.length - 1
+                                    deletingImageId === img.imageId
                                   }
-                                  onClick={() => moveImageBy(idx, 1)}
+                                  onClick={() => handleDeleteImage(idx)}
                                 >
-                                  <ArrowDown className="h-3 w-3 -rotate-90" />
-                                </Button>
-                                <Button
-                                  type="button"
-                                  variant={img.isDefault ? "secondary" : "ghost"}
-                                  size="icon"
-                                  className="h-6 w-6"
-                                  aria-label="Set as default catalog thumbnail"
-                                  title={
-                                    img.isDefault
-                                      ? "Default catalog thumbnail"
-                                      : "Set as default catalog thumbnail"
-                                  }
-                                  disabled={reorderingImages || img.isDefault}
-                                  onClick={() => setImageAsDefault(idx)}
-                                >
-                                  <Star
-                                    className={`h-3 w-3 ${img.isDefault ? "fill-current" : ""}`}
-                                  />
+                                  <Trash2 className="h-3 w-3" />
                                 </Button>
                               </div>
                             )}
@@ -909,7 +1176,7 @@ const RecordDetail = () => {
                               onClick={() => setHistoryExpanded((v) => !v)}
                             >
                               {historyExpanded
-                                ? "Show only latest"
+                                ? `Show latest ${HISTORY_COLLAPSED_LIMIT}`
                                 : `Show recent history (up to ${HISTORY_EXPANDED_LIMIT})`}
                             </Button>
                             {historyExpanded && historyOverflow > 0 && (
@@ -937,7 +1204,7 @@ const RecordDetail = () => {
               <Card className="shadow-archival-md">
                 <CardHeader>
                   <div className="flex items-center justify-between gap-3">
-                    <CardTitle className="font-heading text-lg">Record Details</CardTitle>
+                    <CardTitle className="font-heading text-lg">Marking Details</CardTitle>
                     {/* A removed marking is read-only: no edits until it is restored. */}
                     {!record.isRemoved && (
                       <Button variant="outline" size="sm" onClick={goEdit}>
@@ -949,6 +1216,25 @@ const RecordDetail = () => {
                 </CardHeader>
                 <CardContent>
                   <MarkingFieldsDisplay rows={detailRows} mode="record" />
+                  {/* State-editor review toggle (Issue #22): only shown to
+                      editors/admins. The backend independently enforces that
+                      the editor is responsible for this record's region. */}
+                  {isStaff && !record.isRemoved && (
+                    <div className="mt-4 flex items-center gap-2 border-t pt-4">
+                      <Checkbox
+                        id="marking-reviewed"
+                        checked={record.isReviewed}
+                        disabled={savingReviewed}
+                        onCheckedChange={(value) => handleReviewedToggle(value === true)}
+                      />
+                      <label
+                        htmlFor="marking-reviewed"
+                        className="text-sm font-medium leading-none"
+                      >
+                        Reviewed / confirmed
+                      </label>
+                    </div>
+                  )}
                 </CardContent>
               </Card>
 
@@ -960,14 +1246,31 @@ const RecordDetail = () => {
                     </CardTitle>
                     {/* No new covers can be attached to a removed marking. */}
                     {!record.isRemoved && (
-                      <Button
-                        size="sm"
-                        onClick={openNewCoverDialog}
-                        className="bg-green-800 hover:bg-green-900 text-white"
-                      >
-                        <Plus className="mr-2 h-4 w-4" />
-                        {SUBMISSION_LABELS.action.submitNewCover}
-                      </Button>
+                      <div className="flex gap-2">
+                        {isStaff && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => {
+                              setLinkCoverInput("");
+                              setLinkCoverIsBackstamp(false);
+                              setLinkCoverError(null);
+                              setLinkCoverOpen(true);
+                            }}
+                          >
+                            <Plus className="mr-2 h-4 w-4" />
+                            Link Existing Cover
+                          </Button>
+                        )}
+                        <Button
+                          size="sm"
+                          onClick={openNewCoverDialog}
+                          className="bg-green-800 hover:bg-green-900 text-white"
+                        >
+                          <Plus className="mr-2 h-4 w-4" />
+                          {SUBMISSION_LABELS.action.submitNewCover}
+                        </Button>
+                      </div>
                     )}
                   </div>
                 </CardHeader>
@@ -988,7 +1291,7 @@ const RecordDetail = () => {
                           const thumb = cover.defaultImageUrl ?? null;
                           const codeLabel =
                             cover.displayLabel?.trim() ||
-                            c?.code?.trim() ||
+                            (isStaff ? c?.code?.trim() : "") ||
                             (cover.contributionDraftId != null
                               ? `Cover draft #${cover.contributionDraftId}`
                               : `Cover #${c?.id ?? cover.id}`);
@@ -1069,6 +1372,15 @@ const RecordDetail = () => {
                   <CardHeader><CardTitle className="font-heading text-lg">Description</CardTitle></CardHeader>
                   <CardContent>
                     <p className="text-sm text-muted-foreground leading-relaxed whitespace-pre-line">{record.desc}</p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {submitterName && (
+                <Card className="shadow-archival-md">
+                  <CardHeader><CardTitle className="font-heading text-lg">Submitted by</CardTitle></CardHeader>
+                  <CardContent>
+                    <p className="text-sm text-muted-foreground">{submitterName}</p>
                   </CardContent>
                 </Card>
               )}
@@ -1211,11 +1523,11 @@ const RecordDetail = () => {
             </div>
           </div>
 
-          {record.canRemove && (
+          {isStaff && record.canRemove && (
             <div className="mt-8 flex justify-end">
               {record.isRemoved ? (
                 <Button variant="outline" onClick={() => setRestoreOpen(true)}>
-                  <Trash2 className="mr-2 h-4 w-4" />
+                  <Recycle className="mr-2 h-4 w-4" />
                   Restore Marking
                 </Button>
               ) : (
@@ -1286,6 +1598,177 @@ const RecordDetail = () => {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <Dialog
+        open={moveImageDialogImg != null}
+        onOpenChange={(open) => {
+          if (moveImageBusy) return;
+          if (!open) setMoveImageDialogImg(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Image to Cover</DialogTitle>
+            <DialogDescription>
+              Reassign this image from the marking to one of its associated covers.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="move-img-cover-id">Target cover</Label>
+              <Select
+                value={moveImageTargetCoverId}
+                onValueChange={(v) => {
+                  setMoveImageTargetCoverId(v);
+                  setMoveImageError(null);
+                }}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-cover-id">
+                  <SelectValue placeholder="Select a cover…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {associatedCovers
+                    .filter((c) => c.coverDetails?.id != null)
+                    .map((c) => (
+                      <SelectItem key={c.coverDetails!.id} value={String(c.coverDetails!.id)}>
+                        {c.coverDetails!.code ?? `Cover #${c.coverDetails!.id}`}
+                      </SelectItem>
+                    ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="move-img-view">Image view</Label>
+              <Select
+                value={moveImageView}
+                onValueChange={(v) => setMoveImageView(v)}
+                disabled={moveImageBusy}
+              >
+                <SelectTrigger id="move-img-view">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FRONT">Front</SelectItem>
+                  <SelectItem value="BACK">Back</SelectItem>
+                  <SelectItem value="INTERIOR">Interior</SelectItem>
+                  <SelectItem value="DETAIL">Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {moveImageError && <p className="text-sm text-destructive">{moveImageError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoveImageDialogImg(null)}
+              disabled={moveImageBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleMoveImageToCover()}
+              disabled={moveImageBusy || !moveImageTargetCoverId}
+            >
+              {moveImageBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Moving…
+                </>
+              ) : (
+                "Move Image"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <CropImageDialog
+        open={cropImageTarget != null}
+        onOpenChange={(open) => {
+          if (!open) setCropImageTarget(null);
+        }}
+        imageId={cropImageTarget?.imageId ?? null}
+        imageUrl={cropImageTarget?.imageUrl ?? null}
+        onCropped={async () => {
+          toast({
+            title: "Crop saved",
+            description:
+              "Added as a new image on this record. You can now move the original to a cover.",
+          });
+          if (markingId != null) {
+            const refreshed = await getMarkingById(markingId);
+            if (refreshed) setRecord(refreshed);
+          }
+        }}
+      />
+
+      <Dialog
+        open={linkCoverOpen}
+        onOpenChange={(open) => {
+          if (linkCoverBusy) return;
+          setLinkCoverOpen(open);
+          if (!open) {
+            setLinkCoverInput("");
+            setLinkCoverIsBackstamp(false);
+            setLinkCoverError(null);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Link Existing Cover</DialogTitle>
+            <DialogDescription>
+              Enter the cover ID or code (e.g. 42 or C-42) to link it to this marking.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <Input
+              placeholder="Cover ID or code"
+              value={linkCoverInput}
+              onChange={(e) => {
+                setLinkCoverInput(e.target.value);
+                setLinkCoverError(null);
+              }}
+              disabled={linkCoverBusy}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void handleLinkExistingCover();
+                }
+              }}
+              autoFocus
+            />
+            <label className="flex items-center gap-2 text-sm">
+              <Checkbox
+                checked={linkCoverIsBackstamp}
+                onCheckedChange={(value) => setLinkCoverIsBackstamp(value === true)}
+                disabled={linkCoverBusy}
+              />
+              Backstamp
+            </label>
+            {linkCoverError && <p className="text-sm text-destructive">{linkCoverError}</p>}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setLinkCoverOpen(false)} disabled={linkCoverBusy}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleLinkExistingCover()}
+              disabled={linkCoverBusy || !linkCoverInput.trim()}
+            >
+              {linkCoverBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Linking…
+                </>
+              ) : (
+                "Link Cover"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <Footer />
     </div>

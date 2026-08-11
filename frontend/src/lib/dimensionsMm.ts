@@ -1,12 +1,12 @@
 /**
- * Physical size in millimetres for catalog contributions (matches PostmarkSize width/height).
+ * Physical size in millimetres for catalog contributions.
  */
 
 const MM_PAIR_RE = /^\d{1,6}(\.\d{1,2})?$/;
 
 /**
- * Parse legacy free-text size (PostmarkSize.size_notes, or old ``dimensions`` field)
- * into width × height mm strings. Returns null if not confidently parseable.
+ * Parse legacy free-text size or old ``dimensions`` field
+ * into width x height mm strings. Returns null if not confidently parseable.
  */
 function legacyDimensionTextToWidthHeight(text: string): { width: string; height: string } | null {
   const raw = String(text ?? "").trim();
@@ -14,17 +14,17 @@ function legacyDimensionTextToWidthHeight(text: string): { width: string; height
   const noMm = raw.replace(/\bmm\b/gi, " ").replace(/\s+/g, " ").trim();
 
   const strictPair = noMm.match(
-    /^(\d{1,6}(?:\.\d{1,2})?)\s*[x×]\s*(\d{1,6}(?:\.\d{1,2})?)$/i
+    /^(\d{1,6}(?:\.\d{1,2})?)\s*[xx]\s*(\d{1,6}(?:\.\d{1,2})?)$/i
   );
   if (strictPair) {
     return { width: strictPair[1], height: strictPair[2] };
   }
 
   // e.g. "34 x 28 " with only digits / separators (no trailing prose)
-  const onlyDimChars = /^[\d.\s×x]+$/i.test(noMm);
+  const onlyDimChars = /^[\d.\sxx]+$/i.test(noMm);
   if (onlyDimChars) {
     const loose = noMm.match(
-      /(\d{1,6}(?:\.\d{1,2})?)\s*[x×]\s*(\d{1,6}(?:\.\d{1,2})?)/i
+      /(\d{1,6}(?:\.\d{1,2})?)\s*[xx]\s*(\d{1,6}(?:\.\d{1,2})?)/i
     );
     if (loose) {
       return { width: loose[1], height: loose[2] };
@@ -99,14 +99,14 @@ export function formatSizeFromSubmittedData(sd: Record<string, unknown> | undefi
   if (!sd || typeof sd !== "object") return "";
   const w = String(sd.width_mm ?? sd.widthMm ?? "").trim();
   const h = String(sd.height_mm ?? sd.heightMm ?? "").trim();
-  if (w && h) return `${w}×${h} mm`;
+  if (w && h) return `${w}x${h} mm`;
   const d = String(sd.dimensions ?? "").trim();
   if (!d) return "";
-  if (/mm|×|\bcm\b|x/i.test(d)) return d;
+  if (/mm|x|\bcm\b|x/i.test(d)) return d;
   return `${d} mm`;
 }
 
-/** From catalog PostmarkSize row (latest-first consumer provides `first`). */
+/** From catalog size rows (latest-first consumer provides `first`). */
 export function catalogSizeToWidthHeightStrings(firstSize: Record<string, unknown> | undefined | null): {
   width: string;
   height: string;

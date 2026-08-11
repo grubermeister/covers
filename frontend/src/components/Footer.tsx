@@ -26,6 +26,11 @@ export const Footer = () => {
                   Catalog
                 </Link>
               </li>
+              <li>
+                <Link to="/acknowledgements" className="hover:text-foreground transition-colors">
+                  Acknowledgements
+                </Link>
+              </li>
               {user && (
                 <li>
                 <Link to="/contribute" className="hover:text-foreground transition-colors">
@@ -47,6 +52,9 @@ export const Footer = () => {
         </div>
         <div className="mt-8 pt-6 border-t border-border text-center text-sm text-muted-foreground">
           © {new Date().getFullYear()} WorldCovers. All catalog data is freely available under CC BY 4.0.
+        </div>
+        <div className="pt-2 text-center text-xs text-muted-foreground/60">
+          v{__APP_VERSION__}
         </div>
       </div>
     </footer>

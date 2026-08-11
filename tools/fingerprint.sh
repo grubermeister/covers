@@ -40,9 +40,17 @@ ROOT="${1:-.}"
 
 found=0
 for pat in "${PATTERNS[@]}"; do
-    # grep returns 1 when no match; that is the normal case. Capture matches
-    # explicitly so the script does not abort under `set -e`.
-    if matches=$(grep -rnE "$pat" "${EXCLUDES[@]}" "$ROOT" 2>/dev/null); then
+    # grep exit codes: 0 = match, 1 = no match (the normal case), >=2 = the
+    # scanner itself failed (bad path, unreadable tree). A failed scan must
+    # NOT report "OK" — that is a false negative in a security gate.
+    set +e
+    matches=$(grep -rnE "$pat" "${EXCLUDES[@]}" "$ROOT")
+    status=$?
+    set -e
+    if [ "$status" -ge 2 ]; then
+        echo "ERROR: scanner failed (grep exit $status) on pattern: $pat" >&2
+        exit 2
+    elif [ "$status" -eq 0 ]; then
         echo "MALWARE FINGERPRINT MATCH for pattern: $pat"
         echo "$matches"
         echo ""

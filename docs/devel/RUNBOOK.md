@@ -1,77 +1,195 @@
 # Operator Runbook
 
-Day-to-day tasks for running WorldCovers on staging/production.
+Day-to-day commands for running WorldCovers on staging and production.
 
-## Service management
+Source of truth:
 
-WorldCovers runs as a systemd service (`worldcovers`) backed by gunicorn.
+- Staging deployment flow: `.github/workflows/build-and-deploy.yml`
+- Production deployment flow: `.github/workflows/deploy-prod.yml`
+- App build steps: `deploy/deploy.sh`
+- Data refresh: `tools/reload_data.sh`
+- Service definition: `deploy/worldcovers.service`
 
-```sh
-sudo systemctl restart worldcovers   # restart after a deploy or config change
-sudo systemctl status worldcovers    # check current state
-sudo systemctl stop worldcovers      # stop the service
-sudo journalctl -u worldcovers -f    # tail the live log
-```
+## Service Management
 
-The canonical unit file lives in the repo at [tools/worldcovers.service](../tools/worldcovers.service).
-
-### First-time install on a fresh host
+WorldCovers runs as the `worldcovers` systemd service backed by gunicorn.
 
 ```sh
-sudo install -m 644 tools/worldcovers.service /etc/systemd/system/worldcovers.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now worldcovers
+sudo systemctl status worldcovers
+sudo systemctl stop worldcovers
+sudo systemctl start worldcovers
+sudo systemctl restart worldcovers
+sudo journalctl -u worldcovers -f
 ```
 
-The `wocod` deploy user needs a narrow sudoers entry to allow the deploy script to update the unit and restart the service:
+Expected exit code for successful commands: `0`.
 
-```
-# /etc/sudoers.d/wocod-deploy
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
-wocod ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart worldcovers
-wocod ALL=(ALL) NOPASSWD: /usr/bin/install -m 644 * /etc/systemd/system/worldcovers.service
-```
+## Manual Deploy
 
-## Deploying
+This is the canonical manual deploy sequence. From the host as `wocod`, use
+`origin/staging` on staging and `origin/main` on production:
 
 ```sh
 cd /srv/woco
-git pull
-tools/deploy.sh
+git fetch origin
+git reset --hard origin/staging
+sudo -n /bin/systemctl stop worldcovers
+./deploy/deploy.sh
+sudo -n /bin/systemctl start worldcovers
 ```
 
-`tools/deploy.sh` installs Python deps, runs migrations, builds the frontend, collects static files, and restarts the service. See [docs/DEPLOY.md](DEPLOY.md) for full deploy details, host identity, and CI setup.
+`deploy/deploy.sh` syncs Python dependencies, runs migrations, builds the
+frontend, and collects static files. It does not start or stop the service.
 
-## Data imports
+For key rotation, unit-file updates, and sudoers requirements, see
+[DEPLOY.md](DEPLOY.md).
 
-For importing postmark data, running the catalog pipeline, and other ETL commands, see [docs/TOOLS.md](TOOLS.md).
+## Data Refresh
 
-## Approving contributions
+From a local checkout with prepared `tools/wip/` and `backend/media/` data:
 
-1. Log in to `/admin/` as a staff user.
-2. Navigate to **Contributions**.
-3. Select pending contributions and use the **Approve** action.
+```sh
+./tools/push_data.sh --dry-run
+./tools/push_data.sh --import --state VA
+```
 
-## Backups
+`--import` runs `tools/reload_data.sh` on the server as `wocod` for the
+selected bundle. The reload truncates and replaces all catalog import
+tables but does not touch submission, version, or recycle-bin history; see
+[TOOLS.md](TOOLS.md#toolsreload_datash) for exactly what it runs and when to
+pair it with `wipe_user_data`.
 
-Database backups are stored in `backups/`. To restore:
+## Auth Backups
+
+Run before destructive staging refreshes when you need a portable copy of
+users, groups, email addresses, collections, and assignments. Both commands
+take a single JSON file path:
+
+```sh
+./woco backup_auth /tmp/woco-auth.json
+./woco restore_auth /tmp/woco-auth.json --dry-run
+./woco restore_auth /tmp/woco-auth.json
+```
+
+Pass `--emit-csv` with a directory path instead of a file to export or
+import a directory of per-table CSVs, which is easier to inspect by eye.
+
+The backup contains email addresses and password hashes. Treat it like a
+secret: move it only over SSH/scp, keep it out of git, and delete it from
+every host once the restore is confirmed.
+
+## Auth Sync Between Hosts
+
+Goal: let people log into a secondary host (for example the `woco.dev`
+review box) with the same credentials they already use on `hellowoco.app`.
+This is the interim mechanism until SSO lands; it is intentionally a plain
+export -> import.
+
+`restore_auth` runs inside a single transaction and imports groups, then
+users, then emails, then collections, then assignments. Run with no
+arguments to see usage.
+
+Export on the source (production) host:
+
+```sh
+# On the prod host, as the app user, with uv on PATH:
+sudo -u wocod -H bash -lc \
+  'export PATH=$HOME/.local/bin:$PATH && cd /srv/woco && ./woco backup_auth /tmp/woco-auth.json'
+```
+
+Move the file. Root login should be disabled on both boxes, so connect as
+your own user (in the sudo group):
+
+```sh
+# Pull prod -> local, then push local -> target (never store it long-term):
+scp <prod>:/tmp/woco-auth.json ./woco-auth.json
+scp ./woco-auth.json <your-user>@<target-server>:/tmp/woco-auth.json
+```
+
+Restore on the target host, dry-run first:
+
+```sh
+sudo -u wocod -H bash -lc \
+  'export PATH=$HOME/.local/bin:$PATH && cd /srv/woco && ./woco restore_auth /tmp/woco-auth.json --dry-run'
+
+sudo -u wocod -H bash -lc \
+  'export PATH=$HOME/.local/bin:$PATH && cd /srv/woco && ./woco restore_auth /tmp/woco-auth.json'
+```
+
+Behavior notes:
+
+- Collections whose name conflicts with a Region the target host already
+  owns are skipped, along with their assignments; the command prints which
+  were skipped. This is expected on a box that only carries a subset of
+  states.
+- Assignments are mirrored: rows not present in the backup are removed, so
+  the target ends up matching the source's assignment set.
+- Existing target users with the same natural key are updated in place, so
+  the box's own `admin` is preserved unless prod also defines it.
+
+Clean up after the restore is confirmed:
+
+```sh
+rm -f ./woco-auth.json                                   # local copy
+sudo -u wocod -H bash -lc 'rm -f /tmp/woco-auth.json'    # on the target
+# and remove /tmp/woco-auth.json on prod
+```
+
+## Database Restore
+
+Database backups live under `backups/` when present.
 
 ```sh
 mysql -u wocod -p worldcovers < backups/worldcovers_YYYY-MM-DD.sql
-woco migrate
+./woco migrate
 ```
 
-## Checking the admin
+Expected exit code: `0`.
 
-Spot-check admin health at `/admin/`:
+## Revision Maintenance
 
-- **Postmarks** — verify catalog data looks correct
-- **Contributions** — clear the queue of pending contributions
-- **Users** — manage staff and editor assignments
+Run the one-time django-reversion baseline after the skip-list code is live.
+The order matters because excluded audit/snapshot models should not get
+baseline revisions.
 
-## Environment
+```sh
+cd /srv/woco
+./woco createinitialrevisions --comment "Initial baseline revision."
+```
 
-The production service reads:
+Expected exit code: `0`. The command prints per-model counts.
 
-- `/srv/woco/mysql.cnf` — database user and password (same format as the dev `mysql.cnf`; see [docs/BUILD.md](BUILD.md) for the format)
-- `/srv/woco/backend/.env` — `DEBUG`, `SECRET_KEY`, `ALLOWED_HOSTS`
+Run revision pruning manually as needed, for example monthly. No systemd timer
+or cron job is installed for this yet.
+
+```sh
+cd /srv/woco
+./woco prune_revisions --dry-run
+./woco prune_revisions
+```
+
+Expected exit code: `0`. The dry run reports counts and rolls back. The
+retention policy lives in `backend/woco/settings.py` as
+`REVERSION_PRUNE_RETENTION_DAYS` and `REVERSION_PRUNE_KEEP_PER_OBJECT`.
+
+## Admin Checks
+
+Spot-check these paths after deploys and data refreshes:
+
+- `/admin/`
+- `/admin/common/contribution/`
+- `/search`
+- `/help`
+
+For management command details, see [TOOLS.md](TOOLS.md).
+
+## Runtime Environment
+
+Production and staging read:
+
+- `/srv/woco/mysql.cnf`: database credentials.
+- `/srv/woco/backend/.env`: `DEBUG`, `DJANGO_SECRET_KEY`, and other
+  decouple-backed Django settings. Written by `deploy/provision.sh`.
+
+For the full picture of which env file lives where and who reads it, see
+[BUILD.md](BUILD.md#environment-files).

@@ -15,7 +15,7 @@ SHAPE_SEEDS = [
 
 LETTERING_SEEDS = [
     'Italic', 'Serif', 'Sans-serif', 'Small', 'Large',
-    'Outline', 'Bold', 'Block', 'Gothic',
+    'Outline', 'Bold', 'Block', 'Gothic', 'Thick', 'Thin',
 ]
 
 SHAPE_CODE_TO_NAME = {
@@ -35,21 +35,50 @@ SHAPE_CODE_TO_NAME = {
     'PMK':     'Other',
 }
 
-CATALOG_FALLBACK_SHAPE = 'SL'
+NO_PAREN_MANUSCRIPT_MAX_HEAD_CHARS = 24
+
+
+def promote_no_paren_to_manuscript(row):
+    """Return True when a terse no-paren listing is a manuscript marking.
+
+    Rule choice: the no-paren form also covers ordinary parenless handstamps,
+    so promotion is limited to rows whose current head text is 24 characters or
+    less after relationship inheritance. Inherited sizes block promotion.
+    """
+    if row.get('entry_form') != 'no_paren':
+        return False
+    if row.get('is_manuscript'):
+        return False
+    parsed_sizes = row.get('parsed_sizes') or []
+    if parsed_sizes:
+        return False
+    text = str(row.get('seg_head') or row.get('clean_text') or '').strip()
+    return 0 < len(text) <= NO_PAREN_MANUSCRIPT_MAX_HEAD_CHARS
+
 
 def resolve_effective_shape(row):
-    # Priority: paren-body shape code > Default Shape column > catalog-wide SL.
-    # Manuscript-section rows always return None -- they carry no stamped shape.
+    # Priority: paren-body shape code > bare diameter > Default Shape column.
+    # Manuscript rows always return None -- they carry no stamped shape.
     # Returns (effective_code_upper_or_None, source_label).
 
     # Manuscript rows carry no shape attribute; shape_id will be null in output.
-    if row.get('is_manuscript_section'):
+    if row.get('is_manuscript_section') or row.get('is_manuscript'):
         return None, 'manuscript_no_shape'
 
     # 1. Paren-body shape (from parsed_sizes -- use first non-None)
     for s in row['parsed_sizes']:
         if s.get('size_shape_code'):
             return s['size_shape_code'].upper(), 'paren_body'
+
+    # 1b. Bare diameter -> circle. A single measured dimension with no shape
+    # code and no second dimension is a circular datestamp diameter: the catalog
+    # writes "27" (not "SL-27") for a round mark, and reserves "WxH" for straight
+    # lines/ovals. Stronger evidence than a section default, so it precedes it
+    # (Issue #38: ADA.MI "(1837-45;27;Red)" was defaulting to SL).
+    for s in row['parsed_sizes']:
+        if (s.get('size_dim1') is not None and s.get('size_dim2') is None
+                and not s.get('size_shape_code')):
+            return 'C', 'bare_diameter'
 
     # 2. Section-level Default Shape
     default = row.get('Default Shape')
@@ -69,10 +98,10 @@ def resolve_effective_shape(row):
         for code in sorted(SHAPE_CODE_TO_NAME.keys(), key=len, reverse=True):
             if ds.startswith(code):
                 return code, 'default_shape'
-        # Unrecognized default shape -- fall through to catalog default
+        # Unrecognized default shape -- fall through to no_shape
 
-    # 3. Catalog-wide fallback (non-manuscript only)
-    return CATALOG_FALLBACK_SHAPE, 'catalog_fallback'
+    # 3. No catalog evidence for shape.
+    return None, 'no_shape'
 
 def resolve_shape_name(code_upper):
     # Map an ASCC shape code to a seed shape name.

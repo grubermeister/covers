@@ -10,6 +10,9 @@ const alertVariants = cva(
       variant: {
         default: "bg-background text-foreground",
         destructive: "border-destructive/50 text-destructive dark:border-destructive [&>svg]:text-destructive",
+        // Advisory, not an error: the upload is still allowed (issue #76).
+        warning:
+          "border-amber-500/50 bg-amber-50 text-amber-900 dark:border-amber-500/60 dark:bg-amber-950/40 dark:text-amber-100 [&>svg]:text-amber-600 dark:[&>svg]:text-amber-400",
       },
     },
     defaultVariants: {

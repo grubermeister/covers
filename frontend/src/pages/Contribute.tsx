@@ -5,12 +5,15 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
   DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Upload, Loader2, ChevronDown, ArrowLeft, ArrowRight, Star, Trash2 } from "lucide-react";
@@ -22,12 +25,33 @@ import { getShapes, type ShapeOption } from "@/services/shapes";
 import { getPostOffices, type PostOfficeOption } from "@/services/postOffices";
 import { getRegions } from "@/services/regions";
 import { getMarkingByIdRaw, normalizeImageUrl } from "@/services/markings";
+import {
+  partialDateInputFromDateSeen,
+  partialDateInputFromPayload,
+  validatePartialDate,
+  type PartialDateInput,
+  type PartialDateValue,
+} from "@/lib/partialDate";
 import { getLetterings, type LetteringOption } from "@/services/letterings";
-import { getDateFormats, type DateFormatOption } from "@/constants/postmarkEnums";
-import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
-import { getContribution, listContributions, createContribution, deleteDraftContribution } from "@/services/contributions";
+import { getDateFormats, type DateFormatOption } from "@/constants/markingEnums";
+import { formatReferenceWorkLabel, getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
+import {
+  getContribution,
+  listContributions,
+  createContribution,
+  deleteOwnContribution,
+  getDirectCatalogCodeSuggestion,
+} from "@/services/contributions";
 import { ENTRY_LABELS } from "@/labels/entry";
 import { SUBMISSION_LABELS } from "@/labels/submission";
+import {
+  MARKING_SUBMISSION_GUIDELINES,
+  INSCRIPTION_TEXT_HELP,
+  DATE_FORMAT_HELP,
+  LETTERING_HELP,
+} from "@/labels/guidelines";
+import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
+import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import {
@@ -35,6 +59,7 @@ import {
   validateMmPair,
   submittedDataToWidthHeightStrings,
 } from "@/lib/dimensionsMm";
+import { isTrueCircleShapeName, shapeCodeFromName } from "@/lib/shapeDisplay";
 
 const SUBMISSION_IMAGES_BUCKET = "submission-images";
 const MAX_IMAGE_SIZE_MB = 100;
@@ -52,6 +77,104 @@ const MARKING_TYPE_OPTIONS = [
   { value: "RATEMARK", label: ENTRY_LABELS.markingType.RATEMARK },
   { value: "AUXMARK", label: ENTRY_LABELS.markingType.AUXMARK },
 ];
+
+const DATE_MONTH_OPTIONS = [
+  { value: "1", label: "JAN" },
+  { value: "2", label: "FEB" },
+  { value: "3", label: "MAR" },
+  { value: "4", label: "APR" },
+  { value: "5", label: "MAY" },
+  { value: "6", label: "JUN" },
+  { value: "7", label: "JUL" },
+  { value: "8", label: "AUG" },
+  { value: "9", label: "SEP" },
+  { value: "10", label: "OCT" },
+  { value: "11", label: "NOV" },
+  { value: "12", label: "DEC" },
+];
+
+const EMPTY_PARTIAL_DATE: PartialDateInput = {
+  unknown: false,
+  year: "",
+  month: "",
+  day: "",
+};
+
+type MarkingBoundaryPrefix = "marking_erd" | "marking_lrd";
+
+function markingBoundaryDateFromPayload(
+  sd: Record<string, unknown>,
+  prefix: MarkingBoundaryPrefix,
+): PartialDateInput {
+  const camelPrefix = prefix === "marking_erd" ? "markingErd" : "markingLrd";
+  return partialDateInputFromPayload(
+    sd,
+    {
+      unknown: `${prefix}_unknown`,
+      year: `${prefix}_date_year`,
+      month: `${prefix}_date_month`,
+      day: `${prefix}_date_day`,
+      legacyDate: prefix,
+      legacyGranularity: `${prefix}_granularity`,
+    },
+    {
+      unknown: `${camelPrefix}Unknown`,
+      year: `${camelPrefix}DateYear`,
+      month: `${camelPrefix}DateMonth`,
+      day: `${camelPrefix}DateDay`,
+      legacyDate: camelPrefix,
+      legacyGranularity: `${camelPrefix}Granularity`,
+    },
+  );
+}
+
+function partialDateKey(value: PartialDateInput): string {
+  return JSON.stringify({
+    unknown: value.unknown,
+    year: value.year.trim(),
+    month: value.month.trim(),
+    day: value.day.trim(),
+  });
+}
+
+function partialDateHasValue(value: PartialDateInput): boolean {
+  return value.unknown || !!value.year.trim() || !!value.month.trim() || !!value.day.trim();
+}
+
+function appendMarkingBoundaryDate(
+  form: FormData,
+  prefix: MarkingBoundaryPrefix,
+  value: PartialDateValue,
+) {
+  if (value.unknown) {
+    form.append(`${prefix}_unknown`, "true");
+    return;
+  }
+  form.append(`${prefix}_unknown`, "false");
+  if (value.year != null) form.append(`${prefix}_date_year`, String(value.year));
+  if (value.month != null) form.append(`${prefix}_date_month`, String(value.month));
+  if (value.day != null) form.append(`${prefix}_date_day`, String(value.day));
+  if (value.legacyDate && value.legacyGranularity) {
+    form.append(prefix, value.legacyDate);
+    form.append(`${prefix}_granularity`, value.legacyGranularity);
+  }
+}
+
+function markingBoundaryDatePayload(
+  prefix: MarkingBoundaryPrefix,
+  value: PartialDateValue,
+): Record<string, unknown> {
+  if (value.unknown) return { [`${prefix}_unknown`]: true };
+  return {
+    [`${prefix}_unknown`]: false,
+    ...(value.year != null ? { [`${prefix}_date_year`]: value.year } : {}),
+    ...(value.month != null ? { [`${prefix}_date_month`]: value.month } : {}),
+    ...(value.day != null ? { [`${prefix}_date_day`]: value.day } : {}),
+    ...(value.legacyDate && value.legacyGranularity
+      ? { [prefix]: value.legacyDate, [`${prefix}_granularity`]: value.legacyGranularity }
+      : {}),
+  };
+}
 
 /** docs/model.md lettering seed values; the dropdown is restricted to these. */
 const LETTERING_SEED_NAMES = new Set([
@@ -77,7 +200,7 @@ const MODE_COPY: Record<ContributeMode, {
   toastBody: string;
 }> = {
   "new": {
-    h1: "Create Marking",
+    h1: SUBMISSION_LABELS.action.submitNewMarking,
     intro: "Fill in the fields below. All fields match what reviewers see on the Submission Detail page.",
     card: "New Marking",
     button: SUBMISSION_LABELS.action.submitNewMarking,
@@ -93,7 +216,7 @@ const MODE_COPY: Record<ContributeMode, {
     toastBody: "Your updated submission has been sent for review again.",
   },
   "edit-marking": {
-    h1: "Edit Marking",
+    h1: "Submit Edit to Existing Marking",
     intro: "Edit requests are prefilled from the selected Marking and always go through the approval workflow before the published Marking is updated.",
     card: "Edit and Submit",
     button: SUBMISSION_LABELS.action.submitEditToMarking,
@@ -123,24 +246,43 @@ const FIELD_ERROR_SCROLL_TARGETS: Array<[string, string]> = [
   ["shape", "shape"],
   ["color", "color"],
   ["dateFormat", "date-format"],
+  ["erd", "marking-erd"],
+  ["lrd", "marking-lrd"],
   ["widthMm", "width-mm"],
   ["heightMm", "height-mm"],
   ["lettering", "lettering"],
   ["rateValue", "rate-value"],
-  ["images", "postmark-images-input"],
+  ["images", "marking-images-zone"],
 ];
+
+function getFocusableTarget(el: HTMLElement): HTMLElement {
+  const primarySelector =
+    "input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [role='combobox']:not([disabled])";
+  if (el.matches(primarySelector)) {
+    return el;
+  }
+
+  const primary = el.querySelector<HTMLElement>(primarySelector);
+  if (primary) return primary;
+
+  return el.querySelector<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex='-1'])") ?? el;
+}
+
+function scrollAndFocusElement(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  el.scrollIntoView({ behavior: "smooth", block: "center" });
+  const focusable = getFocusableTarget(el);
+  if (typeof focusable.focus === "function") {
+    window.setTimeout(() => focusable.focus(), 300);
+  }
+  return true;
+}
 
 function scrollToFirstError(errors: Record<string, string | undefined>) {
   for (const [key, id] of FIELD_ERROR_SCROLL_TARGETS) {
     if (!errors[key]) continue;
     const el = document.getElementById(id);
-    if (!el) continue;
-    el.scrollIntoView({ behavior: "smooth", block: "center" });
-    const focusable = el as HTMLElement & { focus?: () => void };
-    if (typeof focusable.focus === "function") {
-      window.setTimeout(() => focusable.focus?.(), 300);
-    }
-    return;
+    if (scrollAndFocusElement(el)) return;
   }
 }
 
@@ -160,12 +302,24 @@ type ReferenceDetailFieldErrors = {
   citationUrl?: string;
 };
 
+function scrollToFirstReferenceDetailError(
+  selectedReferenceWorks: ReferenceWorkRecord[],
+  errors: Record<number, ReferenceDetailFieldErrors>,
+) {
+  for (const work of selectedReferenceWorks) {
+    const rowErrors = errors[work.id];
+    if (!rowErrors) continue;
+    const id = rowErrors.pageNumber ? `reference-page-${work.id}` : `reference-url-${work.id}`;
+    if (scrollAndFocusElement(document.getElementById(id))) return;
+  }
+}
+
 /**
  * Per-image tag persisted on Contribution.submitted_data. Marking-image
  * uploads can only ever be one of two things from the contributor's POV:
  *
- *   - "photograph" (default) — a normal photo of the marking on a cover
- *   - "tracing"              — a hand-traced or computer-traced diagram
+ *   - "photograph" (default) -- a normal photo of the marking on a cover
+ *   - "tracing"              -- a hand-traced or computer-traced diagram
  *
  * We retain the string form (rather than a bare boolean) for forward-compat
  * with any cover-image plumbing that may grow back later, and so the editor
@@ -173,16 +327,6 @@ type ReferenceDetailFieldErrors = {
  * "tracing" image without a schema migration.
  */
 type UploadedImageTag = "photograph" | "tracing";
-
-/**
- * Translate a stored image-tag string (any of the legacy values: "mark",
- * "cover", "tracing", or the new "photograph") into the new two-value form.
- * Anything that isn't explicitly "tracing" is treated as a photograph so the
- * Tracing checkbox correctly defaults to unchecked for older entries.
- */
-function tagToTracing(tag: string | null | undefined): boolean {
-  return String(tag ?? "").trim().toLowerCase() === "tracing";
-}
 
 function tracingToTag(tracing: boolean): UploadedImageTag {
   return tracing ? "tracing" : "photograph";
@@ -268,6 +412,58 @@ function parseReferenceWorkDetails(raw: unknown): Record<number, ReferenceDetail
   return out;
 }
 
+function submittedValue(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): unknown {
+  return sd[snakeKey] ?? (camelKey ? sd[camelKey] : undefined);
+}
+
+function submittedString(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): string {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  return value != null && value !== "" ? String(value).trim() : "";
+}
+
+function submittedBool(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): boolean {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  if (value === true) return true;
+  if (value === false || value == null) return false;
+  if (typeof value === "number") return value !== 0;
+  if (typeof value === "string") {
+    return ["1", "true", "yes", "on"].includes(value.trim().toLowerCase());
+  }
+  return false;
+}
+
+function submittedNumber(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): number {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  if (typeof value === "number") return value;
+  if (typeof value === "string" && value.trim() !== "") return Number(value);
+  return NaN;
+}
+
+function submittedArray(
+  sd: Record<string, unknown>,
+  snakeKey: string,
+  camelKey?: string,
+): unknown[] {
+  const value = submittedValue(sd, snakeKey, camelKey);
+  return Array.isArray(value) ? value : [];
+}
+
 const Contribute = () => {
   const navigate = useNavigate();
   const location = useLocation();
@@ -310,7 +506,7 @@ const Contribute = () => {
   // marking, this holds that marking's id. Drives both the staleness
   // banner and the page copy ("Submit edit to Marking" vs "Submit new
   // Marking"). Null for new-marking drafts.
-  const [resumedEditPostmarkId, setResumedEditPostmarkId] = useState<number | null>(null);
+  const [resumedEditMarkingId, setResumedEditMarkingId] = useState<number | null>(null);
   // Resolve page copy. For "edit-contribution" we further split on the
   // loaded contribution's status so a draft does not show the
   // "use the editor feedback" wording reserved for needs_revision /
@@ -326,30 +522,42 @@ const Contribute = () => {
   const isResubmissionStatus =
     loadedContributionStatus === "needs_revision" ||
     loadedContributionStatus === "rejected";
-  const isResumingDraft = isEditContribution && !isResubmissionStatus;
-  const isResumingMarkingEditDraft = isResumingDraft && resumedEditPostmarkId != null;
-  const copy = isResumingDraft
-    ? isResumingMarkingEditDraft
-      ? {
-          ...baseCopy,
-          h1: "Continue your draft",
-          intro: "Pick up where you left off. Keep saving as a draft or submit your edit when you are ready for editor review.",
-          card: "Edit draft",
-          button: SUBMISSION_LABELS.action.submitEditToMarking,
-          toastTitle: "Submitted for review",
-          toastBody: "Changes to published Marking fields are submitted for editor approval and do not update the catalog directly.",
-        }
-      : {
-          ...baseCopy,
-          h1: "Continue your draft",
-          intro: "Pick up where you left off. Keep saving as a draft or submit when you are ready for editor review.",
-          card: "Edit draft",
-          button: SUBMISSION_LABELS.action.submitNewMarking,
-          toastTitle: SUBMISSION_LABELS.toast.received,
-          toastBody:
-            "Your Marking has been submitted for approval. It will appear in Search after an editor approves it.",
-        }
-    : baseCopy;
+  const isPendingEditContribution = loadedContributionStatus === "pending";
+  const isResumingDraft = isEditContribution && !isResubmissionStatus && !isPendingEditContribution;
+  const isResumingMarkingEditDraft = isResumingDraft && resumedEditMarkingId != null;
+  const isMarkingEditAction = isEditMarking || isResumingMarkingEditDraft;
+  const copy = isPendingEditContribution
+    ? {
+        ...baseCopy,
+        h1: "Edit pending submission",
+        intro: "Update your pending submission before an editor reviews it.",
+        card: "Edit submission",
+        button: "Save pending submission",
+        toastTitle: "Pending submission updated",
+        toastBody: "Your updated submission remains pending editor review.",
+      }
+    : isResumingDraft
+      ? isResumingMarkingEditDraft
+        ? {
+            ...baseCopy,
+            h1: "Continue your draft",
+            intro: "Pick up where you left off. Keep saving as a draft or submit your edit when you are ready for editor review.",
+            card: "Edit draft",
+            button: SUBMISSION_LABELS.action.submitEditToMarking,
+            toastTitle: "Submitted for review",
+            toastBody: "Changes to published Marking fields are submitted for editor approval and do not update the catalog directly.",
+          }
+        : {
+            ...baseCopy,
+            h1: "Continue your draft",
+            intro: "Pick up where you left off. Keep saving as a draft or submit when you are ready for editor review.",
+            card: "Edit draft",
+            button: SUBMISSION_LABELS.action.submitNewMarking,
+            toastTitle: SUBMISSION_LABELS.toast.received,
+            toastBody:
+              "Your Marking has been submitted for approval. It will appear in Search after an editor approves it.",
+          }
+      : baseCopy;
   const [loadingRecord, setLoadingRecord] = useState(isEditMarking);
   const [recordError, setRecordError] = useState<string | null>(null);
   const [colorOptions, setColorOptions] = useState<ColorOption[]>([]);
@@ -363,25 +571,35 @@ const Contribute = () => {
   const [townFocused, setTownFocused] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
-  // Form state – all fields shown on Submission Detail
+  // Form state - all fields shown on Submission Detail
   const [state, setState] = useState("");
 
   const [town, setTown] = useState("");
   const [markingType, setMarkingType] = useState("");
   const [rateValue, setRateValue] = useState("");
   const [description, setDescription] = useState("");
+  const [displaySubmitterName, setDisplaySubmitterName] = useState(false);
   const [contributorComment, setContributorComment] = useState("");
-  // Existing images on the loaded Marking (edit-marking mode). Each entry is
-  // an editable thumbnail: the user can change its tag or remove it. Removed
-  // urls move into removedExistingImageKeys so the apply step can drop them.
-  // Existing images on the loaded Marking (edit-marking mode). Each entry is
-  // an editable thumbnail: the user can flip its Tracing flag or remove it.
-  // Reordering existing images on this form is intentionally not supported —
-  // the editor reorders the master gallery directly from the Catalog Detail
-  // screen so the change goes through one place (PATCH /api/v2/images/{id}/),
-  // not via a contribution round-trip.
-  const [existingImages, setExistingImages] = useState<Array<{ url: string; tracing: boolean }>>([]);
+  const [noMarkingImage, setNoMarkingImage] = useState(false);
+  // One entry in the combined image gallery: "existing" wraps an already-saved
+  // image (edit-marking or draft-resume); "new" wraps a freshly-picked file.
+  type MarkingGalleryItem =
+    | { kind: "existing"; key: string; url: string; tracing: boolean }
+    | { kind: "new"; key: string; file: File; previewUrl: string; tracing: boolean };
+  // Single ordered gallery: already-saved images interleaved with new uploads.
+  // Reorder + set-default work across the whole list; the chosen order is sent as
+  // image_order and applied at approval (see backend _reorder_metas_by_image_order
+  // in common/api/v2/views.py). The edit form never writes to the catalog directly.
+  const [gallery, setGallery] = useState<MarkingGalleryItem[]>([]);
+  // Monotonic key source for new-upload items: previews resolve asynchronously,
+  // so each new file needs a stable key independent of its array position.
+  const newImageKeyCounter = useRef(0);
   const [removedExistingImageKeys, setRemovedExistingImageKeys] = useState<string[]>([]);
+  // Gallery keys whose pixel dimensions read as a whole cover rather than a
+  // marking closeup (issue #76). Held as keys rather than a flag on the item so
+  // removing an image drops it from the count for free.
+  const [coverLikeImageKeys, setCoverLikeImageKeys] = useState<string[]>([]);
+  const [wrongImageKindAcknowledged, setWrongImageKindAcknowledged] = useState(false);
   // Timestamp of the marking record as observed when this edit session loaded
   // (Marking.modified_date). Stamped into save-as-draft payloads so a later
   // resume can detect upstream edits and warn the user before they overwrite.
@@ -401,14 +619,25 @@ const Contribute = () => {
   const [isIrregular, setIsIrregular] = useState(false);
   const [impression, setImpression] = useState("Normal");
   const [inscriptionText, setInscriptionText] = useState("");
+  const [catalogCode, setCatalogCode] = useState("");
+  const [catalogCodeTouched, setCatalogCodeTouched] = useState(false);
+  const [catalogCodeLoading, setCatalogCodeLoading] = useState(false);
+  const [catalogCodeError, setCatalogCodeError] = useState<string | null>(null);
   const [selectedReferenceWorks, setSelectedReferenceWorks] = useState<ReferenceWorkRecord[]>([]);
   const [referenceDetailsById, setReferenceDetailsById] = useState<Record<number, ReferenceDetailInput>>({});
   const [referenceDetailErrorsById, setReferenceDetailErrorsById] = useState<Record<number, ReferenceDetailFieldErrors>>({});
-  const [markingImageFiles, setMarkingImageFiles] = useState<File[]>([]);
-  const [markingImagePreviews, setMarkingImagePreviews] = useState<string[]>([]);
-  const [markingImageTags, setMarkingImageTags] = useState<string[]>([]);
+  // New-upload files/previews/tags now live as "new" items inside `gallery`.
   const [letteringId, setLetteringId] = useState("");
   const [dateFormatIds, setDateFormatIds] = useState<string[]>([]);
+  // ERD/LRD (earliest/latest recorded date) for markings sourced from another
+  // catalog. Stored as MARKING DateSeen rows server-side and merged with
+  // cover-derived dates at read time. *Baseline holds the value prefilled on
+  // edit so we send a boundary only when the user changed it (a no-touch edit
+  // must not re-write the catalog's date history).
+  const [erd, setErd] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [lrd, setLrd] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [erdBaseline, setErdBaseline] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
+  const [lrdBaseline, setLrdBaseline] = useState<PartialDateInput>({ ...EMPTY_PARTIAL_DATE });
   const [fieldErrors, setFieldErrors] = useState<{
     markingType?: string;
     state?: string;
@@ -423,9 +652,10 @@ const Contribute = () => {
     dateFormat?: string;
     inscriptionText?: string;
     rateValue?: string;
+    erd?: string;
+    lrd?: string;
   }>({});
 
-  // Contributor: lettering, framing, date format (loaded for all)
   const [letteringOptions, setLetteringOptions] = useState<LetteringOption[]>([]);
   const [dateFormatOptions, setDateFormatOptions] = useState<DateFormatOption[]>([]);
   const [catalogOptionsLoading, setCatalogOptionsLoading] = useState(false);
@@ -435,7 +665,10 @@ const Contribute = () => {
   const [referenceWorksError, setReferenceWorksError] = useState<string | null>(null);
   const [referenceWorksFetched, setReferenceWorksFetched] = useState(false);
 
-  const isStateEditor = user?.role === "editor";
+  const isStateEditor =
+    user?.role === "editor" || user?.role === "administrator" || user?.is_superuser === true;
+
+  const canEditCatalogCode = Boolean(isStateEditor);
 
   /** Town/City: letters, spaces, hyphens, apostrophes only */
   const sanitizeTown = (v: string) => v.replace(/[^a-zA-Z\s\-']/g, "");
@@ -511,19 +744,19 @@ const Contribute = () => {
 
   /**
    * Default Shape rule: when Ratemark or Auxmark is selected and Manuscript
-   * is False (non-handstamped), the catalog convention is that the marking is
-   * a straight-line strike unless the contributor specifies otherwise. We
-   * therefore prefill Shape with the SL ("Straight Line") option whenever:
+   * is False, the catalog convention is that the marking is a circle unless
+   * the contributor specifies otherwise. We therefore prefill Shape with the
+   * C ("Circle") option whenever:
    *
    *   - the type is RATEMARK or AUXMARK,
    *   - manuscript is "No",
    *   - the user hasn't already chosen a shape (we never override an explicit
    *     selection),
-   *   - the shape options have finished loading (otherwise the SL row isn't
+   *   - the shape options have finished loading (otherwise the C row isn't
    *     in the dropdown yet and the prefill silently no-ops).
    *
-   * Townmark intentionally does NOT trigger this default — Townmarks have a
-   * far wider variety of shapes and forcing SL would be misleading.
+   * Townmark intentionally does NOT trigger this default -- Townmarks have a
+   * far wider variety of shapes and forcing Circle would be misleading.
    */
   useEffect(() => {
     if (loadingShapes || shapeOptions.length === 0) return;
@@ -531,17 +764,14 @@ const Contribute = () => {
     if (shape.trim()) return;
     const t = normalizeMarkingTypeValue(markingType);
     if (t !== "RATEMARK" && t !== "AUXMARK") return;
-    const slOption =
+    const circleOption =
       shapeOptions.find(
-        (opt) => String(opt.name).trim().toUpperCase() === "SL",
+        (opt) => shapeCodeFromName(opt.name) === "C",
       ) ??
       shapeOptions.find((opt) =>
-        String(opt.name).trim().toUpperCase().startsWith("SL"),
-      ) ??
-      shapeOptions.find((opt) =>
-        String(opt.name).trim().toLowerCase().includes("straight line"),
+        String(opt.name).trim().toUpperCase() === "CIRCLE",
       );
-    if (slOption) setShape(slOption.name);
+    if (circleOption) setShape(circleOption.name);
   }, [markingType, isManuscript, shape, shapeOptions, loadingShapes]);
 
   useEffect(() => {
@@ -601,6 +831,71 @@ const Contribute = () => {
     setPendingReferenceWorkIds([]);
   }, [pendingReferenceWorkIds, referenceWorks]);
 
+  const fetchCatalogCodeSuggestion = async (force = false): Promise<string> => {
+    if (!canEditCatalogCode) return "";
+    const stateVal = state.trim();
+    if (!stateVal) {
+      setCatalogCodeError("Select a state before generating a catalog code.");
+      return "";
+    }
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    try {
+      const suggestion = await getDirectCatalogCodeSuggestion({
+        subjectType: "MARKING",
+        state: stateVal,
+        referenceWorkIds: selectedReferenceWorks.map((work) => work.id),
+        excludeId: editMarkingId ?? resumedEditMarkingId ?? null,
+      });
+      if (force || !catalogCodeTouched || !catalogCode.trim()) {
+        setCatalogCode(suggestion.catalogCode);
+      }
+      return suggestion.catalogCode;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Could not generate catalog code.";
+      setCatalogCodeError(message);
+      throw err;
+    } finally {
+      setCatalogCodeLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!canEditCatalogCode) return;
+    if (!state.trim()) return;
+    if (catalogCodeTouched) return;
+    let cancelled = false;
+    setCatalogCodeLoading(true);
+    setCatalogCodeError(null);
+    getDirectCatalogCodeSuggestion({
+      subjectType: "MARKING",
+      state: state.trim(),
+      referenceWorkIds: selectedReferenceWorks.map((work) => work.id),
+      excludeId: editMarkingId ?? resumedEditMarkingId ?? null,
+    })
+      .then((suggestion) => {
+        if (!cancelled) setCatalogCode(suggestion.catalogCode);
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setCatalogCodeError(err instanceof Error ? err.message : "Could not generate catalog code.");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setCatalogCodeLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    canEditCatalogCode,
+    state,
+    selectedReferenceWorks,
+    editMarkingId,
+    resumedEditMarkingId,
+    catalogCodeTouched,
+  ]);
+
   // Load contribution for edit-and-resubmit (rejected / needs_revision)
   useEffect(() => {
     if (!editContributionId) {
@@ -623,34 +918,52 @@ const Contribute = () => {
         const shapeVal = getStr(sd.shape);
         const colorVal = getStr(sd.color);
         const typeVal = getStr(sd.type);
+        const loadedCatalogCode = getStr(
+          (sd as Record<string, unknown>).catalog_code ??
+            (sd as Record<string, unknown>).catalogCode ??
+            (sd as Record<string, unknown>).code,
+        );
         setState(stateVal);
         setTown(townVal);
+        if (loadedCatalogCode) {
+          setCatalogCode(loadedCatalogCode);
+          setCatalogCodeTouched(true);
+        }
         if (typeVal) setMarkingType(typeVal);
-        setContributorComment(getStr((sd as Record<string, unknown>).contributor_comment));
+        setDisplaySubmitterName(
+          String(submittedValue(sd, "display_submitter_name", "displaySubmitterName")) === "true",
+        );
+        setContributorComment(
+          getStr(submittedValue(sd, "contributor_comment", "contributorComment")),
+        );
+        const loadedNoMarkingImage = submittedBool(sd, "no_marking_image", "noMarkingImage");
+        setNoMarkingImage(loadedNoMarkingImage);
         setShape(shapeVal || "");
         setColor(colorVal || "");
         const wh = submittedDataToWidthHeightStrings(sd as Record<string, unknown>);
         setWidthMm(wh.width);
         setHeightMm(wh.height);
-        setIsManuscript(sd.is_manuscript === true);
+        setIsManuscript(submittedBool(sd, "is_manuscript", "isManuscript"));
         const loadedImpression = getStr(sd.impression);
         setImpression(loadedImpression || "Normal");
-        setIsIrregular(Boolean(sd.is_irreg));
-        setInscriptionText(getStr(sd.inscription_txt));
-        setDescription(getStr(sd.desc));
-        setRateValue(getStr((sd as Record<string, unknown>).rate_val));
+        setIsIrregular(submittedBool(sd, "is_irreg", "isIrreg"));
+        setInscriptionText(getStr(submittedValue(sd, "inscription_txt", "inscriptionTxt")));
+        setDescription(getStr(submittedValue(sd, "desc", "description")));
+        setRateValue(getStr(submittedValue(sd, "rate_val", "rateVal")));
         const referenceWorkIds = parseReferenceWorkIds(
-          (sd as Record<string, unknown>).reference_work_ids
+          submittedValue(sd, "reference_work_ids", "referenceWorkIds")
         );
         const referenceDetails = parseReferenceWorkDetails(
-          (sd as Record<string, unknown>).reference_work_details
+          submittedValue(sd, "reference_work_details", "referenceWorkDetails")
         );
         setPendingReferenceWorkIds(referenceWorkIds);
         setReferenceDetailsById(referenceDetails);
         if (referenceWorkIds.length === 0) {
           setSelectedReferenceWorks([]);
         }
-        const lid = sd.lettering_id ?? sd.lettering_style_id;
+        const lid =
+          submittedValue(sd, "lettering_id") ??
+          submittedValue(sd, "lettering_style_id", "letteringStyleId");
         setLetteringId(lid != null ? String(lid) : "");
         const dateFmtCode = getStr(sd.date_fmt ?? sd.dateFmt);
         if (dateFmtCode) {
@@ -669,32 +982,44 @@ const Contribute = () => {
         } else {
           setDateFormatIds([]);
         }
-        // Route existing images through `existingImages` (same path used by
-        // the edit-marking flow) so the dedicated remove button records
-        // removals in `removedExistingImageKeys`. Mixing prior URLs into
-        // `markingImagePreviews` breaks the index alignment with
-        // `markingImageFiles` and silently drops removals on submit.
-        const submittedMarkingImages = Array.isArray(sd.marking_images)
-          ? (sd.marking_images as unknown[])
-              .map((v) => (typeof v === "string" ? v.trim() : ""))
-              .filter((v) => v.length > 0)
-          : [];
+        // Restore any ERD/LRD the contributor typed before saving the draft.
+        // These ride submitted_data verbatim; no baseline (a draft has not
+        // touched the catalog), so resubmitting sends them as a fresh boundary.
+        setErd(markingBoundaryDateFromPayload(sd, "marking_erd"));
+        setLrd(markingBoundaryDateFromPayload(sd, "marking_lrd"));
+        setErdBaseline({ ...EMPTY_PARTIAL_DATE });
+        setLrdBaseline({ ...EMPTY_PARTIAL_DATE });
+        // Load prior images as "existing" gallery items (same path used by the
+        // edit-marking flow) so the remove button records removals in
+        // `removedExistingImageKeys` and the contributor can reorder / set the
+        // default across them and any new uploads.
+        const submittedMarkingImages = submittedArray(sd, "marking_images", "markingImages")
+          .map((v) => (typeof v === "string" ? v.trim() : ""))
+          .filter((v) => v.length > 0);
         let existingUrls: string[] = submittedMarkingImages;
         if (existingUrls.length === 0) {
-          const metas = Array.isArray(sd.marking_image_metas)
-            ? (sd.marking_image_metas as Array<{ storage_filename?: string }>)
-            : [];
+          const metas = submittedArray(sd, "marking_image_metas", "markingImageMetas") as Array<{
+            storage_filename?: string;
+            storageFilename?: string;
+          }>;
           const baseUrl =
             (import.meta.env.VITE_IMAGE_URL ?? "").replace(/\/+$/, "") || "/media";
           existingUrls = metas
             .map((m) => {
-              const sf = m?.storage_filename;
+              const sf = m?.storage_filename ?? m?.storageFilename;
               return sf ? `${baseUrl}/${sf.replace(/^\/+/, "")}` : "";
             })
             .filter((u) => u.length > 0);
         }
-        if (existingUrls.length > 0) {
-          setExistingImages(existingUrls.map((url) => ({ url, tracing: false })));
+        if (!loadedNoMarkingImage && existingUrls.length > 0) {
+          setGallery(
+            existingUrls.map((url) => ({
+              kind: "existing" as const,
+              key: url,
+              url,
+              tracing: false,
+            })),
+          );
           setRemovedExistingImageKeys([]);
         }
         setEditLoadError(null);
@@ -705,25 +1030,27 @@ const Contribute = () => {
         // the marking's current images (the draft only snapshots field
         // edits, not images) and (b) we can compare its modified_date to
         // the baseline stamped in submitted_data and flag a stale draft.
-        const editPostmarkIdRaw = (sd as Record<string, unknown>).edit_postmark_id;
-        const editPostmarkIdNum =
-          typeof editPostmarkIdRaw === "number"
-            ? editPostmarkIdRaw
-            : typeof editPostmarkIdRaw === "string" && editPostmarkIdRaw.trim() !== ""
-              ? Number(editPostmarkIdRaw)
-              : NaN;
-        if (Number.isFinite(editPostmarkIdNum) && editPostmarkIdNum > 0) {
-          setResumedEditPostmarkId(editPostmarkIdNum);
-          const baselineRaw = (sd as Record<string, unknown>).marking_modified_at_baseline;
+        const editMarkingIdNum = submittedNumber(sd, "edit_marking_id", "editMarkingId");
+        if (Number.isFinite(editMarkingIdNum) && editMarkingIdNum > 0) {
+          setResumedEditMarkingId(editMarkingIdNum);
+          const baselineRaw = submittedValue(
+            sd,
+            "marking_modified_at_baseline",
+            "markingModifiedAtBaseline",
+          );
           const baseline = typeof baselineRaw === "string" ? baselineRaw : null;
-          const removedRaw = (sd as Record<string, unknown>).removed_existing_image_keys;
-          if (Array.isArray(removedRaw)) {
-            setRemovedExistingImageKeys(removedRaw.map((k) => String(k)));
+          const removedKeys = submittedArray(
+            sd,
+            "removed_existing_image_keys",
+            "removedExistingImageKeys",
+          );
+          if (removedKeys.length > 0) {
+            setRemovedExistingImageKeys(removedKeys.map((k) => String(k)));
           }
-          getMarkingByIdRaw(editPostmarkIdNum)
+          getMarkingByIdRaw(editMarkingIdNum)
             .then((m) => {
               if (cancelled || !m) return;
-              if (existingUrls.length === 0 && Array.isArray(m.images)) {
+              if (!loadedNoMarkingImage && existingUrls.length === 0 && Array.isArray(m.images)) {
                 const rows = (m.images as unknown[])
                   .map((img) => {
                     const o = img as Record<string, unknown>;
@@ -737,7 +1064,16 @@ const Contribute = () => {
                   .filter(
                     (row): row is { url: string; tracing: boolean } => row !== null,
                   );
-                if (rows.length > 0) setExistingImages(rows);
+                if (rows.length > 0) {
+                  setGallery(
+                    rows.map((r) => ({
+                      kind: "existing" as const,
+                      key: r.url,
+                      url: r.url,
+                      tracing: r.tracing,
+                    })),
+                  );
+                }
               }
               const modified = typeof m.modified_date === "string" ? m.modified_date : null;
               if (baseline && modified && modified > baseline) {
@@ -803,7 +1139,15 @@ const Contribute = () => {
               })
               .filter((row): row is { url: string; tracing: boolean } => row !== null)
           : [];
-        setExistingImages(existingRows);
+        setGallery(
+          existingRows.map((r) => ({
+            kind: "existing" as const,
+            key: r.url,
+            url: r.url,
+            tracing: r.tracing,
+          })),
+        );
+        setNoMarkingImage(false);
         setRemovedExistingImageKeys([]);
 
         const modifiedDate = typeof data.modified_date === "string" ? data.modified_date : null;
@@ -817,6 +1161,10 @@ const Contribute = () => {
 
         setState(typeof data.state === "string" ? data.state : "");
         setTown(sanitizeTown(typeof data.town === "string" ? data.town : ""));
+        if (typeof data.code === "string" && data.code.trim()) {
+          setCatalogCode(data.code.trim());
+          setCatalogCodeTouched(true);
+        }
 
         const shapeName = typeof data.shape_name === "string" ? data.shape_name : "";
         if (shapeName) {
@@ -839,6 +1187,8 @@ const Contribute = () => {
         setImpression(normalizedImpression ?? "Normal");
         setInscriptionText(typeof data.inscription_txt === "string" ? data.inscription_txt : "");
         setDescription(typeof data.desc === "string" ? data.desc : "");
+        setDisplaySubmitterName(Boolean(data.display_submitter_name));
+        setRateValue(String(data.rate_val ?? "").trim());
 
         setLetteringId(data.lettering != null ? String(data.lettering) : "");
         const dateFmt = String(data.date_fmt ?? "").trim();
@@ -852,6 +1202,24 @@ const Contribute = () => {
         } else {
           setDateFormatIds([]);
         }
+
+        // Prefill ERD/LRD from the marking's current earliest/latest. Baselines
+        // let submit send a boundary only when the user actually changes it, so
+        // a no-touch edit never re-writes the catalog's MARKING date rows.
+        const erdRaw = typeof data.earliest_seen === "string" ? data.earliest_seen : "";
+        const lrdRaw = typeof data.latest_seen === "string" ? data.latest_seen : "";
+        const erdValue = partialDateInputFromDateSeen({
+          date: erdRaw,
+          granularity: typeof data.earliest_seen_granularity === "string" ? data.earliest_seen_granularity : "",
+        });
+        const lrdValue = partialDateInputFromDateSeen({
+          date: lrdRaw,
+          granularity: typeof data.latest_seen_granularity === "string" ? data.latest_seen_granularity : "",
+        });
+        setErd(erdValue);
+        setLrd(lrdValue);
+        setErdBaseline(erdValue);
+        setLrdBaseline(lrdValue);
       })
       .catch(() => {
         if (!cancelled) setRecordError("Failed to load record");
@@ -868,7 +1236,7 @@ const Contribute = () => {
           const sd = (r.submitted_data ?? r.submittedData) as
             | Record<string, unknown>
             | undefined;
-          const epi = sd?.edit_postmark_id;
+          const epi = sd?.edit_marking_id;
           if (epi == null || epi === "") return false;
           return Number(epi) === Number(editMarkingId);
         });
@@ -887,6 +1255,39 @@ const Contribute = () => {
   }, [isEditMarking, editMarkingId, dateFormatOptions, shapeOptions, navigate]);
 
   const noAssignedStates = false;
+
+  const handleCancelEditing = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    const fallbackMarkingId = editMarkingId ?? resumedEditMarkingId;
+    if (fallbackMarkingId != null) {
+      navigate(`/record/${fallbackMarkingId}`);
+      return;
+    }
+    navigate("/dashboard");
+  };
+
+  const handleBackFromNewMarking = () => {
+    const navState = (location.state || {}) as Record<string, unknown>;
+    const fromPath = typeof navState.from === "string" ? navState.from : "";
+    if (fromPath) {
+      navigate(fromPath);
+      return;
+    }
+    if (window.history.length > 1) {
+      navigate(-1);
+      return;
+    }
+    navigate("/dashboard");
+  };
 
   const townOptions = useMemo(() => {
     const normalizedState = state.trim().toLowerCase();
@@ -937,13 +1338,20 @@ const Contribute = () => {
   const showAnythingElseSection = isHandstamped && (isTownmark || isRatemark || isAuxmark);
 
   const selectedDateFormatSummary = useMemo(() => {
-    if (dateFormatIds.length === 0) return "Select one or more date formats";
+    if (dateFormatIds.length === 0) return "Select Date format";
     const selectedCodes = dateFormatOptions
       .filter((opt) => dateFormatIds.includes(String(opt.id)))
       .map((opt) => opt.description || opt.name);
     if (selectedCodes.length <= 2) return selectedCodes.join(", ");
     return `${selectedCodes.slice(0, 2).join(", ")} +${selectedCodes.length - 2} more`;
   }, [dateFormatIds, dateFormatOptions]);
+
+  // Only counts images still in the gallery, so removing the offending file
+  // clears the warning without any extra bookkeeping.
+  const coverLikeImageCount = useMemo(
+    () => gallery.filter((item) => coverLikeImageKeys.includes(item.key)).length,
+    [gallery, coverLikeImageKeys],
+  );
 
   const processImageFiles = (files: File[]) => {
     const toAdd: File[] = [];
@@ -975,24 +1383,42 @@ const Contribute = () => {
       });
     }
     if (toAdd.length === 0) return;
+    setNoMarkingImage(false);
     if (fieldErrors.images) {
       setFieldErrors((prev) => ({ ...prev, images: undefined }));
     }
-    setMarkingImageFiles((prev) => [...prev, ...toAdd]);
-    // Each newly-uploaded image starts as a "photograph"; the contributor
-    // flips the per-image Tracing checkbox to mark it as a tracing diagram.
-    setMarkingImageTags((prev) => [...prev, ...toAdd.map(() => tracingToTag(false))]);
-    Promise.all(
-      toAdd.map(
-        (file) =>
-          new Promise<string>((resolve) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result as string);
-            reader.readAsDataURL(file);
-          })
-      )
-    ).then((newPreviews) => {
-      setMarkingImagePreviews((prev) => [...prev, ...newPreviews]);
+    // Each new image starts as a "photograph" (tracing=false); the contributor
+    // flips the per-image Tracing checkbox to mark it as a tracing diagram. The
+    // preview (a data URL) resolves asynchronously, so the item is appended with
+    // an empty previewUrl and patched by key once the FileReader finishes.
+    const items = toAdd.map((file) => ({
+      kind: "new" as const,
+      key: `new-${newImageKeyCounter.current++}`,
+      file,
+      previewUrl: "",
+      tracing: false,
+    }));
+    setGallery((prev) => [...prev, ...items]);
+    items.forEach((item) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const previewUrl = reader.result as string;
+        setGallery((prev) =>
+          prev.map((g) =>
+            g.kind === "new" && g.key === item.key ? { ...g, previewUrl } : g,
+          ),
+        );
+      };
+      reader.readAsDataURL(item.file);
+      // Flag whole-cover scans dropped into the marking form (issue #76).
+      // Measurement is best-effort and never gates the upload: an unreadable
+      // image (TIFF, say) simply resolves to null and is left alone.
+      void measureImageFile(item.file).then((dimensions) => {
+        if (!dimensions || !looksLikeWrongKind(dimensions, "MARKING")) return;
+        setCoverLikeImageKeys((prev) =>
+          prev.includes(item.key) ? prev : [...prev, item.key],
+        );
+      });
     });
   };
 
@@ -1003,11 +1429,77 @@ const Contribute = () => {
     e.target.value = "";
   };
 
-  const removeImageAt = (index: number) => {
-    setMarkingImageFiles((prev) => prev.filter((_, i) => i !== index));
-    setMarkingImagePreviews((prev) => prev.filter((_, i) => i !== index));
-    setMarkingImageTags((prev) => prev.filter((_, i) => i !== index));
+  // Reorder + set-default + tracing + remove all act on the single combined
+  // gallery, so they work uniformly across already-saved and newly-picked images.
+  const removeGalleryAt = (index: number) => {
+    setGallery((prev) => {
+      const item = prev[index];
+      if (!item) return prev;
+      if (item.kind === "existing") {
+        // Both catalog images and draft previews carry a URL whose tail is the
+        // storage_filename; the backend tail-matches removed keys against it.
+        setRemovedExistingImageKeys((keys) =>
+          keys.includes(item.url) ? keys : [...keys, item.url],
+        );
+      }
+      return prev.filter((_, i) => i !== index);
+    });
+    if (fieldErrors.images) {
+      setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    }
     if (markingFileInputRef.current) markingFileInputRef.current.value = "";
+  };
+
+  const setNoMarkingImageChecked = (checked: boolean) => {
+    setNoMarkingImage(checked);
+    setFieldErrors((prev) => ({ ...prev, images: undefined }));
+    if (!checked) return;
+    setGallery((prev) => {
+      const removed = prev
+        .filter(
+          (item): item is Extract<MarkingGalleryItem, { kind: "existing" }> =>
+            item.kind === "existing",
+        )
+        .map((item) => item.url);
+      if (removed.length > 0) {
+        setRemovedExistingImageKeys((keys) => {
+          const next = [...keys];
+          for (const url of removed) {
+            if (!next.includes(url)) next.push(url);
+          }
+          return next;
+        });
+      }
+      return [];
+    });
+    if (markingFileInputRef.current) markingFileInputRef.current.value = "";
+  };
+
+  const moveGalleryBy = (index: number, offset: -1 | 1) => {
+    const target = index + offset;
+    setGallery((prev) => {
+      if (target < 0 || target >= prev.length) return prev;
+      const next = prev.slice();
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const setGalleryDefault = (index: number) => {
+    if (index <= 0) return;
+    setGallery((prev) => {
+      if (index >= prev.length) return prev;
+      const next = prev.slice();
+      const [picked] = next.splice(index, 1);
+      next.unshift(picked);
+      return next;
+    });
+  };
+
+  const setGalleryTracingAt = (index: number, tracing: boolean) => {
+    setGallery((prev) =>
+      prev.map((item, i) => (i === index ? { ...item, tracing } : item)),
+    );
   };
 
   const buildName = () => {
@@ -1015,16 +1507,7 @@ const Contribute = () => {
     return `${town.trim()}, ${stateLabel} ${shape}`.trim();
   };
 
-  const isCircularType = (raw: string) => {
-    const s = (raw || "").toLowerCase();
-    return (
-      s.includes("circle") ||
-      s.includes("circular") ||
-      s.includes("cds") ||
-      s.includes("double circle") ||
-      s.includes("single circle")
-    );
-  };
+  const isCircularType = (raw: string) => isTrueCircleShapeName(raw);
 
   const handleSubmit = async (
     e: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement>,
@@ -1054,6 +1537,7 @@ const Contribute = () => {
       (c) => c.name.trim().toLowerCase() === colorVal.toLowerCase()
     )?.id;
     const isCircular = isCircularType(shapeVal);
+    const rateValueToSend = rateValue.trim();
 
     const errors: typeof fieldErrors = {};
     if (!saveAsDraft) {
@@ -1076,28 +1560,23 @@ const Contribute = () => {
       }
       if (isRatemark && !rateValue.trim()) {
         errors.rateValue = "Rate Value is required for Ratemarks";
+      } else if (showRateValueField && rateValueToSend && !/^\d+(?:\.\d{1,2})?$/.test(rateValueToSend)) {
+        errors.rateValue = "Rate Value must be cents, like 3 or 3.5";
       }
 
-      // At least one image must accompany every entry.
-      // - "new":               at least one freshly-uploaded file.
-      // - "edit-marking":      keep at least one existing image, or upload a new one.
-      // - "edit-contribution": images carry over from the prior submission, so no
-      //                        new upload is required.
-      if (mode === "new" && markingImageFiles.length === 0) {
-        errors.images = "At least one image is required";
-      } else if (
-        mode === "edit-marking" &&
-        existingImages.length === 0 &&
-        markingImageFiles.length === 0
-      ) {
-        errors.images = "At least one image is required";
-      } else if (
-        mode === "edit-contribution" &&
-        existingImages.length === 0 &&
-        markingImagePreviews.length === 0 &&
-        markingImageFiles.length === 0
-      ) {
-        errors.images = "At least one image is required";
+      // At least one image must accompany every entry. The combined gallery
+      // holds both kept existing images and new uploads, so a single emptiness
+      // check covers all modes (new / edit-marking / edit-contribution).
+      if (gallery.length === 0 && !noMarkingImage) {
+        errors.images = "Add at least one image or confirm no image is available";
+      } else if (coverLikeImageCount > 0 && !wrongImageKindAcknowledged) {
+        // Not a hard block: the contributor clears this by ticking the
+        // acknowledgement in WrongImageKindWarning, or by removing the image
+        // (issue #76). Drafts are exempt -- a draft is work in progress.
+        // Unreachable when the gallery is empty, so the no-image opt-out above
+        // always takes precedence.
+        errors.images =
+          "Confirm the highlighted image is correct, or remove it, before submitting.";
       }
 
       // Dimensions: only validated for handstamped markings. Manuscript markings
@@ -1114,6 +1593,36 @@ const Contribute = () => {
       if (!stateVal) {
         errors.state = "State is required to save a draft";
       }
+    }
+
+    // Final editor submissions require each visible boundary date to be known
+    // or explicitly unknown. Drafts stay permissive, but typed draft values are
+    // still checked for shape.
+    const shouldValidateBoundaryDates = !saveAsDraft && isStateEditor;
+    const erdChanged = partialDateKey(erd) !== partialDateKey(erdBaseline);
+    const lrdChanged = partialDateKey(lrd) !== partialDateKey(lrdBaseline);
+    const erdValidation =
+      shouldValidateBoundaryDates || partialDateHasValue(erd) || erdChanged
+        ? validatePartialDate(erd)
+        : null;
+    const lrdValidation =
+      shouldValidateBoundaryDates || partialDateHasValue(lrd) || lrdChanged
+        ? validatePartialDate(lrd)
+        : null;
+    if (erdValidation?.ok === false) {
+      errors.erd = erdValidation.error;
+    }
+    if (lrdValidation?.ok === false) {
+      errors.lrd = lrdValidation.error;
+    }
+    if (
+      erdValidation?.ok === true &&
+      lrdValidation?.ok === true &&
+      erdValidation.value.legacyDate &&
+      lrdValidation.value.legacyDate &&
+      erdValidation.value.legacyDate > lrdValidation.value.legacyDate
+    ) {
+      errors.lrd = "Latest date must be on or after the earliest date";
     }
 
     const referenceDetailErrors: Record<number, ReferenceDetailFieldErrors> = {};
@@ -1151,18 +1660,20 @@ const Contribute = () => {
       }
     }
     setReferenceDetailErrorsById(referenceDetailErrors);
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      scrollToFirstError(errors);
+      return;
+    }
+
     if (!saveAsDraft && Object.keys(referenceDetailErrors).length > 0) {
       toast({
         title: "Fix reference details",
         description: "Check page number and citation URL fields for selected references.",
         variant: "destructive",
       });
-      return;
-    }
-
-    if (Object.keys(errors).length > 0) {
-      setFieldErrors(errors);
-      scrollToFirstError(errors);
+      scrollToFirstReferenceDetailError(selectedReferenceWorks, referenceDetailErrors);
       return;
     }
 
@@ -1175,11 +1686,29 @@ const Contribute = () => {
         url: detail?.citationUrl?.trim() || undefined,
       };
     });
-    const allImageFiles = markingImageFiles;
-    // The Tracing checkbox replaces the old mark/cover/tracing dropdown, so
-    // every entry in markingImageTags now defaults to "photograph"; there is
-    // no longer a "must select a tag" validation gate. Photographs upload
-    // exactly the way they used to — only Tracings need an explicit toggle.
+    // Derive the ordered submission arrays from the combined gallery, in display
+    // order: new-upload files + their positional tracing tags, plus an
+    // image_order token per image ("__new__" for an upload, else the existing
+    // image's key). The backend rebuilds the saved metas list in this order so
+    // display_order at approval matches the on-screen order (index 0 = default).
+    const allImageFiles: File[] = [];
+    const orderedNewTags: string[] = [];
+    const imageOrder: string[] = [];
+    for (const item of gallery) {
+      if (item.kind === "new") {
+        allImageFiles.push(item.file);
+        orderedNewTags.push(tracingToTag(item.tracing));
+        imageOrder.push("__new__");
+      } else {
+        imageOrder.push(item.url);
+      }
+    }
+    // existing_image_tags: {url: "tracing"|"photograph"} over kept existing
+    // images. Emitted for every kept image (not just tracings) so unchecking
+    // Tracing flips the value back to photograph.
+    const existingTagMapEntries = gallery
+      .filter((item) => item.kind === "existing")
+      .map((item) => [item.url, tracingToTag(item.tracing)] as const);
     const oversized = allImageFiles.filter((f) => f.size > MAX_IMAGE_SIZE_MB * 1024 * 1024);
     if (oversized.length) {
       toast({
@@ -1207,6 +1736,30 @@ const Contribute = () => {
         return opt ? String(opt.description ?? "").trim() : "";
       })();
       const inscriptionToSend = inscriptionText.trim();
+      let catalogCodeToSend = catalogCode.trim();
+      if (canEditCatalogCode && !catalogCodeToSend) {
+        catalogCodeToSend = await fetchCatalogCodeSuggestion(true);
+        if (!catalogCodeToSend) {
+          return;
+        }
+      }
+
+      // ERD/LRD: send a boundary only when it has date information and differs
+      // from the value prefilled on edit. The backend sync is additive (never
+      // deletes), so an unchanged or cleared field is a no-op and existing
+      // catalog dates are preserved.
+      const markingDateToSend = (
+        value: PartialDateInput,
+        baseline: PartialDateInput,
+      ): PartialDateValue | null => {
+        if (!partialDateHasValue(value)) return null;
+        if (partialDateKey(value) === partialDateKey(baseline)) return null;
+        const parsed = validatePartialDate(value);
+        if (!parsed.ok) return null;
+        return parsed.value;
+      };
+      const erdToSend = markingDateToSend(erd, erdBaseline);
+      const lrdToSend = markingDateToSend(lrd, lrdBaseline);
 
       if (allImageFiles.length > 0 || isEditMarking) {
         const form = new FormData();
@@ -1214,7 +1767,7 @@ const Contribute = () => {
           form.append("edit_contribution_id", String(editContributionId));
         }
         if (isEditMarking && editMarkingId != null) {
-          form.append("edit_postmark_id", String(editMarkingId));
+          form.append("edit_marking_id", String(editMarkingId));
         }
         if (saveAsDraft) {
           form.append("save_as_draft", "true");
@@ -1237,9 +1790,13 @@ const Contribute = () => {
           form.append("is_irreg", String(isIrregular));
           if (impression.trim()) form.append("impression", impression.trim());
         }
-        if (showRateValueField && rateValue.trim()) form.append("rate_val", rateValue.trim());
+        if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
         if (description.trim()) {
           form.append("desc", description.trim());
+        }
+        form.append("display_submitter_name", String(displaySubmitterName));
+        if (canEditCatalogCode && catalogCodeToSend) {
+          form.append("catalog_code", catalogCodeToSend);
         }
         if (inscriptionToSend) form.append("inscription_txt", inscriptionToSend);
         referenceWorkIdsToSend.forEach((id) => form.append("reference_work_ids[]", String(id)));
@@ -1249,10 +1806,21 @@ const Contribute = () => {
         if (!isManuscriptSelected && letteringId) form.append("lettering_style_id", letteringId);
         if (!isManuscriptSelected && letteringId) form.append("lettering_id", letteringId);
         if (showDateFormatField && dateFmtCode) form.append("date_fmt", dateFmtCode);
-        for (const file of markingImageFiles) {
+        // ERD/LRD are editor-only (issue #27): never send them from a
+        // non-editor, even if stale state lingers. The server also strips them.
+        if (isStateEditor && erdToSend) {
+          appendMarkingBoundaryDate(form, "marking_erd", erdToSend);
+        }
+        if (isStateEditor && lrdToSend) {
+          appendMarkingBoundaryDate(form, "marking_lrd", lrdToSend);
+        }
+        for (const file of allImageFiles) {
           form.append("marking_image", file, file.name);
         }
-        form.append("marking_image_tags", JSON.stringify(markingImageTags));
+        form.append("marking_image_tags", JSON.stringify(orderedNewTags));
+        if (imageOrder.length > 0) {
+          form.append("image_order", JSON.stringify(imageOrder));
+        }
         const trimmedComment = contributorComment.trim();
         if (trimmedComment) {
           form.append("contributor_comment", trimmedComment);
@@ -1261,34 +1829,26 @@ const Contribute = () => {
         if ((isEditMarking || isEditContribution) && removedExistingImageKeys.length > 0) {
           form.append("removed_existing_image_keys", JSON.stringify(removedExistingImageKeys));
         }
-        if (isEditMarking) {
-          // existing_image_tags is a {url: "tracing"|"photograph"} map. We
-          // emit it for every image (not just tracings) so an editor who
-          // *unchecks* Tracing on a previously-tagged row can still flip
-          // the value back to photograph; an empty/missing entry would be
-          // ambiguous.
-          const existingTagMap: Record<string, UploadedImageTag> = {};
-          for (const img of existingImages) {
-            existingTagMap[img.url] = tracingToTag(img.tracing);
-          }
-          if (Object.keys(existingTagMap).length > 0) {
-            form.append("existing_image_tags", JSON.stringify(existingTagMap));
-          }
+        if (noMarkingImage) {
+          form.append("no_marking_image", "true");
+        }
+        if (isEditMarking && existingTagMapEntries.length > 0) {
+          const existingTagMap: Record<string, UploadedImageTag> =
+            Object.fromEntries(existingTagMapEntries);
+          form.append("existing_image_tags", JSON.stringify(existingTagMap));
         }
         body = form;
         // Do not set Content-Type so browser sets multipart/form-data with boundary
       } else {
         const trimmedComment = contributorComment.trim();
-        const existingTagMap: Record<string, UploadedImageTag> = {};
-        for (const img of existingImages) {
-          existingTagMap[img.url] = tracingToTag(img.tracing);
-        }
+        const existingTagMap: Record<string, UploadedImageTag> =
+          Object.fromEntries(existingTagMapEntries);
         body = {
           ...(isEditContribution && editContributionId != null
             ? { edit_contribution_id: editContributionId }
             : {}),
           ...(isEditMarking && editMarkingId != null
-            ? { edit_postmark_id: editMarkingId }
+            ? { edit_marking_id: editMarkingId }
             : {}),
           post_office_id: selectedPostOfficeId ?? undefined,
           state: stateVal,
@@ -1303,15 +1863,27 @@ const Contribute = () => {
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
           impression: isManuscriptSelected ? null : impression.trim() || undefined,
-          rate_val: showRateValueField ? rateValue.trim() || undefined : undefined,
+          rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
           desc: description.trim() || undefined,
+          display_submitter_name: displaySubmitterName,
+          ...(canEditCatalogCode && catalogCodeToSend
+            ? { catalog_code: catalogCodeToSend }
+            : {}),
           inscription_txt: inscriptionToSend || undefined,
           reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
           reference_work_details: referenceWorkDetailsToSend.length > 0 ? referenceWorkDetailsToSend : undefined,
           lettering_style_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
           date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
-          marking_image_tags: markingImageTags,
+          ...(isStateEditor && erdToSend
+            ? markingBoundaryDatePayload("marking_erd", erdToSend)
+            : {}),
+          ...(isStateEditor && lrdToSend
+            ? markingBoundaryDatePayload("marking_lrd", lrdToSend)
+            : {}),
+          marking_image_tags: orderedNewTags,
+          ...(noMarkingImage ? { no_marking_image: true } : {}),
+          ...(imageOrder.length > 0 ? { image_order: imageOrder } : {}),
           ...(trimmedComment
             ? { contributor_comment: trimmedComment, comment_for_editor: trimmedComment }
             : {}),
@@ -1404,102 +1976,9 @@ const Contribute = () => {
   const effectiveShapeLabel = String(shape ?? "").trim();
   const isCircularShape = isCircularType(effectiveShapeLabel);
 
-  const removeExistingImageAt = (index: number) => {
-    setExistingImages((prev) => {
-      const target = prev[index];
-      if (target) {
-        setRemovedExistingImageKeys((keys) =>
-          keys.includes(target.url) ? keys : [...keys, target.url],
-        );
-      }
-      return prev.filter((_, i) => i !== index);
-    });
-    if (fieldErrors.images) {
-      setFieldErrors((prev) => ({ ...prev, images: undefined }));
-    }
-  };
-
-  const setExistingImageTracingAt = (index: number, tracing: boolean) => {
-    setExistingImages((prev) =>
-      prev.map((img, i) => (i === index ? { ...img, tracing } : img)),
-    );
-  };
-
-  /** Toggle Tracing on a newly-uploaded marking image. */
-  const setMarkingImageTracingAt = (index: number, tracing: boolean) => {
-    setMarkingImageTags((prev) =>
-      prev.map((t, i) => (i === index ? tracingToTag(tracing) : t)),
-    );
-    if (fieldErrors.imageTags) {
-      setFieldErrors((prev) => ({ ...prev, imageTags: undefined }));
-    }
-  };
-
-  /**
-   * Move a newly-uploaded marking image up (offset=-1) or down (offset=+1).
-   * Reordering files in the markingImageFiles array is what determines their
-   * eventual display_order on the master listing — index 0 becomes the
-   * Catalog Search thumbnail, index 1 the second slot, and so on.
-   */
-  const moveMarkingImageBy = (index: number, offset: -1 | 1) => {
-    const target = index + offset;
-    if (target < 0) return;
-    setMarkingImageFiles((prev) => {
-      if (target >= prev.length) return prev;
-      const next = prev.slice();
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    setMarkingImagePreviews((prev) => {
-      if (target >= prev.length) return prev;
-      const next = prev.slice();
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-    setMarkingImageTags((prev) => {
-      if (target >= prev.length) return prev;
-      const next = prev.slice();
-      [next[index], next[target]] = [next[target], next[index]];
-      return next;
-    });
-  };
-
-  /**
-   * Promote a newly-uploaded image to the front of the list (display_order=0).
-   * This is the lever that controls "which image is the Catalog Search
-   * thumbnail" at submission time — anything else is just secondary order.
-   */
-  const setMarkingImageDefault = (index: number) => {
-    if (index <= 0) return;
-    setMarkingImageFiles((prev) => {
-      if (index >= prev.length) return prev;
-      const next = prev.slice();
-      const [picked] = next.splice(index, 1);
-      next.unshift(picked);
-      return next;
-    });
-    setMarkingImagePreviews((prev) => {
-      if (index >= prev.length) return prev;
-      const next = prev.slice();
-      const [picked] = next.splice(index, 1);
-      next.unshift(picked);
-      return next;
-    });
-    setMarkingImageTags((prev) => {
-      if (index >= prev.length) return prev;
-      const next = prev.slice();
-      const [picked] = next.splice(index, 1);
-      next.unshift(picked);
-      return next;
-    });
-  };
-
   const renderImageUploader = (label: string, helperText: string, required = false) => {
     const inputRef = markingFileInputRef;
-    const previews = markingImagePreviews;
-    const files = markingImageFiles;
-    const tags = markingImageTags;
-    const hasAnyImage = previews.length > 0 || existingImages.length > 0;
+    const hasAnyImage = gallery.length > 0;
     return (
       <div className="space-y-2">
         <Label>
@@ -1510,7 +1989,7 @@ const Contribute = () => {
         {fieldErrors.imageTags && <p className="text-sm text-destructive">{fieldErrors.imageTags}</p>}
         <input
           ref={inputRef}
-          id="postmark-images-input"
+          id="marking-images-input"
           type="file"
           accept={ALLOWED_IMAGE_TYPES.join(",")}
           multiple
@@ -1518,6 +1997,7 @@ const Contribute = () => {
           onChange={handleImageChange}
         />
         <div
+          id="marking-images-zone"
           role="button"
           tabIndex={0}
           onClick={() => inputRef.current?.click()}
@@ -1533,36 +2013,37 @@ const Contribute = () => {
           {hasAnyImage ? (
             <div className="space-y-4">
               {/*
-                Image cards. The combined display order is:
-                  1. Existing images (kept in their current display_order — the
-                     editor reorders the master gallery directly on the
-                     Catalog Detail screen, not via a contribution roundtrip).
-                  2. Newly-uploaded images, in the order the contributor
-                     arranged with the Up / Down / Star controls.
-
-                When BOTH lists are empty, the dropzone helper text shows
-                instead. When only NEW images exist, the first new image
-                becomes the catalog Default (display_order=0, surfaced as
-                the Catalog Search thumbnail and the leading slide on the
-                Record Detail gallery).
+                One combined gallery: already-saved images and newly-uploaded
+                files in a single ordered list. The arrows reorder and the star
+                sets the default across the whole list; index 0 becomes the
+                catalog Default (display_order=0 -- the Catalog Search thumbnail
+                and the leading slide on the Record Detail gallery). The order is
+                sent as image_order and applied at approval.
               */}
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                {existingImages.map((img, i) => {
-                  const isCatalogDefault = i === 0 && existingImages.length > 0;
+                {gallery.map((item, i) => {
+                  const isCatalogDefault = i === 0;
+                  const src = item.kind === "existing" ? item.url : item.previewUrl;
+                  const caption =
+                    item.kind === "existing" ? "Current image" : item.file.name || "New image";
                   return (
                     <div
-                      key={`existing-${img.url}-${i}`}
+                      key={item.key}
                       className="relative rounded border bg-muted/30 overflow-hidden"
                     >
-                      <img
-                        src={img.url}
-                        alt={`Current image ${i + 1}`}
-                        className="w-full aspect-square object-contain max-h-32"
-                      />
+                      {src ? (
+                        <img
+                          src={src}
+                          alt={`${label} image ${i + 1}`}
+                          className="w-full aspect-square object-contain max-h-32"
+                        />
+                      ) : (
+                        <div className="w-full aspect-square max-h-32 flex items-center justify-center text-xs text-muted-foreground">
+                          Loading...
+                        </div>
+                      )}
                       <div className="flex items-center justify-between gap-2 px-2 py-1">
-                        <span className="text-xs text-muted-foreground truncate">
-                          Current image
-                        </span>
+                        <span className="text-xs text-muted-foreground truncate">{caption}</span>
                         {isCatalogDefault && (
                           <span className="text-[10px] uppercase font-semibold text-primary whitespace-nowrap">
                             Default
@@ -1571,92 +2052,21 @@ const Contribute = () => {
                       </div>
                       <div className="flex items-center gap-2 px-2 pb-2">
                         <input
-                          id={`existing-tracing-${i}`}
+                          id={`gallery-tracing-${item.key}`}
                           type="checkbox"
                           className="h-4 w-4 accent-primary cursor-pointer"
-                          checked={img.tracing}
+                          checked={item.tracing}
                           onClick={(e) => e.stopPropagation()}
-                          onChange={(e) =>
-                            setExistingImageTracingAt(i, e.target.checked)
-                          }
+                          onChange={(e) => setGalleryTracingAt(i, e.target.checked)}
                         />
                         <Label
-                          htmlFor={`existing-tracing-${i}`}
+                          htmlFor={`gallery-tracing-${item.key}`}
                           className="text-xs cursor-pointer"
                           onClick={(e) => e.stopPropagation()}
                         >
                           Tracing
                         </Label>
                       </div>
-                      <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        className="absolute top-1 right-1 h-7 w-7 p-0"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          removeExistingImageAt(i);
-                        }}
-                      >
-                        x
-                      </Button>
-                    </div>
-                  );
-                })}
-                {previews.map((preview, i) => {
-                  const isCatalogDefault =
-                    existingImages.length === 0 && i === 0;
-                  const tracing = tagToTracing(tags[i]);
-                  return (
-                    <div
-                      key={`new-${i}`}
-                      className="relative rounded border bg-muted/30 overflow-hidden"
-                    >
-                      <img
-                        src={preview}
-                        alt={`${label} preview ${i + 1}`}
-                        className="w-full aspect-square object-contain max-h-32"
-                      />
-                      <div className="flex items-center justify-between gap-2 px-2 py-1">
-                        <span className="text-xs text-muted-foreground truncate">
-                          {files[i]?.name || "New image"}
-                        </span>
-                        {isCatalogDefault && (
-                          <span className="text-[10px] uppercase font-semibold text-primary whitespace-nowrap">
-                            Default
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 px-2 pb-2">
-                        <input
-                          id={`new-tracing-${i}`}
-                          type="checkbox"
-                          className="h-4 w-4 accent-primary cursor-pointer"
-                          checked={tracing}
-                          onClick={(e) => e.stopPropagation()}
-                          onChange={(e) =>
-                            setMarkingImageTracingAt(i, e.target.checked)
-                          }
-                        />
-                        <Label
-                          htmlFor={`new-tracing-${i}`}
-                          className="text-xs cursor-pointer"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          Tracing
-                        </Label>
-                      </div>
-                      {/*
-                        Reorder + Set-as-default controls. We only expose
-                        these on newly-uploaded images: the order of the
-                        markingImageFiles array IS the display_order at
-                        contribution-apply time, so this is the
-                        contributor's lever for "which image becomes the
-                        Catalog Search thumbnail". Existing images get
-                        reordered by editors on the Record Detail screen
-                        instead (single-source-of-truth via
-                        PATCH /api/v2/images/{id}/).
-                      */}
                       <div className="flex items-center justify-between gap-1 px-2 pb-2">
                         <Button
                           type="button"
@@ -1667,7 +2077,7 @@ const Contribute = () => {
                           disabled={i === 0}
                           onClick={(e) => {
                             e.stopPropagation();
-                            moveMarkingImageBy(i, -1);
+                            moveGalleryBy(i, -1);
                           }}
                         >
                           <ArrowLeft className="h-3.5 w-3.5" />
@@ -1678,10 +2088,10 @@ const Contribute = () => {
                           size="icon"
                           className="h-7 w-7"
                           aria-label="Move image right"
-                          disabled={i === previews.length - 1}
+                          disabled={i === gallery.length - 1}
                           onClick={(e) => {
                             e.stopPropagation();
-                            moveMarkingImageBy(i, 1);
+                            moveGalleryBy(i, 1);
                           }}
                         >
                           <ArrowRight className="h-3.5 w-3.5" />
@@ -1692,17 +2102,11 @@ const Contribute = () => {
                           size="icon"
                           className="h-7 w-7"
                           aria-label="Set as default catalog thumbnail"
-                          title={
-                            isCatalogDefault
-                              ? "Default catalog thumbnail"
-                              : "Set as default catalog thumbnail"
-                          }
-                          disabled={
-                            existingImages.length > 0 || i === 0
-                          }
+                          title="Set as default catalog thumbnail"
+                          disabled={isCatalogDefault}
                           onClick={(e) => {
                             e.stopPropagation();
-                            setMarkingImageDefault(i);
+                            setGalleryDefault(i);
                           }}
                         >
                           <Star
@@ -1717,7 +2121,7 @@ const Contribute = () => {
                         className="absolute top-1 right-1 h-7 w-7 p-0"
                         onClick={(e) => {
                           e.stopPropagation();
-                          removeImageAt(i);
+                          removeGalleryAt(i);
                         }}
                       >
                         x
@@ -1754,9 +2158,114 @@ const Contribute = () => {
             </>
           )}
         </div>
+        <label className="flex items-center gap-2 text-sm">
+          <Checkbox
+            checked={noMarkingImage}
+            onCheckedChange={(v) => setNoMarkingImageChecked(v === true)}
+            disabled={submitting}
+          />
+          No image is available to upload
+        </label>
+        <WrongImageKindWarning
+          expected="MARKING"
+          count={coverLikeImageCount}
+          acknowledged={wrongImageKindAcknowledged}
+          onAcknowledgedChange={setWrongImageKindAcknowledged}
+        />
       </div>
     );
   };
+
+  const renderBoundaryDateFields = (
+    title: string,
+    baseId: string,
+    value: PartialDateInput,
+    setValue: (next: PartialDateInput) => void,
+    error: string | undefined,
+  ) => (
+    <div id={baseId} className="space-y-2">
+      <Label className="text-sm font-normal">{title}</Label>
+      <label className="flex items-center gap-2 text-sm">
+        <Checkbox
+          checked={value.unknown}
+          onCheckedChange={(checked) => {
+            setValue(
+              checked === true
+                ? { unknown: true, year: "", month: "", day: "" }
+                : { ...EMPTY_PARTIAL_DATE },
+            );
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting}
+        />
+        Date unknown
+      </label>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <Select
+          value={value.month || "__none__"}
+          onValueChange={(month) => {
+            setValue({
+              ...value,
+              unknown: false,
+              month: month === "__none__" ? "" : month,
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+        >
+          <SelectTrigger
+            id={`${baseId}-month`}
+            className={error ? "border-destructive" : ""}
+          >
+            <SelectValue placeholder="Month" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__none__">Unknown</SelectItem>
+            {DATE_MONTH_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Input
+          id={`${baseId}-day`}
+          type="text"
+          inputMode="numeric"
+          placeholder="DD"
+          value={value.day}
+          onChange={(e) => {
+            setValue({
+              ...value,
+              unknown: false,
+              day: e.target.value.replace(/\D/g, "").slice(0, 2),
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+          className={error ? "border-destructive" : ""}
+        />
+        <Input
+          id={`${baseId}-year`}
+          type="text"
+          inputMode="numeric"
+          placeholder="YYYY"
+          value={value.year}
+          onChange={(e) => {
+            setValue({
+              ...value,
+              unknown: false,
+              year: e.target.value.replace(/\D/g, "").slice(0, 4),
+            });
+            setFieldErrors((prev) => ({ ...prev, erd: undefined, lrd: undefined }));
+          }}
+          disabled={submitting || value.unknown}
+          className={error ? "border-destructive" : ""}
+        />
+      </div>
+      {error && <p className="text-sm text-destructive">{error}</p>}
+    </div>
+  );
 
 
   return (
@@ -1765,6 +2274,15 @@ const Contribute = () => {
 
       <div className="flex-1 bg-background">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+          {mode === "new" && (
+            <div className="mb-6 flex flex-wrap items-center gap-3">
+              <Button variant="ghost" onClick={handleBackFromNewMarking} className="-ml-4">
+                <ArrowLeft className="mr-2 h-4 w-4" />
+                Back
+              </Button>
+            </div>
+          )}
+
           <div className="mb-8">
             <h1 className="font-heading text-3xl md:text-4xl font-bold text-foreground mb-2">
               {copy.h1}
@@ -1816,7 +2334,7 @@ const Contribute = () => {
                     </div>
                   )}
 
-                  {markingChangedSinceDraft && resumedEditPostmarkId != null && (
+                  {markingChangedSinceDraft && resumedEditMarkingId != null && (
                     <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-4 text-sm text-amber-800 dark:text-amber-200 space-y-3">
                       <p className="leading-relaxed">
                         This marking has been updated since you saved this draft.
@@ -1829,7 +2347,7 @@ const Contribute = () => {
                           size="sm"
                           className="border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40"
                           onClick={() => {
-                            window.open(`/record/${resumedEditPostmarkId}`, "_blank", "noopener,noreferrer");
+                            window.open(`/record/${resumedEditMarkingId}`, "_blank", "noopener,noreferrer");
                           }}
                         >
                           View current marking
@@ -1841,7 +2359,7 @@ const Contribute = () => {
                           className="border-amber-300 text-amber-800 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-200 dark:hover:bg-amber-900/40"
                           disabled={discardingDraft || editContributionId == null}
                           onClick={async () => {
-                            if (editContributionId == null || resumedEditPostmarkId == null) return;
+                            if (editContributionId == null || resumedEditMarkingId == null) return;
                             const ok = window.confirm(
                               "Discard this draft and start over from the current marking? Your saved draft will be deleted.",
                             );
@@ -1852,7 +2370,7 @@ const Contribute = () => {
                                 edit_contribution_id: editContributionId,
                                 abandon_draft: "true",
                               });
-                              navigate(`/contribute/edit/${resumedEditPostmarkId}`, { replace: true });
+                              navigate(`/contribute/edit/${resumedEditMarkingId}`, { replace: true });
                             } catch (err: unknown) {
                               toast({
                                 title: "Could not discard draft",
@@ -2062,6 +2580,7 @@ const Contribute = () => {
                         rows={3}
                         className={fieldErrors.inscriptionText ? "border-destructive" : ""}
                       />
+                      <p className="text-sm text-muted-foreground">{INSCRIPTION_TEXT_HELP}</p>
                       {fieldErrors.inscriptionText && (
                         <p className="text-sm text-destructive">{fieldErrors.inscriptionText}</p>
                       )}
@@ -2127,14 +2646,8 @@ const Contribute = () => {
                       )}
                     </div>
                     {showDateFormatField && <div className="space-y-2">
-                      <Label>
-                        <span
-                          className="cursor-help border-b border-dotted border-muted-foreground/40"
-                          title="Date format is how the date appears in the marking (e.g. month/day order, abbreviations)."
-                        >
-                          Date format
-                        </span>
-                      </Label>
+                      <Label>Date format</Label>
+                      <p className="text-sm text-muted-foreground">{DATE_FORMAT_HELP}</p>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                           <Button
@@ -2147,28 +2660,57 @@ const Contribute = () => {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent className="w-[var(--radix-dropdown-menu-trigger-width)] max-h-64 overflow-auto">
-                          {dateFormatOptions.map((opt) => {
-                            const value = String(opt.id);
-                            const checked = dateFormatIds.includes(value);
-                            return (
-                              <DropdownMenuCheckboxItem
-                                key={opt.id}
-                                checked={checked}
-                                onCheckedChange={(next) => {
-                                  setDateFormatIds((prev) => {
-                                    if (next) return prev.includes(value) ? prev : [...prev, value];
-                                    return prev.filter((id) => id !== value);
-                                  });
-                                  setFieldErrors((prev) => ({ ...prev, dateFormat: undefined }));
-                                }}
-                              >
-                                {opt.description || opt.name}
-                              </DropdownMenuCheckboxItem>
-                            );
-                          })}
+                          <DropdownMenuRadioGroup
+                            value={dateFormatIds[0] ?? ""}
+                            onValueChange={(value) => {
+                              setDateFormatIds(value ? [value] : []);
+                              setFieldErrors((prev) => ({ ...prev, dateFormat: undefined }));
+                            }}
+                          >
+                            {dateFormatOptions.map((opt) => {
+                              const value = String(opt.id);
+                              // opt.description is the code (e.g. "MD"); opt.name
+                              // is its meaning (e.g. "Month / Day"). Show both so
+                              // MD/MDD/YMDD are self-explanatory at the point of choice.
+                              const code = opt.description || opt.name;
+                              const meaning =
+                                opt.name && opt.name !== opt.description ? opt.name : "";
+                              return (
+                                <DropdownMenuRadioItem key={opt.id} value={value}>
+                                  {meaning ? `${code} - ${meaning}` : code}
+                                </DropdownMenuRadioItem>
+                              );
+                            })}
+                          </DropdownMenuRadioGroup>
                         </DropdownMenuContent>
                       </DropdownMenu>
                       {fieldErrors.dateFormat && <p className="text-sm text-destructive">{fieldErrors.dateFormat}</p>}
+                    </div>}
+                    {/* Setting a marking's date is editor-only (issue #27); the
+                        field is hidden for non-editors and the server strips
+                        ERD/LRD from a non-editor's submission. */}
+                    {isStateEditor && <div className="space-y-2">
+                      <Label>Recorded date range</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Enter the earliest (ERD) and latest (LRD) recorded date status. Use
+                        date components when known, or select Date unknown.
+                      </p>
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                        {renderBoundaryDateFields(
+                          "Earliest (ERD)",
+                          "marking-erd",
+                          erd,
+                          setErd,
+                          fieldErrors.erd,
+                        )}
+                        {renderBoundaryDateFields(
+                          "Latest (LRD)",
+                          "marking-lrd",
+                          lrd,
+                          setLrd,
+                          fieldErrors.lrd,
+                        )}
+                      </div>
                     </div>}
                     <div className="space-y-2">
                       <Label htmlFor="description">Description</Label>
@@ -2183,12 +2725,12 @@ const Contribute = () => {
 
                     {showRateValueField && <div className="space-y-2">
                       <Label htmlFor="rate-value">
-                        Rate Value <span className="text-destructive" aria-hidden="true">*</span>
+                        Rate Value (cents) <span className="text-destructive" aria-hidden="true">*</span>
                       </Label>
                       <Input
                         id="rate-value"
                         type="text"
-                        placeholder="e.g. 5"
+                        placeholder="e.g. 3 or 3.5"
                         value={rateValue}
                         onChange={(e) => {
                           setRateValue(e.target.value);
@@ -2202,6 +2744,32 @@ const Contribute = () => {
                         <p className="text-sm text-destructive">{fieldErrors.rateValue}</p>
                       )}
                     </div>}
+
+                    {canEditCatalogCode && (
+                      <div className="space-y-2">
+                        <Label htmlFor="catalog-code">Catalog code</Label>
+                        <Input
+                          id="catalog-code"
+                          value={catalogCode}
+                          onChange={(e) => {
+                            setCatalogCode(e.target.value);
+                            setCatalogCodeTouched(true);
+                            if (catalogCodeError) setCatalogCodeError(null);
+                          }}
+                          onBlur={() => {
+                            if (!catalogCode.trim()) {
+                              setCatalogCodeTouched(false);
+                              void fetchCatalogCodeSuggestion(true);
+                            }
+                          }}
+                          placeholder={catalogCodeLoading ? "Generating..." : "e.g. APMC-VA-M0001"}
+                          disabled={submitting || catalogCodeLoading}
+                        />
+                        {catalogCodeError ? (
+                          <p className="text-sm text-destructive">{catalogCodeError}</p>
+                        ) : null}
+                      </div>
+                    )}
 
                     {isHandstamped && (
                       <>
@@ -2338,7 +2906,7 @@ const Contribute = () => {
                                       });
                                     }}
                                   >
-                                    {work.title || `Reference work #${work.id}`}
+                                    {formatReferenceWorkLabel(work)}
                                   </DropdownMenuCheckboxItem>
                                 );
                               })
@@ -2356,12 +2924,12 @@ const Contribute = () => {
                               <div className="flex items-start justify-between gap-3">
                                 <div className="min-w-0">
                                   <p className="text-sm font-medium text-foreground truncate">
-                                    {work.title || "Untitled"}
+                                    {formatReferenceWorkLabel(work, "Untitled")}
                                   </p>
                                   <p className="text-xs text-muted-foreground truncate">
                                     {[work.authorship, work.publisher]
                                       .filter((x) => (x ?? "").trim() !== "")
-                                      .join(" — ")}
+                                      .join(" -- ")}
                                   </p>
                                 </div>
                                 <Button
@@ -2474,7 +3042,7 @@ const Contribute = () => {
                         <Label>
                           <span
                             className="cursor-help border-b border-dotted border-muted-foreground/40"
-                            title="Lettering style describes the shape/appearance of the letters used in the postmark text."
+                            title="Lettering style describes the shape/appearance of the letters used in the marking text."
                           >
                             Lettering style
                           </span>
@@ -2500,6 +3068,7 @@ const Contribute = () => {
                             })()}
                           </SelectContent>
                         </Select>
+                        <p className="text-sm text-muted-foreground">{LETTERING_HELP}</p>
                         {fieldErrors.lettering && <p className="text-sm text-destructive">{fieldErrors.lettering}</p>}
                       </div>
 
@@ -2537,6 +3106,15 @@ const Contribute = () => {
                       true,
                     )}
 
+                    <label className="flex items-center gap-2 text-sm">
+                      <Checkbox
+                        checked={displaySubmitterName}
+                        onCheckedChange={(v) => setDisplaySubmitterName(v === true)}
+                        disabled={submitting}
+                      />
+                      Would you like your name to display as the submitter?
+                    </label>
+
                     <div className="space-y-2">
                       <Label htmlFor="contributor-comment">Comment for editor</Label>
                       <Textarea
@@ -2549,24 +3127,40 @@ const Contribute = () => {
                     </div>
 
                     <div className="flex flex-col sm:flex-row gap-3">
-                      <Button
-                        type="button"
-                        variant="outline"
-                        className="w-full sm:flex-1"
-                        disabled={submitting || noAssignedStates}
-                        onClick={(e) => {
-                          handleSubmit(e, true);
-                        }}
-                      >
-                        Save as Draft
-                      </Button>
+                      {!isPendingEditContribution && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="w-full sm:flex-1"
+                          disabled={submitting || noAssignedStates}
+                          onClick={(e) => {
+                            handleSubmit(e, true);
+                          }}
+                        >
+                          Save as Draft
+                        </Button>
+                      )}
                       <Button
                         type="submit"
-                        className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        className={
+                          isMarkingEditAction
+                            ? "w-full sm:flex-1 bg-green-800 text-white hover:bg-green-900"
+                            : "w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                        }
                         disabled={submitting || noAssignedStates}
                       >
                         {submitting ? "Submitting..." : copy.button}
                       </Button>
+                      {isMarkingEditAction && (
+                        <Button
+                          type="button"
+                          className="w-full sm:flex-1 bg-primary text-primary-foreground hover:bg-primary/90"
+                          disabled={submitting}
+                          onClick={handleCancelEditing}
+                        >
+                          Cancel Editing
+                        </Button>
+                      )}
                     </div>
                     {isResumingDraft && editContributionId != null && (
                       <div className="pt-2 flex justify-end">
@@ -2582,7 +3176,7 @@ const Contribute = () => {
                             if (!ok) return;
                             setDeletingDraft(true);
                             try {
-                              await deleteDraftContribution(editContributionId);
+                              await deleteOwnContribution(editContributionId);
                               toast({ title: "Draft deleted" });
                               navigate("/dashboard");
                             } catch (err: unknown) {
@@ -2615,18 +3209,11 @@ const Contribute = () => {
                   <CardTitle className="font-heading text-lg">Submission Guidelines</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3 text-sm text-muted-foreground">
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Image Quality:</strong> Provide clear, high-resolution scans or photographs of postmarks.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Accuracy:</strong> Verify all dates, locations, and details before submission.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Reference works:</strong> Include references when available to help verification.
-                  </p>
-                  <p className="leading-relaxed">
-                    <strong className="text-foreground">Review Time:</strong> Most submissions are reviewed within 1-3 business days.
-                  </p>
+                  {MARKING_SUBMISSION_GUIDELINES.map((g) => (
+                    <p key={g.label} className="leading-relaxed">
+                      <strong className="text-foreground">{g.label}:</strong> {g.body}
+                    </p>
+                  ))}
                 </CardContent>
               </Card>
 

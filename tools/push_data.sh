@@ -5,35 +5,124 @@
 # the app runtime can read them without a manual chown dance. With --import,
 # also triggers /srv/woco/tools/reload_data.sh as the wocod user.
 #
-# Prereq on the server: the SSH user (default: mpc) can run `sudo` without a
-# password — blanket passwordless sudo is fine. For a host without blanket
-# sudo, a minimal drop-in would be:
-#   # /etc/sudoers.d/mpc-rsync
-#   mpc ALL=(root) NOPASSWD: /usr/bin/rsync
-#   mpc ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
+# No username is baked into this script. Set WOCO_DEPLOY_USER in the repo-root
+# .env (gitignored; see .env.example), or export WOCO_HOST=user@host to
+# override the full target. Files on the server are always owned by wocod
+# regardless of who pushes.
+#
+# Prereq on the server: your SSH user needs passwordless sudo for exactly the
+# two commands below. Use a scoped drop-in (replace <user> with your SSH user)
+# rather than blanket NOPASSWD -- blanket sudo makes the SSH key root-equivalent:
+#   # /etc/sudoers.d/<user>-rsync
+#   <user> ALL=(root) NOPASSWD: /usr/bin/rsync
+#   <user> ALL=(wocod) NOPASSWD: /srv/woco/tools/reload_data.sh
 #
 # Usage:
 #   ./tools/push_data.sh              # push only
-#   ./tools/push_data.sh --import     # push, then run imports as wocod
+#   ./tools/push_data.sh --import --state VA
+#                                     # push, then import tools/wip/out/v1_va as wocod
+#   ./tools/push_data.sh --import --bundle-dir tools/wip/out/v1_va
+#                                     # push, then import an explicit bundle as wocod
 #   ./tools/push_data.sh --dry-run    # show what rsync would do
+#                                     # (refuses --import: the import is never a dry run)
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST="${WOCO_HOST:-mpc@hellowoco.app}"
-REMOTE_ROOT="${WOCO_REMOTE_ROOT:-/srv/woco}"
-
 DO_IMPORT=0
+DRY_RUN=0
+IMPORT_STATE=""
+IMPORT_BUNDLE=""
 RSYNC_EXTRA=()
-for arg in "$@"; do
-  case "$arg" in
+while [[ $# -gt 0 ]]; do
+  case "$1" in
     --import)  DO_IMPORT=1 ;;
-    --dry-run) RSYNC_EXTRA+=("--dry-run") ;;
+    --dry-run) DRY_RUN=1; RSYNC_EXTRA+=("--dry-run") ;;
+    --state)
+      if [[ -z "${2:-}" || "${2:-}" == --* ]]; then
+        echo "push_data.sh: --state requires a value." >&2
+        exit 2
+      fi
+      IMPORT_STATE="$2"
+      shift
+      ;;
+    --bundle-dir)
+      if [[ -z "${2:-}" || "${2:-}" == --* ]]; then
+        echo "push_data.sh: --bundle-dir requires a value." >&2
+        exit 2
+      fi
+      IMPORT_BUNDLE="$2"
+      shift
+      ;;
     -h|--help)
-      sed -n '2,22p' "$0"; exit 0 ;;
-    *) echo "Unknown flag: $arg" >&2; exit 2 ;;
+      sed -n '2,27p' "$0"; exit 0 ;;
+    *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
+  shift
 done
+
+# --dry-run only previews the rsyncs; there is no dry-run for the import,
+# which truncate-reloads the live DB. Refuse the combination outright.
+if [[ $DRY_RUN -eq 1 && $DO_IMPORT -eq 1 ]]; then
+  echo "push_data.sh: refusing --import with --dry-run; the import step is never a dry run." >&2
+  exit 2
+fi
+
+if [[ -n "$IMPORT_STATE" && -n "$IMPORT_BUNDLE" ]]; then
+  echo "push_data.sh: use either --state or --bundle-dir, not both." >&2
+  exit 2
+fi
+
+if [[ -z "$IMPORT_STATE" && -z "$IMPORT_BUNDLE" && -n "${WOCO_IMPORT_BUNDLE:-}" ]]; then
+  IMPORT_BUNDLE="$WOCO_IMPORT_BUNDLE"
+fi
+
+if [[ -n "$IMPORT_STATE" ]]; then
+  IMPORT_STATE="$(printf '%s' "$IMPORT_STATE" | tr '[:lower:]' '[:upper:]')"
+  if [[ ! "$IMPORT_STATE" =~ ^[A-Z][A-Z]$ ]]; then
+    echo "push_data.sh: --state must be a two-letter abbreviation." >&2
+    exit 2
+  fi
+  IMPORT_BUNDLE="tools/wip/out/v1_$(printf '%s' "$IMPORT_STATE" | tr '[:upper:]' '[:lower:]')"
+fi
+
+if [[ $DO_IMPORT -eq 1 ]]; then
+  if [[ -z "$IMPORT_BUNDLE" ]]; then
+    echo "push_data.sh: --import requires --state, --bundle-dir, or WOCO_IMPORT_BUNDLE." >&2
+    exit 2
+  fi
+  NORMALIZED_IMPORT_BUNDLE="${IMPORT_BUNDLE%/}"
+  if [[ "$NORMALIZED_IMPORT_BUNDLE" == "tools/wip/out" ]]; then
+    echo "push_data.sh: refusing to import bare tools/wip/out." >&2
+    echo "Pass --state STATE or --bundle-dir tools/wip/out/v1_state." >&2
+    exit 2
+  fi
+  if [[ ! -d "$NORMALIZED_IMPORT_BUNDLE" ]]; then
+    echo "push_data.sh: bundle directory not found: $NORMALIZED_IMPORT_BUNDLE" >&2
+    exit 2
+  fi
+  IMPORT_BUNDLE="$NORMALIZED_IMPORT_BUNDLE"
+fi
+
+# Resolve the SSH target. Precedence: WOCO_HOST env > WOCO_DEPLOY_USER env >
+# WOCO_DEPLOY_USER from .env. The .env is extracted with sed, not sourced --
+# it is a Django-style env file whose unquoted values would break bash.
+if [[ -z "${WOCO_DEPLOY_USER:-}" && -f .env ]]; then
+  # Strip any trailing inline comment and whitespace so "alice  # ssh user"
+  # yields "alice" instead of a silently broken SSH target.
+  WOCO_DEPLOY_USER="$(sed -n 's/^WOCO_DEPLOY_USER=\([^#]*\).*/\1/p' .env | tail -1 | tr -d '[:space:]')"
+fi
+if [[ -z "${WOCO_HOST:-}" ]]; then
+  if [[ -z "${WOCO_DEPLOY_USER:-}" ]]; then
+    echo "push_data.sh: no deploy user configured." >&2
+    echo "Set WOCO_DEPLOY_USER=<your-ssh-user> in .env (see .env.example)," >&2
+    echo "or export WOCO_HOST=user@host to override the full target." >&2
+    exit 2
+  fi
+  WOCO_HOST="${WOCO_DEPLOY_USER}@hellowoco.app"
+fi
+HOST="$WOCO_HOST"
+REMOTE_ROOT="${WOCO_REMOTE_ROOT:-/srv/woco}"
 
 # -a           preserve timestamps/symlinks
 # --delete     mirror source (removes server-side files missing locally)
@@ -86,8 +175,8 @@ push_tree "tools/wip"     "${REMOTE_ROOT}/tools/wip"     "${RSYNC_FLAGS_WIP[@]}"
 push_tree "backend/media" "${REMOTE_ROOT}/backend/media" "${RSYNC_FLAGS_MEDIA[@]}"
 
 if [[ $DO_IMPORT -eq 1 ]]; then
-  echo "==> running reload_data.sh as wocod on ${HOST}"
-  ssh -t "$HOST" "sudo -u wocod ${REMOTE_ROOT}/tools/reload_data.sh"
+  echo "==> running reload_data.sh as wocod on ${HOST} for ${IMPORT_BUNDLE}"
+  ssh -t "$HOST" "sudo -u wocod ${REMOTE_ROOT}/tools/reload_data.sh ${IMPORT_BUNDLE}"
 fi
 
 echo "Done."

@@ -1,5 +1,11 @@
 import type { MarkingRecord } from "@/services/markings";
 import { getMarkingListImageUrl, normalizeImageUrl } from "@/services/markings";
+import { formatRateValue } from "@/lib/rateDisplay";
+import {
+  formatDateSeenLike,
+  type DateSeenGranularity,
+} from "@/lib/partialDate";
+import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 
 /** Shown when a catalog field has no value (Catalog Search / Record Detail contract). */
 export const CATALOG_FIELD_EMPTY = "-";
@@ -20,7 +26,7 @@ export function markingTypeLabel(type: string | null | undefined): string {
   return MARKING_TYPE_LABELS[key] ?? "";
 }
 
-function postmarkTextFromRecord(record: MarkingRecord): string {
+function markingTextFromRecord(record: MarkingRecord): string {
   const cat = record.catalogTxt?.trim();
   const ins = record.inscriptionTxt?.trim();
   if (cat && ins) return `${cat} (${ins})`;
@@ -43,6 +49,113 @@ export function formatCatalogDate(value: string | null | undefined): string {
   return s;
 }
 
+const DATE_SEEN_MONTH_LABELS = [
+  "JAN",
+  "FEB",
+  "MAR",
+  "APR",
+  "MAY",
+  "JUN",
+  "JUL",
+  "AUG",
+  "SEP",
+  "OCT",
+  "NOV",
+  "DEC",
+];
+
+function normalizeDateSeenGranularity(
+  value: string | null | undefined,
+): DateSeenGranularity {
+  const s = String(value ?? "").trim().toUpperCase();
+  if (s === "MONTH") return "MONTH";
+  if (s === "YEAR") return "YEAR";
+  return "DAY";
+}
+
+/**
+ * Format a DateSeen row by its stored granularity.
+ * DAY: "1865-08-14" -> "08/14/1865"
+ * MONTH: "1865-08-01" -> "AUG, 1865"
+ * YEAR: "1865-01-01" -> "1865"
+ */
+export function formatDateSeen(
+  value: string | null | undefined,
+  granularity: string | null | undefined,
+  parts?: {
+    dateYear?: number | null;
+    dateMonth?: number | null;
+    dateDay?: number | null;
+  },
+): string {
+  if (
+    parts &&
+    (parts.dateYear != null || parts.dateMonth != null || parts.dateDay != null)
+  ) {
+    return formatDateSeenLike({
+      date: value,
+      granularity,
+      dateYear: parts.dateYear,
+      dateMonth: parts.dateMonth,
+      dateDay: parts.dateDay,
+    });
+  }
+  const rawGranularity = String(granularity ?? "").trim().toUpperCase();
+  if (
+    rawGranularity === "MONTH_ONLY" ||
+    rawGranularity === "DAY_ONLY" ||
+    rawGranularity === "YEAR_DAY" ||
+    rawGranularity === "MONTH_DAY"
+  ) {
+    return formatDateSeenLike({ date: value, granularity });
+  }
+  const s = value != null ? String(value).trim() : "";
+  if (!s) return "";
+  const g = normalizeDateSeenGranularity(granularity);
+  const isoMatch = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/.exec(s);
+  if (g === "YEAR") return isoMatch ? isoMatch[1] : s;
+  if (g === "MONTH") {
+    if (!isoMatch || !isoMatch[2]) return s;
+    const monthIndex = Number(isoMatch[2]) - 1;
+    const monthLabel = DATE_SEEN_MONTH_LABELS[monthIndex];
+    return monthLabel ? `${monthLabel}, ${isoMatch[1]}` : s;
+  }
+  return formatCatalogDate(s) || s;
+}
+
+/**
+ * Format a marking's full set of observed dates into a single "Dates Seen"
+ * string (issue #25). Each row is formatted via formatDateSeen, then de-duped
+ * preserving order. Returns "" unless there are at least TWO distinct dates —
+ * a single date is already conveyed by the Earliest/Latest Seen rows, so the
+ * listing only earns its row when it adds information. The caller (RecordDetail)
+ * decides where to render it; this helper is pure so it can be unit-tested.
+ */
+export function formatDatesSeenList(
+  rows: ReadonlyArray<{
+    date: string | null;
+    granularity: string | null;
+    dateYear?: number | null;
+    dateMonth?: number | null;
+    dateDay?: number | null;
+  }>,
+): string {
+  const seen = new Set<string>();
+  const formatted: string[] = [];
+  for (const row of rows) {
+    const label = formatDateSeen(row.date, row.granularity, {
+      dateYear: row.dateYear,
+      dateMonth: row.dateMonth,
+      dateDay: row.dateDay,
+    });
+    if (label && !seen.has(label)) {
+      seen.add(label);
+      formatted.push(label);
+    }
+  }
+  return formatted.length >= 2 ? formatted.join(", ") : "";
+}
+
 /** Extract the leading 4-digit year from a partial-or-full ISO date. */
 export function yearFromCatalogDate(value: string | null | undefined): string {
   const s = value != null ? String(value).trim() : "";
@@ -59,30 +172,25 @@ export type CatalogFieldValues = {
   regionAbbrev: string;
   manuscript: string;
   desc: string;
-  postmarkTextLines: string[];
-  postmarkTextSingle: string;
+  markingTextLines: string[];
+  markingTextSingle: string;
   shape: string;
   lettering: string;
+  impression: string;
+  irregular: string;
   dimensions: string;
   color: string;
+  rateValue: string;
   earliestSeen: string;
   latestSeen: string;
 };
-
-function isCircleShapeName(shapeName: string | null | undefined): boolean {
-  const s = String(shapeName ?? "").trim().toLowerCase();
-  if (!s) return false;
-  if (s === "c - circle") return true;
-  // Defensive: allow "circle" variants if data differs.
-  return s.includes("circle");
-}
 
 function dimensionsField(record: MarkingRecord): string {
   const w = record.width?.trim() ?? "";
   const h = record.height?.trim() ?? "";
 
   // Circle: display as diameter (Search + Record Detail requirement parity).
-  if (!record.isManuscript && isCircleShapeName(record.shapeName)) {
+  if (!record.isManuscript && isTrueCircleShapeName(record.shapeName)) {
     const d = w || h;
     if (d) return `${d} mm diameter`;
     return "";
@@ -100,13 +208,13 @@ function dimensionsField(record: MarkingRecord): string {
 }
 
 export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValues {
-  const combined = postmarkTextFromRecord(record);
-  const postmarkTextLines = combined
+  const combined = markingTextFromRecord(record);
+  const markingTextLines = combined
     ? combined.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
     : [];
-  const postmarkTextSingle =
-    postmarkTextLines.length <= 1
-      ? displayCatalogField(postmarkTextLines.length === 1 ? postmarkTextLines[0] : combined)
+  const markingTextSingle =
+    markingTextLines.length <= 1
+      ? displayCatalogField(markingTextLines.length === 1 ? markingTextLines[0] : combined)
       : "";
 
   return {
@@ -116,14 +224,23 @@ export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValu
     regionAbbrev: displayCatalogField(record.stateAbbrev),
     manuscript: displayCatalogField(record.isManuscript ? "Yes" : "No"),
     desc: displayCatalogField(record.desc),
-    postmarkTextLines: postmarkTextLines.length > 1 ? postmarkTextLines : [],
-    postmarkTextSingle,
+    markingTextLines: markingTextLines.length > 1 ? markingTextLines : [],
+    markingTextSingle,
     shape: displayCatalogField(record.shapeName),
     lettering: displayCatalogField(record.letteringName),
+    impression: displayCatalogField(record.impression),
+    irregular: displayCatalogField(
+      record.isIrreg == null ? null : record.isIrreg ? "Yes" : "No",
+    ),
     dimensions: displayCatalogField(dimensionsField(record)),
     color: displayCatalogField(record.colorName),
-    earliestSeen: displayCatalogField(yearFromCatalogDate(record.earliestSeen)),
-    latestSeen: displayCatalogField(yearFromCatalogDate(record.latestSeen)),
+    rateValue: displayCatalogField(formatRateValue(record.rateVal)),
+    earliestSeen: displayCatalogField(
+      formatDateSeen(record.earliestSeen, record.earliestSeenGranularity),
+    ),
+    latestSeen: displayCatalogField(
+      formatDateSeen(record.latestSeen, record.latestSeenGranularity),
+    ),
   };
 }
 
@@ -134,27 +251,45 @@ export type CatalogSearchRowDisplay = CatalogFieldValues & {
   image2: string | null;
 };
 
+export function buildCatalogSearchTitleFromParts({
+  town,
+  region,
+  inscription,
+  code,
+}: {
+  town?: string | null;
+  region?: string | null;
+  inscription?: string | null;
+  code?: string | null;
+}): string {
+  const townPart = town?.trim() ?? "";
+  const regionPart = region?.trim() ?? "";
+  const inscriptionPartRaw = inscription?.trim() ?? "";
+  let location = "";
+  if (townPart && regionPart) location = `${townPart}, ${regionPart}`;
+  else if (townPart) location = townPart;
+  else if (regionPart) location = regionPart;
+
+  const inscriptionPart = inscriptionPartRaw ? `"${inscriptionPartRaw}"` : "";
+
+  if (location && inscriptionPart) return `${location} - ${inscriptionPart}`;
+  if (location) return location;
+  if (inscriptionPart) return inscriptionPart;
+  return code?.trim() || CATALOG_FIELD_EMPTY;
+}
+
 /**
  * Build the search-listing title.
  * Format: `<post office>, <region abbrev> - "<inscription>"`.
  * Example: `Williamsburg, VA - "Wmsburg/VA"`.
  */
 function buildSearchTitle(record: MarkingRecord): string {
-  const town = record.postOfficeName?.trim() ?? "";
-  const region = record.stateAbbrev?.trim() ?? "";
-  const inscription = record.inscriptionTxt?.trim() ?? "";
-
-  let location = "";
-  if (town && region) location = `${town}, ${region}`;
-  else if (town) location = town;
-  else if (region) location = region;
-
-  const inscriptionPart = inscription ? `"${inscription}"` : "";
-
-  if (location && inscriptionPart) return `${location} - ${inscriptionPart}`;
-  if (location) return location;
-  if (inscriptionPart) return inscriptionPart;
-  return record.code?.trim() || CATALOG_FIELD_EMPTY;
+  return buildCatalogSearchTitleFromParts({
+    town: record.postOfficeName,
+    region: record.stateAbbrev,
+    inscription: record.inscriptionTxt,
+    code: record.code,
+  });
 }
 
 export function buildCatalogSearchRow(record: MarkingRecord): CatalogSearchRowDisplay {

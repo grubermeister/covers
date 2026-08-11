@@ -8,13 +8,15 @@ When writing a design spec, a bug report, or a stakeholder note about the UI, re
 
 ## UI Vocabulary
 
-Selection rules for the route-level and component-level surfaces currently in use under `frontend/src/`. When a designer, stakeholder, or product writer says "popup," "modal," "side thing," "panel," "screen," or "view," map back to one of these names before responding or implementing. The shadcn library also ships Sheet, Drawer, and AlertDialog primitives. Sheet and Drawer are not used today; AlertDialog is structurally just a Dialog with a confirmation idiom, and we treat destructive confirmations as a Dialog with the canonical Remove / Discard verbs on the action button. None of the three has its own rule here -- add an entry when an actual divergent use case lands, not before.
+Selection rules for the route-level and component-level surfaces currently in use under `frontend/src/`. When a designer, stakeholder, or product writer says "popup," "modal," "side thing," "panel," "screen," or "view," map back to one of these names before responding or implementing.
+
+The shadcn library also ships Sheet, Drawer, and AlertDialog primitives. Sheet and Drawer are not used today. AlertDialog is structurally a Dialog with a confirmation idiom, so destructive confirmations use Dialog with the canonical Remove / Discard verbs on the action button. Add a separate entry for Sheet, Drawer, or AlertDialog only when a divergent use case lands.
 
 **Page.** A top-level route surface, addressable by URL. Examples: Search at `/search`, Record Detail at `/record/:id`, Contributor Dashboard at `/contribute`, Editor Dashboard at `/dashboard`. Use Page, not Screen -- WorldCovers is a web SPA and the codebase organizes top-level routes under `frontend/src/pages/`.
 
 **Dashboard.** A role-specific Page that shows the logged-in user their current work: a Contributor's submissions, an Editor's review queue, an Administrator's system view. Always qualify with the role in copy (Contributor Dashboard, Editor Dashboard) so the user can tell whose dashboard they are looking at.
 
-**Dialog.** Centered, blocking modal. The default choice for any modal interaction that takes a single focused step or a short form, including destructive-confirmation prompts. Examples in code: `CoverDialog`, `EditSubmissionDialog`, `SubmitImageDialog`.
+**Dialog.** Centered, blocking modal. The default choice for any modal interaction that takes a single focused step or a short form, including destructive-confirmation prompts. Examples in code: `CoverDialog`, `EditSubmissionDialog`.
 
 **Card.** Container for a self-contained unit of content inside a list, grid, or summary view: an Entry preview in search results, a Collection summary on the dashboard, a Submission in the review queue. A Card should not contain another Card -- if you find yourself nesting Cards, the inner content probably belongs in a Dialog opened from the outer Card instead.
 
@@ -49,7 +51,7 @@ Patterns that have appeared in user-facing code and must be replaced when encoun
 
 | Replace                                              | With                                            | Notes                                                                                                                                                                              |
 |------------------------------------------------------|-------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| Submit Postmark                                      | Submit Marking                                  | "Postmark" is not a canonical glossary term; "Marking" is. Use the kind-specific verb (Submit Marking, Submit Cover, Submit Image); reserve "Submit Entry" for multi-kind screens. |
+| Submit Townmark                                      | Submit Marking                                  | Use the broader Marking term for the unified TOWNMARK/RATEMARK/AUXMARK form; reserve "Submit Entry" for multi-kind screens.                                                       |
 | Submit for Approval                                  | Submit                                          | Review is implicit in Submit.                                                                                                                                                      |
 | Save changes (on a create flow)                      | Submit Marking / Submit Cover / Submit Image    | It is a creation, not a save -- pick the kind-specific verb.                                                                                                                       |
 | Submission sent                                      | Submission received                             | From the user's perspective.                                                                                                                                                       |

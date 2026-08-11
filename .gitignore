@@ -6,6 +6,8 @@
 
 # Vite cache
 frontend/.vite/
+frontend/coverage/
+*.tsbuildinfo
 
 # Local / legacy data (optional: remove if you want to track)
 frontend/public/Old Data/
@@ -159,6 +161,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+.env
 
 # Spyder project settings
 .spyderproject
@@ -217,6 +220,7 @@ cython_debug/
 #  and can be added to the global gitignore or merged into this file. However, if you prefer, 
 #  you could uncomment the following to ignore the entire vscode folder
 .vscode/
+worldcovers.code-workspace
 
 # Ruff stuff:
 .ruff_cache/
@@ -237,7 +241,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# Frontend (React / Lovable)
+# Frontend (React)
 frontend/node_modules/
 frontend/dist/
 frontend/.env
@@ -258,6 +262,10 @@ tools/wip/in/*
 tools/wip/out/*
 !tools/wip/out/_DELETE.ME
 tools/wip/cache/*
+# Scratch for the multi-state merge cutover (per-state bundles + merged output);
+# regenerable via tools/ascc_data_munger.py + tools/merge_ascc_bundles.py.
+tools/wip/bundles/
+tools/wip/cutover/
 tools/wip/**/*.pdf
 tools/wip/**/*.png
 tools/wip/**/*.jpg
@@ -266,5 +274,4 @@ tools/wip/**/*.jpeg
 /backend/imports
 docs/data/
 docs/.project
-config.bat
-node_modules
+overview.md

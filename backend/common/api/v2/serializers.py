@@ -1,16 +1,23 @@
 ###################################################################################################
 ## WoCo Commons - API v2 Serializers (Phase 2 rewrite)
 ##
-## Unified Marking model: Postmark / Ratemark / Auxmark are now rows in a single
+## Unified Marking model: Townmark / Ratemark / Auxmark are rows in a single
 ## Marking table discriminated by `type`. CoverMarking carries placement.
 ## CoverValuation belongs to Cover. DateSeen is polymorphic over
 ## (subject_type, subject_id) and can be attached to a Cover or a Marking.
 ## Image is polymorphic over (subject_type, subject_id).
 ###################################################################################################
 from django.contrib.auth import get_user_model
+from django.core.exceptions import ValidationError as DjangoValidationError
 
 from rest_framework import serializers
 
+from common.catalog_codes import (
+    CatalogCodeError,
+    strip_catalog_code_keys,
+    validate_unique_catalog_code,
+)
+from common.contribution_consolidation import contribution_target
 from common.models import (
     Citation,
     Collection,
@@ -44,6 +51,20 @@ from .permissions import (
 User = get_user_model()
 
 
+def _viewer_may_see_catalog_code(user) -> bool:
+    if not user or not getattr(user, "is_authenticated", False):
+        return False
+    return bool(user.is_superuser or user.has_perm(REVIEW_CONTRIBUTION_PERM))
+
+
+def _redact_catalog_code(serializer, data):
+    request = serializer.context.get("request") if serializer.context else None
+    user = getattr(request, "user", None)
+    if not _viewer_may_see_catalog_code(user):
+        data["code"] = None
+    return data
+
+
 ###################################################################################################
 ## Lookup / shared
 ###################################################################################################
@@ -73,13 +94,14 @@ class ColorSerializer(serializers.ModelSerializer):
     class Meta:
         model = Color
         fields = "__all__"
-        read_only_fields = ["id", "created_date", "modified_date"]
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class RegionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Region
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class PostOfficeSerializer(serializers.ModelSerializer):
@@ -92,25 +114,28 @@ class PostOfficeSerializer(serializers.ModelSerializer):
     class Meta:
         model = PostOffice
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class LetteringSerializer(serializers.ModelSerializer):
     class Meta:
         model = Lettering
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class ShapeSerializer(serializers.ModelSerializer):
     class Meta:
         model = Shape
         fields = "__all__"
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class ReferenceWorkSerializer(serializers.ModelSerializer):
     class Meta:
         model = ReferenceWork
         fields = "__all__"
-        read_only_fields = ["id", "created_date", "modified_date"]
+        read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
 
 
 class FAQEntrySerializer(serializers.ModelSerializer):
@@ -152,12 +177,15 @@ class ImageSerializer(serializers.ModelSerializer):
             "uploaded_by",
             "image_url",
             "created_date",
+            # Set only by the crop action (issue #77); never client-supplied.
+            "cropped_from",
         ]
         read_only_fields = [
             "image_id",
             "created_date",
             "modified_date",
             "uploaded_by",
+            "cropped_from",
         ]
         # These are always filled server-side when `file` is uploaded. DRF would
         # otherwise require them on the incoming payload before `create()` runs.
@@ -175,7 +203,7 @@ class ImageSerializer(serializers.ModelSerializer):
         # Create: either multipart `file` (normal SPA upload) or a full manual row
         # (imports) with storage_filename + metadata.
         if self.instance is not None:
-            return attrs
+            return self._validate_update(attrs)
         has_file = attrs.get("file") is not None
         if has_file:
             return attrs
@@ -202,6 +230,49 @@ class ImageSerializer(serializers.ModelSerializer):
         if missing:
             raise serializers.ValidationError(
                 {k: "Required when `file` is omitted (import path)." for k in missing}
+            )
+        return attrs
+
+    def _validate_update(self, attrs):
+        """
+        Update path. subject_type/subject_id are writable so editors can move
+        an image between a marking and a cover (issue #48; v1 attached every
+        upload to the marking). subject_id is a plain integer column, so the
+        target's existence must be checked here, and the image_view/subject
+        pairing is validated so a mismatch is a 400 instead of the DB check
+        constraint's 500.
+        """
+        subject_type = attrs.get("subject_type", self.instance.subject_type)
+        subject_id = attrs.get("subject_id", self.instance.subject_id)
+        image_view = attrs.get("image_view", self.instance.image_view)
+
+        subject_changed = (
+            subject_type != self.instance.subject_type
+            or subject_id != self.instance.subject_id
+        )
+        if subject_changed:
+            if subject_type == Image.SUBJECT_MARKING:
+                target_exists = Marking.all_objects.filter(pk=subject_id).exists()
+            else:
+                target_exists = Cover.all_objects.filter(pk=subject_id).exists()
+            if not target_exists:
+                raise serializers.ValidationError(
+                    {"subject_id": f"{subject_type} {subject_id} does not exist."}
+                )
+
+        allowed_views = (
+            Image.MARKING_VIEW_CHOICES
+            if subject_type == Image.SUBJECT_MARKING
+            else Image.COVER_VIEW_CHOICES
+        )
+        if image_view not in allowed_views:
+            raise serializers.ValidationError(
+                {
+                    "image_view": (
+                        f"Must be one of {allowed_views} when "
+                        f"subject_type={subject_type}."
+                    )
+                }
             )
         return attrs
 
@@ -301,8 +372,8 @@ class ImageSerializer(serializers.ModelSerializer):
         like 'va/<uuid>.png'. The public URL is MEDIA_URL + storage_filename,
         e.g. /media/va/<uuid>.png.
 
-        Back-compat: storage_filename starting with 'postmarks/' is from the
-        original v1 layout; those files still live at MEDIA_ROOT/postmarks/...
+        Some imported storage_filename values include their media subdirectory;
+        those files still live under MEDIA_ROOT at that exact path.
         """
         storage = (obj.storage_filename or "").lstrip("/")
         if not storage:
@@ -362,15 +433,67 @@ class DateSeenSerializer(serializers.ModelSerializer):
             "subject_id",
             "date",
             "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
             "created_date",
             "modified_date",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
+        extra_kwargs = {
+            "date": {"required": False, "allow_null": True},
+            "granularity": {"required": False},
+            "date_year": {"required": False, "allow_null": True},
+            "date_month": {"required": False, "allow_null": True},
+            "date_day": {"required": False, "allow_null": True},
+        }
 
     def validate_subject_type(self, value):
         if value not in {DateSeen.SUBJECT_COVER, DateSeen.SUBJECT_MARKING}:
             raise serializers.ValidationError("subject_type must be COVER or MARKING.")
         return value
+
+    def validate(self, attrs):
+        component_keys = {"date_year", "date_month", "date_day"}
+        has_component_input = any(key in attrs for key in component_keys)
+        has_legacy_date_input = "date" in attrs
+
+        values = {}
+        for key in (
+            "subject_type",
+            "subject_id",
+            "date",
+            "granularity",
+            "date_year",
+            "date_month",
+            "date_day",
+        ):
+            if self.instance is not None:
+                values[key] = getattr(self.instance, key)
+            else:
+                values[key] = None
+            if key in attrs:
+                values[key] = attrs[key]
+
+        if has_legacy_date_input and not has_component_input:
+            values["date_year"] = None
+            values["date_month"] = None
+            values["date_day"] = None
+
+        row = DateSeen(**values)
+        try:
+            row.normalize_date_parts()
+        except DjangoValidationError as exc:
+            if hasattr(exc, "message_dict"):
+                raise serializers.ValidationError(exc.message_dict)
+            raise serializers.ValidationError(exc.messages)
+
+        attrs["date"] = row.date
+        attrs["granularity"] = row.granularity
+        attrs["date_year"] = row.date_year
+        attrs["date_month"] = row.date_month
+        attrs["date_day"] = row.date_day
+        return attrs
 
 
 class CoverSerializer(serializers.ModelSerializer):
@@ -381,6 +504,10 @@ class CoverSerializer(serializers.ModelSerializer):
     dates_seen = serializers.SerializerMethodField()
     is_removed = serializers.SerializerMethodField()
     can_remove = serializers.SerializerMethodField()
+    # Derived display name of the submitter (the cover's created_by, i.e. the
+    # contributor). Returned ONLY when the submitter opted in -- privacy is
+    # enforced here at the API boundary, not just hidden in the UI.
+    submitter_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Cover
@@ -394,19 +521,47 @@ class CoverSerializer(serializers.ModelSerializer):
             "height",
             "is_institutional",
             "width",
+            "display_submitter_name",
+            "submitter_name",
+            "description",
             "dates_seen",
             "is_removed",
             "can_remove",
             "created_date",
             "modified_date",
         ]
-        read_only_fields = ["id", "code", "created_date", "modified_date"]
+        # `code` is editor-writable so editors can override the auto-generated
+        # C-{pk} value when importing catalogs that carry their own coding
+        # systems. Cover.save() only auto-assigns when code is falsy, so an
+        # editor-set value sticks across later saves. Contributor write access
+        # is already blocked by the viewset's IsEditorOrAdminWrite permission.
+        read_only_fields = ["id", "created_date", "modified_date"]
+
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
+
+    def validate_code(self, value):
+        code = str(value or "").strip()
+        if not code:
+            return None
+        exclude_id = self.instance.pk if self.instance is not None else None
+        try:
+            return validate_unique_catalog_code(
+                subject_type="COVER",
+                code=code,
+                exclude_id=exclude_id,
+            )
+        except CatalogCodeError as exc:
+            raise serializers.ValidationError(str(exc))
+
+    def get_submitter_name(self, obj):
+        return _submitter_name_for_opted_in_record(obj)
 
     def get_dates_seen(self, obj):
         qs = DateSeen.objects.filter(
             subject_type=DateSeen.SUBJECT_COVER,
             subject_id=obj.pk,
-        ).order_by("date")
+        ).order_by("date", "date_year", "date_month", "date_day", "pk")
         return DateSeenSerializer(qs, many=True).data
 
     def get_is_removed(self, obj):
@@ -510,6 +665,21 @@ def _marking_state_abbrev(marking) -> str:
     return (region.abbrev or "") if region else ""
 
 
+def _marking_regions(marking):
+    """All Regions for a marking's PostOffice (current-first), as serializable
+    dicts. Empty list when there is no post office. Mirrors the single-region
+    helpers above but exposes the town's full multi-territory history."""
+    if not getattr(marking, "post_office_id", None):
+        return []
+    post_office = getattr(marking, "post_office", None)
+    if post_office is None:
+        return []
+    return [
+        {"id": r.id, "name": r.name, "abbrev": r.abbrev, "region_tier": r.region_tier}
+        for r in post_office.regions
+    ]
+
+
 def _viewer_may_see_contribution_notes(user, contribution) -> bool:
     # contribution: Contribution | None. Returns True for any editor/admin/superuser
     # or the contributor who made it. False for anon and unrelated users. This is
@@ -537,6 +707,16 @@ def _comment_for_editor_from(submitted_data) -> str:
     return ""
 
 
+def _submitter_name_for_opted_in_record(obj):
+    if not getattr(obj, "display_submitter_name", False):
+        return None
+    user = getattr(obj, "created_by", None)
+    if user is None:
+        return None
+    full = (user.get_full_name() or "").strip()
+    return full or user.get_username()
+
+
 class MarkingListSerializer(serializers.ModelSerializer):
     """
     Lightweight Marking row used by /api/v2/markings/ list/search.
@@ -554,10 +734,15 @@ class MarkingListSerializer(serializers.ModelSerializer):
     color_name = serializers.CharField(source="color.name", read_only=True, default="")
     post_office_name = serializers.CharField(source="post_office.name", read_only=True, default="")
     earliest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    earliest_seen_cover_id = serializers.IntegerField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    latest_seen_cover_id = serializers.IntegerField(read_only=True, allow_null=True, required=False)
     main_image = serializers.SerializerMethodField()
     second_image = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
+    is_reviewed = serializers.BooleanField(read_only=True)
 
     class Meta:
         model = Marking
@@ -588,14 +773,22 @@ class MarkingListSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "is_reviewed",
             "earliest_seen",
+            "earliest_seen_granularity",
+            "earliest_seen_cover_id",
             "latest_seen",
+            "latest_seen_granularity",
+            "latest_seen_cover_id",
             "main_image",
             "second_image",
         ]
 
     def get_state(self, obj):
         return _marking_state_name(obj)
+
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
 
     def get_state_abbrev(self, obj):
         return _marking_state_abbrev(obj)
@@ -647,13 +840,24 @@ class MarkingSerializer(serializers.ModelSerializer):
     state = serializers.SerializerMethodField()
     state_abbrev = serializers.SerializerMethodField()
     region_name = serializers.SerializerMethodField()
+    regions = serializers.SerializerMethodField()
     town = serializers.CharField(source="post_office.name", read_only=True, default="")
     shape_name = serializers.CharField(source="shape.name", read_only=True, default="")
     lettering_name = serializers.CharField(source="lettering.name", read_only=True, default="")
     color_name = serializers.CharField(source="color.name", read_only=True, default="")
     post_office_name = serializers.CharField(source="post_office.name", read_only=True, default="")
     earliest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    earliest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    earliest_seen_cover_id = serializers.IntegerField(read_only=True, allow_null=True, required=False)
     latest_seen = serializers.DateField(read_only=True, allow_null=True, required=False)
+    latest_seen_granularity = serializers.CharField(read_only=True, allow_null=True, required=False)
+    latest_seen_cover_id = serializers.IntegerField(read_only=True, allow_null=True, required=False)
+    # Full list of MARKING-scoped DateSeen rows (one per observed date the catalog
+    # records), not just the earliest/latest boundary. Exposed only on the detail
+    # serializer so the UI can show a "Dates Seen" listing when a marking has
+    # multiple dates (issue #25); kept off MarkingListSerializer to avoid an
+    # N+1 query on search. Mirrors CoverSerializer.get_dates_seen.
+    dates_seen = serializers.SerializerMethodField()
     images = serializers.SerializerMethodField()
     citations = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
@@ -663,6 +867,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     can_remove = serializers.SerializerMethodField()
     comment_for_editor = serializers.SerializerMethodField()
     editor_feedback = serializers.SerializerMethodField()
+    submitter_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Marking
@@ -693,8 +898,15 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color_name",
             "post_office_name",
             "region_name",
+            "regions",
+            "is_reviewed",
             "earliest_seen",
+            "earliest_seen_granularity",
+            "earliest_seen_cover_id",
             "latest_seen",
+            "latest_seen_granularity",
+            "latest_seen_cover_id",
+            "dates_seen",
             "images",
             "citations",
             "created_date",
@@ -705,8 +917,27 @@ class MarkingSerializer(serializers.ModelSerializer):
             "can_remove",
             "comment_for_editor",
             "editor_feedback",
+            "display_submitter_name",
+            "submitter_name",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
+
+    def to_representation(self, instance):
+        return _redact_catalog_code(self, super().to_representation(instance))
+
+    def validate_code(self, value):
+        code = str(value or "").strip()
+        if not code:
+            return None
+        exclude_id = self.instance.pk if self.instance is not None else None
+        try:
+            return validate_unique_catalog_code(
+                subject_type="MARKING",
+                code=code,
+                exclude_id=exclude_id,
+            )
+        except CatalogCodeError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def get_is_removed(self, obj):
         return MarkingRecycleBin.objects.filter(marking_id=obj.pk).exists()
@@ -717,6 +948,9 @@ class MarkingSerializer(serializers.ModelSerializer):
         if user is None:
             return False
         return _user_is_responsible_for_marking(user, obj)
+
+    def get_submitter_name(self, obj):
+        return _submitter_name_for_opted_in_record(obj)
 
     def get_editor_feedback(self, obj):
         request = self.context.get("request")
@@ -742,6 +976,16 @@ class MarkingSerializer(serializers.ModelSerializer):
 
     def get_region_name(self, obj):
         return _marking_state_name(obj)
+
+    def get_regions(self, obj):
+        return _marking_regions(obj)
+
+    def get_dates_seen(self, obj):
+        qs = DateSeen.objects.filter(
+            subject_type=DateSeen.SUBJECT_MARKING,
+            subject_id=obj.pk,
+        ).order_by("date", "date_year", "date_month", "date_day", "pk")
+        return DateSeenSerializer(qs, many=True).data
 
     def get_images(self, obj):
         rows = Image.objects.filter(
@@ -780,7 +1024,7 @@ def _contribution_submitted_data_is_cover(sd) -> bool:
     kind = str(sd.get("submission_kind") or sd.get("submissionKind") or "").strip().lower()
     if kind == "cover":
         return True
-    if kind in {"marking", "postmark", "townmark", "ratemark", "auxmark"}:
+    if kind in {"marking", "townmark", "ratemark", "auxmark"}:
         return False
     type_value = str(sd.get("type") or "").strip().upper()
     has_cover_type = type_value in {"FC", "FL"}
@@ -788,8 +1032,92 @@ def _contribution_submitted_data_is_cover(sd) -> bool:
     has_town = bool(str(sd.get("town") or "").strip())
     parent_raw = sd.get("parent_marking_id") or sd.get("marking_id")
     has_parent = parent_raw not in (None, "")
-    has_cover_date = bool(str(sd.get("cover_date") or sd.get("coverDate") or "").strip())
+    has_cover_date = _submitted_cover_date_label(sd) != ""
     return bool(has_parent and (has_cover_type or has_cover_date) and not has_town and not has_marking_type)
+
+
+_MONTH_LABELS = {
+    1: "JAN",
+    2: "FEB",
+    3: "MAR",
+    4: "APR",
+    5: "MAY",
+    6: "JUN",
+    7: "JUL",
+    8: "AUG",
+    9: "SEP",
+    10: "OCT",
+    11: "NOV",
+    12: "DEC",
+}
+
+
+def _submitted_cover_date_component(sd, key):
+    raw = sd.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _submitted_cover_date_label(sd) -> str:
+    if str(sd.get("cover_date_unknown") or "").strip().lower() in {"true", "1", "yes", "on"}:
+        return "Date unknown"
+    legacy = str(sd.get("cover_date") or sd.get("coverDate") or "").strip()
+    if legacy:
+        granularity = str(sd.get("cover_granularity") or sd.get("coverGranularity") or "DAY").strip().upper()
+        parts = legacy.split("-")
+        if len(parts) >= 1 and granularity == "YEAR":
+            return parts[0]
+        if len(parts) >= 2 and granularity == "MONTH":
+            month = _MONTH_LABELS.get(_submitted_cover_date_component({"m": parts[1]}, "m"))
+            return "{}, {}".format(month, parts[0]) if month else legacy
+        return legacy
+    year = _submitted_cover_date_component(sd, "cover_date_year")
+    month = _submitted_cover_date_component(sd, "cover_date_month")
+    day = _submitted_cover_date_component(sd, "cover_date_day")
+    month_label = _MONTH_LABELS.get(month)
+    if year is not None and month_label and day is not None:
+        return "{:02d}/{:02d}/{}".format(month, day, year)
+    if year is not None and month_label:
+        return "{}, {}".format(month_label, year)
+    if year is not None and day is not None:
+        return "Day {}, {} (month unknown)".format(day, year)
+    if month_label and day is not None:
+        return "{} {} (year unknown)".format(month_label, day)
+    if year is not None:
+        return str(year)
+    if month_label:
+        return "{} (year unknown)".format(month_label)
+    if day is not None:
+        return "Day {} (month/year unknown)".format(day)
+    return ""
+
+
+def _contribution_target_marking_id(obj):
+    sd = obj.submitted_data or {}
+    if _contribution_submitted_data_is_cover(sd):
+        raw = sd.get("parent_marking_id") or sd.get("marking_id")
+        if raw in (None, ""):
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return None
+        return value if value > 0 else None
+    target = contribution_target(obj)
+    if target is None or target.kind != "marking":
+        return None
+    return target.id
+
+
+def _contribution_target_cover_id(obj):
+    target = contribution_target(obj)
+    if target is None or target.kind != "cover":
+        return None
+    return target.id
 
 
 class ContributionListSerializer(serializers.ModelSerializer):
@@ -797,10 +1125,16 @@ class ContributionListSerializer(serializers.ModelSerializer):
     contributor_username = serializers.CharField(source="contributor.username", read_only=True)
     reviewer_username = serializers.CharField(source="reviewer.username", read_only=True, allow_null=True)
     marking_id = serializers.SerializerMethodField()
+    cover_id = serializers.SerializerMethodField()
     state_display = serializers.SerializerMethodField()
     town_display = serializers.SerializerMethodField()
     type_display = serializers.SerializerMethodField()
     display_name = serializers.SerializerMethodField()
+    # Wire format kept as created_at / updated_at for frontend stability; the
+    # underlying model fields are created_date / modified_date from
+    # TimestampedModel.
+    created_at = serializers.DateTimeField(source="created_date", read_only=True)
+    updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
 
     class Meta:
         model = Contribution
@@ -810,6 +1144,7 @@ class ContributionListSerializer(serializers.ModelSerializer):
             "contributor_username",
             "marking",
             "marking_id",
+            "cover_id",
             "collection",
             "status",
             "reviewer",
@@ -826,7 +1161,20 @@ class ContributionListSerializer(serializers.ModelSerializer):
         read_only_fields = ["id", "created_at", "updated_at"]
 
     def get_marking_id(self, obj):
-        return obj.marking_id if obj.marking_id else None
+        return _contribution_target_marking_id(obj)
+
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request") if self.context else None
+        user = getattr(request, "user", None)
+        if not _viewer_may_see_catalog_code(user):
+            submitted = data.get("submitted_data")
+            if isinstance(submitted, dict):
+                data["submitted_data"] = strip_catalog_code_keys(submitted)
+        return data
+
+    def get_cover_id(self, obj):
+        return _contribution_target_cover_id(obj)
 
     def get_state_display(self, obj):
         return (obj.submitted_data or {}).get("state", "-")
@@ -844,14 +1192,14 @@ class ContributionListSerializer(serializers.ModelSerializer):
             cover_types = {"FC": "Folded Cover", "FL": "Folded Letter"}
             type_code = str(sd.get("type") or "").strip().upper()
             type_label = cover_types.get(type_code, type_code or "Cover")
-            date = str(sd.get("cover_date") or sd.get("coverDate") or "").strip()
+            date = _submitted_cover_date_label(sd)
             parent = sd.get("parent_marking_id") or sd.get("marking_id")
             parts = ["Cover draft", type_label]
             if date:
                 parts.append(date)
             if parent not in (None, ""):
                 parts.append(f"Marking #{parent}")
-            label = " · ".join([p for p in parts if p])
+            label = " - ".join([p for p in parts if p])
             return label or f"Cover draft #{obj.id}"
 
         town = (sd.get("town") or "").strip()
@@ -865,6 +1213,10 @@ class ContributionListSerializer(serializers.ModelSerializer):
 class ContributionDetailSerializer(serializers.ModelSerializer):
     contributor_username = serializers.CharField(source="contributor.username", read_only=True)
     reviewer_username = serializers.CharField(source="reviewer.username", read_only=True, allow_null=True)
+    marking_id = serializers.SerializerMethodField()
+    cover_id = serializers.SerializerMethodField()
+    created_at = serializers.DateTimeField(source="created_date", read_only=True)
+    updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
 
     class Meta:
         model = Contribution
@@ -873,6 +1225,8 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
             "contributor",
             "contributor_username",
             "marking",
+            "marking_id",
+            "cover_id",
             "collection",
             "submitted_data",
             "status",
@@ -884,10 +1238,27 @@ class ContributionDetailSerializer(serializers.ModelSerializer):
         ]
         read_only_fields = ["id", "contributor", "marking", "created_at"]
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        request = self.context.get("request") if self.context else None
+        user = getattr(request, "user", None)
+        if not _viewer_may_see_catalog_code(user):
+            submitted = data.get("submitted_data")
+            if isinstance(submitted, dict):
+                data["submitted_data"] = strip_catalog_code_keys(submitted)
+        return data
+
+    def get_marking_id(self, obj):
+        return _contribution_target_marking_id(obj)
+
+    def get_cover_id(self, obj):
+        return _contribution_target_cover_id(obj)
+
 
 class ContributionApproveRejectSerializer(serializers.Serializer):
     """Payload for approve / reject actions."""
     review_notes = serializers.CharField(required=False, allow_blank=True)
+    catalog_code = serializers.CharField(required=False, allow_blank=True)
 
 
 ###################################################################################################

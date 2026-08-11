@@ -1,8 +1,6 @@
 """
-Load an ASCC bundle (a directory of Django-shape CSVs produced by
-tools/apmc_data_munger.ipynb) into the catalog tables in dependency
-order using the django-import-export Resource classes registered in
-common.admin.
+Load an ASCC bundle into the catalog tables in dependency order using the
+django-import-export Resource classes registered in common.admin.
 
 Expected layout:
     <directory>/
@@ -21,36 +19,35 @@ Expected layout:
         citations.csv
         images.csv
 
-    Three cover-related stems are optional because the munger no
-    longer auto-creates a Cover per listing; users author Covers,
-    CoverMarkings, and CoverValuations by hand after the bundle has
-    been imported. A bundle that omits those CSVs entirely still loads
+    The three cover-related stems remain optional for older or hand-built
+    bundles. Current munger bundles emit Covers and CoverMarkings for
+    institutional listings marked with a leading star, but do not emit
+    CoverValuations. A bundle that omits those CSVs entirely still loads
     cleanly. (When --allow-missing is set, ANY stem may be absent.)
 
-    dates_seen.csv is polymorphic: each row carries subject_type
-    (COVER | MARKING) and subject_id (the Cover or Marking pk). The
-    munger now emits MARKING-scoped rows anchored to the listing's
-    markings (one DateSeen per parsed date per marking in the
-    listing), since under the new policy there is no auto-created
-    Cover to anchor dates to.
+    dates_seen.csv, citations.csv, and images.csv are polymorphic: each row
+    carries subject_type (COVER | MARKING), and subject_id contains the
+    Cover.code or Marking.code. Resource hooks resolve those codes to PKs.
 
-Each CSV is in "Django shape": every row carries an explicit `id`,
-audit columns (created_date, modified_date, created_by, modified_by),
-and integer FK columns referencing the parent table's `id`. There is
-no per-row transformation in this command -- the Resource classes
-handle parsing, FK resolution, and persistence.
+Each CSV is in natural-key import shape: Django auto-assigns primary keys,
+audit columns are preserved, and FK columns use names/codes instead of
+integer IDs. Re-importing an existing natural-key row skips it.
 
 Usage:
     python manage.py import_ascc_bundle ./tools/wip/out/
     python manage.py import_ascc_bundle ./out/ --only markings,covers
     python manage.py import_ascc_bundle ./out/ --dry-run
 """
+import csv
+import json
 import os
-import sys
-
 import tablib
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
 from django.db import connection, transaction
+from import_export.results import RowResult
+
+from common.date_range import suppress_date_range_recompute
 
 from common.admin import (
     CitationResource,
@@ -68,7 +65,7 @@ from common.admin import (
     RegionResource,
     ShapeResource,
 )
-from common.models import Collection, Region
+from common.models import Collection, CollectionAssignment, Region
 
 
 # Stem -> Resource class. The stem is the CSV basename without extension.
@@ -94,7 +91,7 @@ RESOURCES = {
 #   reference_works                         -- leaf lookup (citation parent)
 #   post_offices                            -- depends on nothing (region link is in junction)
 #   post_office_regions                     -- depends on post_offices and regions
-#   markings                                -- depends on shape, lettering, color, post_office
+#   markings                                -- depends on shape, lettering, optional color, post_office
 #   covers                                  -- depends on color
 #   cover_valuations                        -- depends on cover
 #   dates_seen                              -- polymorphic; depends on cover and/or marking
@@ -119,16 +116,20 @@ ASCC_LOAD_ORDER = (
 )
 
 # Stems whose CSV may be absent from the bundle without --allow-missing.
-# Reason: the munger no longer auto-creates Covers and therefore does not
-# emit CoverMarking or CoverValuation rows either. Bundles produced after
-# that change omit these three files; older bundles still include them
-# and load normally. dates_seen.csv is NOT optional: under the new policy
-# the munger emits MARKING-scoped DateSeen rows anchored to markings.
+# Older and hand-built bundles may omit all cover-side files. Current munger
+# bundles emit Covers and CoverMarkings only for institutional listings and
+# still omit CoverValuations. dates_seen.csv is NOT optional: the munger emits
+# MARKING-scoped DateSeen rows anchored to markings.
 OPTIONAL_STEMS = frozenset({
     "covers",
     "cover_markings",
     "cover_valuations",
 })
+
+TRUNCATE_EXTRA_MODELS = (
+    CollectionAssignment,
+    Collection,
+)
 
 
 def _load_dataset(path):
@@ -190,6 +191,11 @@ def _ensure_collections_for_regions(stdout):
 def _summarize_errors(result, max_errors=5):
     """Return a list of human-readable strings for the first N row/validation errors."""
     out = []
+    # Resource-level errors, for example missing import_id_fields headers.
+    for err in getattr(result, "base_errors", []):
+        out.append(f"base error: {err.error!s}")
+        if len(out) >= max_errors:
+            return out
     # Row-level exceptions (e.g. FK lookup failed, type cast failed)
     for row_num, errs in result.row_errors():
         for e in errs:
@@ -202,6 +208,85 @@ def _summarize_errors(result, max_errors=5):
         if len(out) >= max_errors:
             return out
     return out
+
+
+def _skip_report_path(directory, option_value):
+    """Return the CSV path used for skipped row diagnostics."""
+    if option_value:
+        return option_value
+    return os.path.join(directory, "import_ascc_bundle_skips.csv")
+
+
+def _source_row_key(row_values):
+    """Return the most useful natural key visible in an import row."""
+    if not isinstance(row_values, dict):
+        return ""
+    for key in (
+        "code",
+        "name",
+        "subject_id",
+        "cover",
+        "cover_code",
+        "marking",
+        "marking_code",
+        "post_office",
+        "region",
+        "reference_work",
+    ):
+        value = str(row_values.get(key) or "").strip()
+        if value:
+            return f"{key}={value}"
+    return ""
+
+
+def _dataset_rows(dataset):
+    """Return import rows exactly as they appeared in the source CSV."""
+    headers = list(dataset.headers or [])
+    return [dict(zip(headers, row)) for row in dataset]
+
+
+def _append_skipped_rows(skipped_rows, stem, result, dataset):
+    """Append skipped row diagnostics from a django-import-export result."""
+    source_rows = _dataset_rows(dataset)
+    for row_number, row_result in enumerate(result.rows, start=1):
+        if row_result.import_type != RowResult.IMPORT_TYPE_SKIP:
+            continue
+        row_values = {}
+        if row_number <= len(source_rows):
+            row_values = source_rows[row_number - 1]
+        if not row_values:
+            row_values = row_result.row_values or {}
+        skipped_rows.append({
+            "stem": stem,
+            "row_number": row_number,
+            "source_key": _source_row_key(row_values),
+            "object_id": row_result.object_id or "",
+            "object_repr": row_result.object_repr or "",
+            "row_values_json": json.dumps(
+                row_values,
+                ensure_ascii=True,
+                sort_keys=True,
+                default=str,
+            ),
+        })
+
+
+def _write_skip_report(path, rows):
+    """Write skipped import rows to a CSV report."""
+    fieldnames = [
+        "stem",
+        "row_number",
+        "source_key",
+        "object_id",
+        "object_repr",
+        "row_values_json",
+    ]
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
 
 
 class Command(BaseCommand):
@@ -241,10 +326,18 @@ class Command(BaseCommand):
             "--truncate",
             action="store_true",
             help=(
-                "Before importing, delete every row from all 14 ASCC catalog "
-                "tables in reverse dependency order. Incompatible with --only "
-                "(a partial truncate would hit FK constraints). Under --dry-run "
-                "the truncate is rolled back too."
+                "Before importing, delete every row from all ASCC catalog "
+                "tables plus generated Collection wrappers. Incompatible with "
+                "--only (a partial truncate would hit FK constraints). Under "
+                "--dry-run the truncate is rolled back too."
+            ),
+        )
+        parser.add_argument(
+            "--skip-report",
+            default=None,
+            help=(
+                "Path for skipped-row diagnostics. Defaults to "
+                "<directory>/import_ascc_bundle_skips.csv."
             ),
         )
 
@@ -287,6 +380,8 @@ class Command(BaseCommand):
             raise CommandError(f"Missing CSV: {path}")
 
         totals = {"new": 0, "update": 0, "skip": 0, "invalid": 0, "error": 0}
+        skipped_rows = []
+        skip_report = _skip_report_path(directory, options["skip_report"])
         is_mysql = connection.vendor == "mysql"
 
         # Single outer transaction covers truncate + every per-stem import.
@@ -296,10 +391,13 @@ class Command(BaseCommand):
         # uses set_rollback(True) at the end of a successful pass for the
         # same effect.
         try:
-            with transaction.atomic():
+            # suppress_date_range_recompute: skip per-row cache refreshes from
+            # the DateSeen/CoverMarking signal receivers during the bulk load;
+            # one set-based recompute below covers the whole bundle.
+            with transaction.atomic(), suppress_date_range_recompute():
                 if truncate:
                     self.stdout.write(self.style.NOTICE(
-                        "Truncating 14 ASCC catalog tables in reverse dependency order..."
+                        "Truncating ASCC catalog and collection tables..."
                     ))
                     # Raw DELETE FROM with FOREIGN_KEY_CHECKS off (MySQL) so
                     # the wipe bypasses on_delete=PROTECT FKs from outside-
@@ -311,6 +409,12 @@ class Command(BaseCommand):
                         if is_mysql:
                             cursor.execute("SET FOREIGN_KEY_CHECKS = 0")
                         try:
+                            for model in TRUNCATE_EXTRA_MODELS:
+                                table = model._meta.db_table
+                                cursor.execute(f"DELETE FROM `{table}`")
+                                self.stdout.write(
+                                    f"  truncate {table:<18s} deleted={cursor.rowcount}"
+                                )
                             for stem in reversed(ASCC_LOAD_ORDER):
                                 model = RESOURCES[stem]._meta.model
                                 table = model._meta.db_table
@@ -332,6 +436,7 @@ class Command(BaseCommand):
 
                     dataset = _load_dataset(path)
                     resource = RESOURCES[stem]()
+                    resource._meta.store_row_values = True
 
                     try:
                         # Always pass dry_run=False to django-import-export.
@@ -365,6 +470,8 @@ class Command(BaseCommand):
                     totals["skip"] += skip
                     totals["invalid"] += invalid
                     totals["error"] += error
+                    if skip:
+                        _append_skipped_rows(skipped_rows, stem, result, dataset)
 
                     self.stdout.write(
                         f"  {stem:<18s}  new={new:>5d}  update={update:>5d}  "
@@ -393,6 +500,12 @@ class Command(BaseCommand):
                 if "regions" in order:
                     _ensure_collections_for_regions(self.stdout)
 
+                # Refresh the marking date-range cache columns in one
+                # set-based pass (issue #59). Inside the outer atomic so a
+                # failed/dry-run bundle rolls this back with everything else.
+                self.stdout.write("  recomputing marking date-range cache...")
+                call_command("recompute_marking_date_ranges", "--all")
+
                 # Successful pass through every stem. Under --dry-run, mark
                 # the outer transaction for rollback so the bundle never
                 # commits.
@@ -404,6 +517,8 @@ class Command(BaseCommand):
             ))
             raise
 
+        _write_skip_report(skip_report, skipped_rows)
+
         self.stdout.write("")
         summary = (
             f"Done. new={totals['new']}  update={totals['update']}  "
@@ -413,3 +528,4 @@ class Command(BaseCommand):
         if dry_run:
             summary = "[DRY RUN] " + summary
         self.stdout.write(self.style.SUCCESS(summary))
+        self.stdout.write(f"Skipped-row report: {skip_report} ({len(skipped_rows)} row(s))")

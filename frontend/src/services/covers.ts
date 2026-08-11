@@ -4,13 +4,14 @@
  * add/edit dialog on the Record Detail page.
  */
 import apiClient, { ensureCsrfToken } from "@/lib/api";
+import type { DateSeenGranularity as PartialDateSeenGranularity } from "@/lib/partialDate";
 
 /** One item from GET /covers/ (DRF snake_case) */
 export interface CoverApiResultItem {
   cover_id: number;
   cover_key: string;
   owner_username: string;
-  postmark_count: number;
+  marking_count: number;
   created_date: string;
 }
 
@@ -27,7 +28,7 @@ export interface CoverRecord {
   id: number;
   coverKey: string;
   ownerUsername: string;
-  postmarkCount: number;
+  markingCount: number;
   createdDate: string;
 }
 
@@ -36,7 +37,7 @@ function mapApiResultToRecord(item: CoverApiResultItem): CoverRecord {
     id: item.cover_id,
     coverKey: item.cover_key,
     ownerUsername: item.owner_username,
-    postmarkCount: item.postmark_count,
+    markingCount: item.marking_count,
     createdDate: item.created_date,
   };
 }
@@ -58,10 +59,10 @@ export async function getCovers(): Promise<CoverRecord[]> {
  *
  * The backend exposes three sibling resources that together describe a
  * marking's covers:
- *   * /covers/         — the Cover row itself (code, color, type, dims, …)
- *   * /cover-markings/ — the link row tying a Cover to a Marking, with
+ *   * /covers/         -- the Cover row itself (code, color, type, dims, ...)
+ *   * /cover-markings/ -- the link row tying a Cover to a Marking, with
  *                        is_backstamp/placement
- *   * /dates-seen/     — polymorphic date rows (subject_type=COVER, subject_id=cover pk)
+ *   * /dates-seen/     -- polymorphic date rows (subject_type=COVER, subject_id=cover pk)
  *
  * The dialog drives all three from a single form, so the helpers below are
  * intentionally thin: they each map to one HTTP verb on one resource. The
@@ -100,7 +101,7 @@ export interface CoverWriteResult {
   height: string | null;
 }
 
-/** POST /covers/ — create a new Cover row. */
+/** POST /covers/ -- create a new Cover row. */
 export async function createCover(
   payload: CoverWritePayload,
 ): Promise<CoverWriteResult> {
@@ -109,7 +110,7 @@ export async function createCover(
   return res.data;
 }
 
-/** PATCH /covers/{id}/ — partial update of an existing Cover row. */
+/** PATCH /covers/{id}/ -- partial update of an existing Cover row. */
 export async function updateCover(
   id: number,
   payload: CoverWritePayload,
@@ -143,7 +144,7 @@ export interface CoverMarkingWriteResult {
   placement: string | null;
 }
 
-/** POST /cover-markings/ — link a Cover to a Marking. */
+/** POST /cover-markings/ -- link a Cover to a Marking. */
 export async function createCoverMarking(
   payload: CoverMarkingWritePayload,
 ): Promise<CoverMarkingWriteResult> {
@@ -155,7 +156,7 @@ export async function createCoverMarking(
   return res.data;
 }
 
-/** PATCH /cover-markings/{id}/ — update is_backstamp/placement. */
+/** PATCH /cover-markings/{id}/ -- update is_backstamp/placement. */
 export async function updateCoverMarking(
   id: number,
   payload: CoverMarkingWritePayload,
@@ -169,7 +170,7 @@ export async function updateCoverMarking(
 }
 
 /** Granularity matches DateSeen.GRANULARITY_CHOICES on the backend. */
-export type CoverDateGranularity = "DAY" | "MONTH" | "YEAR";
+export type CoverDateGranularity = PartialDateSeenGranularity;
 
 /** Body for creating a cover-scoped date via POST /dates-seen/. */
 export interface CoverDateWritePayload {
@@ -191,8 +192,11 @@ type DateSeenApiRow = {
   id: number;
   subject_type?: string;
   subject_id?: number;
-  date: string;
+  date: string | null;
   granularity: CoverDateGranularity;
+  date_year?: number | null;
+  date_month?: number | null;
+  date_day?: number | null;
 };
 
 function mapDateSeenToCoverDate(row: DateSeenApiRow): CoverDateWriteResult {
@@ -200,12 +204,12 @@ function mapDateSeenToCoverDate(row: DateSeenApiRow): CoverDateWriteResult {
   return {
     id: row.id,
     cover: typeof subjectId === "number" ? subjectId : 0,
-    date: row.date,
+    date: row.date ?? "",
     granularity: row.granularity,
   };
 }
 
-/** POST /dates-seen/ — attach a date observation to a Cover. */
+/** POST /dates-seen/ -- attach a date observation to a Cover. */
 export async function createCoverDate(
   payload: CoverDateWritePayload,
 ): Promise<CoverDateWriteResult> {
@@ -223,7 +227,7 @@ export async function createCoverDate(
   return mapDateSeenToCoverDate(res.data);
 }
 
-/** PATCH /dates-seen/{id}/ — adjust date or granularity in place. */
+/** PATCH /dates-seen/{id}/ -- adjust date or granularity in place. */
 export async function updateCoverDate(
   id: number,
   payload: CoverDateWritePayload,
@@ -236,15 +240,14 @@ export async function updateCoverDate(
   return mapDateSeenToCoverDate(res.data);
 }
 
-/** DELETE /dates-seen/{id}/ — remove a single date row. */
+/** DELETE /dates-seen/{id}/ -- remove a single date row. */
 export async function deleteCoverDate(id: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/dates-seen/${id}/`);
 }
 
-// Aliases for the in-progress DateSeen rename. CoverDialog and newer
-// callers use these names; CoverEdit still uses CoverDate*. Both point
-// at the same exports.
+// Aliases for the in-progress DateSeen rename. Newer callers use these names;
+// CoverEdit still uses CoverDate*. Both point at the same exports.
 export type DateSeenGranularity = CoverDateGranularity;
 export type DateSeenWritePayload = CoverDateWritePayload;
 export type DateSeenWriteResult = CoverDateWriteResult;
@@ -258,8 +261,11 @@ export const deleteDateSeen = deleteCoverDate;
 
 export interface CoverDateSeenItem {
   id: number;
-  date: string;
-  granularity: "DAY" | "MONTH" | "YEAR";
+  date: string | null;
+  granularity: PartialDateSeenGranularity;
+  dateYear: number | null;
+  dateMonth: number | null;
+  dateDay: number | null;
 }
 
 function mapCoverDateSeen(raw: unknown): CoverDateSeenItem | null {
@@ -267,12 +273,27 @@ function mapCoverDateSeen(raw: unknown): CoverDateSeenItem | null {
   const o = raw as Record<string, unknown>;
   const id = typeof o.id === "number" ? o.id : Number(o.id);
   if (!Number.isFinite(id)) return null;
-  const date = typeof o.date === "string" ? o.date : "";
-  if (!date) return null;
+  const date = typeof o.date === "string" && o.date.trim() ? o.date : null;
+  const dateYear = toIdOrNull(o.date_year ?? o.dateYear);
+  const dateMonth = toIdOrNull(o.date_month ?? o.dateMonth);
+  const dateDay = toIdOrNull(o.date_day ?? o.dateDay);
+  if (!date && dateYear == null && dateMonth == null && dateDay == null) return null;
   const gRaw = String(o.granularity ?? "").toUpperCase();
   const granularity: CoverDateSeenItem["granularity"] =
-    gRaw === "MONTH" ? "MONTH" : gRaw === "YEAR" ? "YEAR" : "DAY";
-  return { id: id as number, date, granularity };
+    gRaw === "MONTH"
+      ? "MONTH"
+      : gRaw === "YEAR"
+        ? "YEAR"
+        : gRaw === "MONTH_ONLY"
+          ? "MONTH_ONLY"
+          : gRaw === "DAY_ONLY"
+            ? "DAY_ONLY"
+            : gRaw === "YEAR_DAY"
+              ? "YEAR_DAY"
+              : gRaw === "MONTH_DAY"
+                ? "MONTH_DAY"
+                : "DAY";
+  return { id: id as number, date, granularity, dateYear, dateMonth, dateDay };
 }
 
 function decimalToString(v: unknown): string | null {
@@ -299,6 +320,12 @@ export interface CoverDetail {
   type: string | null;
   hasAdhesive: boolean;
   isInstitutional: boolean | null;
+  /** Submitter opted in to show their name on the public detail page. */
+  displaySubmitterName: boolean;
+  /** Submitter display name; null unless they opted in (server-gated). */
+  submitterName: string | null;
+  /** Free-text description / notes, shown on the public cover detail page. */
+  description: string;
   width: string | null;
   height: string | null;
   datesSeen: CoverDateSeenItem[];
@@ -331,6 +358,12 @@ function mapCoverDetail(data: unknown): CoverDetail | null {
     hasAdhesive,
     isInstitutional:
       o.is_institutional == null ? null : Boolean(o.is_institutional),
+    displaySubmitterName: Boolean(o.display_submitter_name),
+    submitterName:
+      typeof o.submitter_name === "string" && o.submitter_name
+        ? o.submitter_name
+        : null,
+    description: typeof o.description === "string" ? o.description : "",
     width: decimalToString(o.width),
     height: decimalToString(o.height),
     datesSeen,
@@ -343,7 +376,7 @@ function mapCoverDetail(data: unknown): CoverDetail | null {
   };
 }
 
-/** GET /covers/{id}/ — read a single cover row. */
+/** GET /covers/{id}/ -- read a single cover row. */
 export async function getCoverById(coverId: number): Promise<CoverDetail | null> {
   try {
     const res = await apiClient.get(`/covers/${coverId}/`);

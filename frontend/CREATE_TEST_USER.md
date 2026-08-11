@@ -18,6 +18,8 @@
 
 ## Optional: Create a regular user via Django shell
 
+From the project root, with the default local database configured, run:
+
 ```bash
 woco shell
 ```

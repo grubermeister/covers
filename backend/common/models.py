@@ -1,11 +1,12 @@
 import hashlib
 import uuid
+from datetime import date as date_cls
 from django.db import models
-from django.db.models import Q, Min, Max, OuterRef, Subquery, F
-from django.db.models.functions import Coalesce, Least, Greatest
+from django.db.models import Q, F
 from django.core.exceptions import ValidationError
 from django.utils.translation import gettext_lazy as _
 from django.conf import settings
+from django.utils.dateparse import parse_date
 from colorfield.fields import ColorField
 
 class TimestampedModel(models.Model):
@@ -19,7 +20,15 @@ class TimestampedModel(models.Model):
         abstract = True
 
 class Color(TimestampedModel):
-    """Colors used in markings"""
+    """
+    Value table of ink or cover material colors.
+
+    model.md domain type: Color
+    Seed values: BLACK, BLUE, RED, GREEN, BROWN, ORANGE, PURPLE, MAGENTA,
+    VIOLET (plus catalog compounds such as BROWN-RED and RED-ORANGE). The
+    canonical color rows are supplied by the import pipeline. Marking.color may
+    be null when the catalog entry does not identify a color.
+    """
     id = models.AutoField(primary_key=True)
     name = models.CharField(max_length=50, unique=True)
     hex_val = ColorField(default='#FFFFFF')
@@ -42,60 +51,11 @@ class MarkingType(models.TextChoices):
 
 
 class MarkingQuerySet(models.QuerySet):
-    def with_date_range(self):
-        """
-        Annotate each Marking with the min/max date_seen.date values aggregated
-        from two sources:
-          1. DateSeen rows attached directly to the marking
-             (subject_type='MARKING', subject_id=marking.id)
-          2. DateSeen rows attached to covers that bear the marking via
-             cover_markings (subject_type='COVER', subject_id=cover.id)
-        Exposed to serializers as `earliest_seen` / `latest_seen`.
-
-        Uses subqueries against DateSeen so the two sources can be unioned
-        without producing a Cartesian explosion between cover_markings and
-        directly-attached DateSeen rows.
-        """
-        direct_qs = DateSeen.objects.filter(
-            subject_type='MARKING',
-            subject_id=OuterRef('pk'),
-        )
-        # The CoverMarking lookup sits TWO subqueries deep: the outermost
-        # query is Marking, the cover_qs Subquery (DateSeen) is one level in,
-        # and the CoverMarking filter that follows is two levels in. A bare
-        # `OuterRef('pk')` resolves only one level out -- it would join
-        # CoverMarking.marking_id against DateSeen.pk, which is gibberish and
-        # decorrelates the result so every Marking row gets the same span.
-        # Django's documented idiom for two-level nesting is
-        # `OuterRef(OuterRef('pk'))`; the outer wrapper hops past DateSeen
-        # back up to the Marking queryset.
-        cover_qs = DateSeen.objects.filter(
-            subject_type='COVER',
-            subject_id__in=CoverMarking.objects.filter(
-                marking_id=OuterRef(OuterRef('pk')),
-            ).values('cover_id'),
-        )
-        return self.annotate(
-            earliest_seen_direct=Subquery(direct_qs.order_by('date').values('date')[:1]),
-            latest_seen_direct=Subquery(direct_qs.order_by('-date').values('date')[:1]),
-            earliest_seen_via_cover=Subquery(cover_qs.order_by('date').values('date')[:1]),
-            latest_seen_via_cover=Subquery(cover_qs.order_by('-date').values('date')[:1]),
-        ).annotate(
-            # MySQL's GREATEST/LEAST return NULL if any argument is NULL, so we
-            # wrap in Coalesce to fall back to whichever source has a value when
-            # the other source is empty. Order of fallbacks does not affect
-            # correctness because Coalesce returns the first non-null arg.
-            earliest_seen=Coalesce(
-                Least('earliest_seen_direct', 'earliest_seen_via_cover'),
-                F('earliest_seen_direct'),
-                F('earliest_seen_via_cover'),
-            ),
-            latest_seen=Coalesce(
-                Greatest('latest_seen_direct', 'latest_seen_via_cover'),
-                F('latest_seen_direct'),
-                F('latest_seen_via_cover'),
-            ),
-        )
+    # earliest_seen / latest_seen are real columns maintained by
+    # common.date_range (issue #59); the former with_date_range()
+    # correlated-subquery annotation is gone. The subclass remains so
+    # future marking-specific queryset methods have a home.
+    pass
 
 
 class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
@@ -106,7 +66,7 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
     itself -- see MarkingRecycleBin. Code that must see removed markings
     (recycle-bin endpoints, restore, audit) uses Marking.all_objects.
 
-    Keeps the MarkingQuerySet methods (e.g. with_date_range) via from_queryset.
+    Keeps the MarkingQuerySet methods via from_queryset.
     """
     def get_queryset(self):
         return super().get_queryset().filter(recycle_bin_entry__isnull=True)
@@ -114,12 +74,13 @@ class MarkingManager(models.Manager.from_queryset(MarkingQuerySet)):
 
 MARKING_DATE_FMT_CHOICES = [('MD', 'MD'), ('MDD', 'MDD'), ('YD', 'YD'), ('YMD', 'YMD'), ('YMDD', 'YMDD')]
 MARKING_IMPRESSION_CHOICES = [('Normal', 'Normal'), ('Stencil', 'Stencil'), ('Negative', 'Negative')]
+DATE_RANGE_GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
 
 
 class Marking(TimestampedModel):
     """
     A unified postal marking row -- TOWNMARK, RATEMARK, or AUXMARK -- as
-    observed on one or more Covers. Replaces the prior split Postmark /
+    observed on one or more Covers. Replaces the prior split Townmark /
     Ratemark / Auxmark tables.
 
     model.md domain type: markings
@@ -136,7 +97,7 @@ class Marking(TimestampedModel):
     is_manuscript = models.BooleanField()
     shape = models.ForeignKey('Shape', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     lettering = models.ForeignKey('Lettering', on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
-    color = models.ForeignKey(Color, on_delete=models.PROTECT, default=1, related_name='markings')
+    color = models.ForeignKey(Color, on_delete=models.PROTECT, null=True, blank=True, related_name='markings')
     is_irreg = models.BooleanField(null=True, blank=True)
     width = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
     height = models.DecimalField(max_digits=6, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
@@ -144,6 +105,24 @@ class Marking(TimestampedModel):
     impression = models.CharField(max_length=10, choices=MARKING_IMPRESSION_CHOICES, null=True, blank=True)
     rate_val = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True, help_text='Non-negative rate amount; most common on RATEMARK and integrated-rate TOWNMARK rows')
     post_office = models.ForeignKey('PostOffice', on_delete=models.PROTECT, related_name='markings')
+    is_reviewed = models.BooleanField(default=False, help_text='A state editor has personally vetted this record (Issue #22).')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public marking detail page")
+
+    # Derived cache of the use range (issue #59): min/max over the marking's
+    # own DateSeen rows plus DateSeen rows of covers linked via CoverMarking,
+    # with direct rows supplying the granularity on boundary-date ties.
+    # dates_seen stays the source of truth; common.date_range recomputes these
+    # whenever that evidence changes. Never write these fields directly.
+    earliest_seen = models.DateField(null=True, blank=True, editable=False)
+    earliest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
+    latest_seen = models.DateField(null=True, blank=True, editable=False)
+    latest_seen_granularity = models.CharField(
+        max_length=5, choices=DATE_RANGE_GRANULARITY_CHOICES,
+        null=True, blank=True, editable=False,
+    )
 
     # objects: default manager, EXCLUDES recycle-binned markings.
     # all_objects: unfiltered, INCLUDES recycle-binned markings.
@@ -159,6 +138,10 @@ class Marking(TimestampedModel):
         verbose_name_plural = 'Markings'
         ordering = ['id']
         base_manager_name = 'all_objects'
+        indexes = [
+            models.Index(fields=['earliest_seen'], name='marking_earliest_seen_idx'),
+            models.Index(fields=['latest_seen'], name='marking_latest_seen_idx'),
+        ]
         constraints = [
             models.CheckConstraint(
                 check=Q(type__in=[c[0] for c in MarkingType.choices]),
@@ -175,7 +158,7 @@ class Marking(TimestampedModel):
             models.CheckConstraint(
                 check=(
                     Q(is_manuscript=True, lettering__isnull=True, shape__isnull=True, is_irreg__isnull=True)
-                    | Q(is_manuscript=False, shape__isnull=False, is_irreg__isnull=False)
+                    | Q(is_manuscript=False, is_irreg__isnull=False)
                 ),
                 name='marking_manuscript_consistency',
             ),
@@ -191,8 +174,6 @@ class Marking(TimestampedModel):
             if self.is_irreg is not None:
                 raise ValidationError({'is_irreg': 'Must be null when is_manuscript is true.'})
         else:
-            if self.shape_id is None:
-                raise ValidationError({'shape': 'Required when is_manuscript is false.'})
             if self.is_irreg is None:
                 self.is_irreg = False
 
@@ -212,11 +193,16 @@ class Marking(TimestampedModel):
         return f'{self.type} #{self.pk}'
 
 
-class Contribution(models.Model):
+class Contribution(TimestampedModel):
     """
     Moderation ticket for catalog contributions.
     Submissions create a Contribution instead of directly updating the catalog.
     Editors approve/reject; on approval, submitted_data is applied to Marking.
+
+    Inherits TimestampedModel: created_date / modified_date / created_by /
+    modified_by. The `contributor` and `reviewer` FKs are workflow roles
+    (who authored the submission, who reviewed it) and are distinct from
+    created_by / modified_by (which user wrote which row revision).
     """
     STATUS_DRAFT = "draft"
     STATUS_PENDING = "pending"
@@ -234,21 +220,19 @@ class Contribution(models.Model):
     contributor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='contributions')
     marking = models.OneToOneField(Marking, on_delete=models.CASCADE, related_name='contribution', null=True, blank=True, help_text='Set when approved; Marking created from submitted_data for new entries')
     # Routing target: which institutional Collection this contribution belongs to.
-    # Resolved at submit time from the contributor-supplied state. NOT NULL — every
+    # Resolved at submit time from the contributor-supplied state. NOT NULL -- every
     # contribution must land in a Collection so the right Editors see it.
     collection = models.ForeignKey('Collection', on_delete=models.PROTECT, related_name='contributions')
     submitted_data = models.JSONField(default=dict, blank=True, help_text='Proposed changes (state, town, type, color, description, etc.)')
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default=STATUS_PENDING)
     reviewer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name='reviewed_contributions')
     review_notes = models.TextField(blank=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         db_table = 'Contributions'
         verbose_name = 'Contribution'
         verbose_name_plural = 'Contributions'
-        ordering = ['-created_at']
+        ordering = ['-created_date']
         permissions = [
             ('review_contribution', 'Can review (approve / reject) contributions'),
         ]
@@ -280,6 +264,7 @@ class SubmissionTransaction(models.Model):
     #   MARKING_REMOVED -- a marking was soft-removed into the recycle bin
     #   MARKING_RESTORED-- a marking was restored from the recycle bin
     ACTION_DRAFT_DELETED = "draft_deleted"
+    ACTION_CONTRIBUTION_SUPERSEDED = "contribution_superseded"
     ACTION_MARKING_REMOVED = "marking_removed"
     ACTION_MARKING_RESTORED = "marking_restored"
     # Cover deletion-model actions, mirroring the marking recycle bin
@@ -289,17 +274,18 @@ class SubmissionTransaction(models.Model):
     ACTION_COVER_REMOVED = "cover_removed"
     ACTION_COVER_RESTORED = "cover_restored"
     ACTION_CHOICES = [
-        (ACTION_SUBMIT, "Submit"),
-        (ACTION_EDIT_SUBMISSION, "Edit submission"),
+        (ACTION_SUBMIT, "Record submitted"),
+        (ACTION_EDIT_SUBMISSION, "Edited submission"),
         (ACTION_EDITOR_EDIT, "Editor edit"),
-        (ACTION_APPROVE, "Approve"),
-        (ACTION_REJECT, "Reject"),
+        (ACTION_APPROVE, "Approved"),
+        (ACTION_REJECT, "Rejected"),
         (ACTION_CATALOG_DIRECT_EDIT, "Catalog direct edit"),
-        (ACTION_RESTORE_VERSION, "Restore version"),
-        (ACTION_RECORD_CREATE, "Record create"),
-        (ACTION_RECORD_UPDATE, "Record update"),
-        (ACTION_RECORD_DELETE, "Record delete"),
+        (ACTION_RESTORE_VERSION, "Restored version"),
+        (ACTION_RECORD_CREATE, "Record created"),
+        (ACTION_RECORD_UPDATE, "Record updated"),
+        (ACTION_RECORD_DELETE, "Record deleted"),
         (ACTION_DRAFT_DELETED, "Draft deleted"),
+        (ACTION_CONTRIBUTION_SUPERSEDED, "Contribution superseded"),
         (ACTION_MARKING_REMOVED, "Marking removed"),
         (ACTION_MARKING_RESTORED, "Marking restored"),
         (ACTION_COVER_REMOVED, "Cover removed"),
@@ -507,11 +493,13 @@ class Image(TimestampedModel):
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField()
     original_filename = models.CharField(max_length=255)
-    # storage_filename is intentionally NOT unique: a single image file on
-    # disk can be referenced by multiple Image rows (e.g. one per color
-    # fan-out child of a parent marking in the ASCC munger output). Default
-    # destroy only removes the row, leaving the file and any sibling rows
-    # intact -- see ImageViewSet.destroy and the absence of pre_delete
+    # storage_filename alone is intentionally NOT unique: a single image file
+    # on disk can be referenced by different Image rows (e.g. one per color
+    # fan-out child of a parent marking in the ASCC munger output). The
+    # subject-scoped uniqueness constraint below prevents duplicate rows for
+    # the same file on the same subject while preserving cross-subject reuse.
+    # Default destroy only removes the row, leaving the file and any sibling
+    # rows intact -- see ImageViewSet.destroy and the absence of pre_delete
     # signals on this model.
     storage_filename = models.CharField(max_length=255)
     file_checksum = models.CharField(max_length=64)
@@ -524,6 +512,18 @@ class Image(TimestampedModel):
     is_tracing = models.BooleanField(default=False)
     display_order = models.IntegerField(default=0)
     uploaded_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name='images_uploaded')
+    # Set when this row was produced by cropping another image (issue #77):
+    # an editor cutting the marking out of a whole-cover scan. Kept so a bad
+    # crop can be traced back to what it came from. SET_NULL rather than
+    # CASCADE -- deleting the original must not destroy the crop, which by then
+    # is the marking's catalog image.
+    cropped_from = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='crops',
+    )
 
     class Meta:
         db_table = 'images'
@@ -541,6 +541,10 @@ class Image(TimestampedModel):
                     | Q(subject_type='COVER', image_view__in=IMAGE_COVER_VIEW_CHOICES)
                 ),
                 name='image_view_matches_subject_type',
+            ),
+            models.UniqueConstraint(
+                fields=['storage_filename', 'subject_type', 'subject_id'],
+                name='image_storage_subject_unique',
             ),
         ]
         permissions = [
@@ -601,7 +605,7 @@ class Postcover(TimestampedModel):
 
 class Collection(TimestampedModel):
     """
-    An institutional collection — a curatorial unit that wraps exactly one Region
+    An institutional collection -- a curatorial unit that wraps exactly one Region
     and has many Editor assignments. Contributions are routed to a Collection
     based on the state submitted; only Editors assigned to that Collection
     (or a superuser/Administrator) may review them.
@@ -647,13 +651,13 @@ class CollectionAssignment(TimestampedModel):
         ordering = ['collection', 'user']
 
     def __str__(self):
-        return f'{self.user} → {self.collection}'
+        return f'{self.user} -> {self.collection}'
 
     def save(self, *args, **kwargs):
         """
         On assignment, ensure the user is in the Editors group so that group-level
-        permissions (review_contribution, change_postmark, etc.) are granted
-        immediately. Removal is intentionally NOT auto-demoted — admins explicitly
+        permissions (review_contribution, catalog write access, etc.) are granted
+        immediately. Removal is intentionally NOT auto-demoted -- admins explicitly
         remove from Editors group via the user admin if they want to revoke perms.
         """
         creating = self._state.adding
@@ -694,6 +698,7 @@ class Region(TimestampedModel):
     model.md domain type: Region
     """
     REGION_TIER_CHOICES = [('COUNTRY', 'Country'), ('TERRITORY', 'Territory'), ('STATE', 'State'), ('PROVINCE', 'Province'), ('COUNTY', 'County'), ('CITY', 'City'), ('DISTRICT', 'District'), ('OTHER', 'Other')]
+    code = models.CharField(max_length=30, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=100, help_text='Canonical region name for the applicable historical period')
     abbrev = models.CharField(max_length=3, help_text='Canonical two or three character abbreviation')
     region_tier = models.CharField(max_length=9, choices=REGION_TIER_CHOICES)
@@ -718,6 +723,7 @@ class PostOffice(TimestampedModel):
 
     model.md domain type: PostOffice
     """
+    code = models.CharField(max_length=40, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=255, help_text='Normalized town name, e.g. Abingdon, Richmond')
 
     class Meta:
@@ -746,6 +752,26 @@ class PostOffice(TimestampedModel):
             .first()
         )
         return link.region if link is not None else None
+
+    @property
+    def regions(self):
+        # All Regions this PostOffice is linked to via the post_office_regions
+        # junction, ordered the same way as .region: current/active first
+        # (defunct_date NULL via NULLS-FIRST), then most-recently established.
+        # Unlike .region (which collapses to one), this exposes a town's full
+        # multi-territory history -- e.g. Michigan Territory + Michigan -- so a
+        # town spanning several jurisdictions over time shows all of them.
+        return [
+            link.region
+            for link in (
+                self.post_office_regions
+                .select_related('region')
+                .order_by(
+                    F('region__defunct_date').desc(nulls_first=True),
+                    F('region__established_date').desc(nulls_last=True),
+                )
+            )
+        ]
 
 class PostOfficeRegion(TimestampedModel):
     """
@@ -840,6 +866,8 @@ class Cover(TimestampedModel):
     height = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Vertical dimension in millimeters')
     is_institutional = models.BooleanField(null=True, blank=True, help_text='Institutionally owned (museum, society, etc.)')
     width = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True, help_text='Horizontal dimension in millimeters')
+    display_submitter_name = models.BooleanField(default=False, help_text="Whether the submitter opted in to show their name on the public cover detail page")
+    description = models.TextField(blank=True, default="", help_text="Free-text description / notes about the cover, shown on the public cover detail page")
 
     # objects: default manager, EXCLUDES recycle-binned covers.
     # all_objects: unfiltered, INCLUDES recycle-binned covers.
@@ -927,12 +955,33 @@ class DateSeen(TimestampedModel):
     SUBJECT_MARKING = 'MARKING'
     SUBJECT_TYPE_CHOICES = [(SUBJECT_COVER, 'Cover'), (SUBJECT_MARKING, 'Marking')]
 
-    GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
+    GRANULARITY_YEAR = 'YEAR'
+    GRANULARITY_MONTH = 'MONTH'
+    GRANULARITY_DAY = 'DAY'
+    GRANULARITY_MONTH_ONLY = 'MONTH_ONLY'
+    GRANULARITY_DAY_ONLY = 'DAY_ONLY'
+    GRANULARITY_YEAR_DAY = 'YEAR_DAY'
+    GRANULARITY_MONTH_DAY = 'MONTH_DAY'
+
+    GRANULARITY_CHOICES = [
+        (GRANULARITY_DAY, 'Day'),
+        (GRANULARITY_MONTH, 'Month'),
+        (GRANULARITY_YEAR, 'Year'),
+        (GRANULARITY_MONTH_ONLY, 'Month only'),
+        (GRANULARITY_DAY_ONLY, 'Day only'),
+        (GRANULARITY_YEAR_DAY, 'Year and day'),
+        (GRANULARITY_MONTH_DAY, 'Month and day'),
+    ]
+    GRANULARITY_VALUES = {value for value, _label in GRANULARITY_CHOICES}
 
     subject_type = models.CharField(max_length=8, choices=SUBJECT_TYPE_CHOICES)
     subject_id = models.PositiveIntegerField(help_text='PK of the dated Cover or Marking')
-    date = models.DateField(help_text='Calendar date of the observed use')
-    granularity = models.CharField(max_length=5, choices=GRANULARITY_CHOICES)
+    date = models.DateField(null=True, blank=True, help_text='Sortable calendar date when known date parts form one')
+    granularity = models.CharField(max_length=10, choices=GRANULARITY_CHOICES)
+    date_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_month = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_day = models.PositiveSmallIntegerField(null=True, blank=True)
+    date_key = models.CharField(max_length=20, editable=False)
 
     class Meta:
         db_table = 'dates_seen'
@@ -947,7 +996,143 @@ class DateSeen(TimestampedModel):
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='dates_seen_subject_type_valid',
             ),
+            models.UniqueConstraint(
+                fields=['subject_type', 'subject_id', 'granularity', 'date_key'],
+                name='dates_seen_subject_parts_unique',
+            ),
         ]
+
+    @staticmethod
+    def _int_or_none(value):
+        if value in (None, ''):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise ValidationError('Date components must be integers.')
+        return parsed
+
+    @staticmethod
+    def _legacy_date(value):
+        if value in (None, ''):
+            return None
+        if isinstance(value, date_cls):
+            return value
+        parsed = parse_date(str(value)[:10])
+        if parsed is None:
+            raise ValidationError('date must be a valid ISO date.')
+        return parsed
+
+    @staticmethod
+    def _max_day(year, month):
+        if month in (1, 3, 5, 7, 8, 10, 12):
+            return 31
+        if month in (4, 6, 9, 11):
+            return 30
+        if month == 2:
+            if year is None:
+                return 29
+            if year % 400 == 0 or (year % 4 == 0 and year % 100 != 0):
+                return 29
+            return 28
+        return 31
+
+    @classmethod
+    def granularity_for_parts(cls, year, month, day):
+        has_year = year is not None
+        has_month = month is not None
+        has_day = day is not None
+        if has_year and has_month and has_day:
+            return cls.GRANULARITY_DAY
+        if has_year and has_month:
+            return cls.GRANULARITY_MONTH
+        if has_year and has_day:
+            return cls.GRANULARITY_YEAR_DAY
+        if has_month and has_day:
+            return cls.GRANULARITY_MONTH_DAY
+        if has_year:
+            return cls.GRANULARITY_YEAR
+        if has_month:
+            return cls.GRANULARITY_MONTH_ONLY
+        if has_day:
+            return cls.GRANULARITY_DAY_ONLY
+        raise ValidationError('At least one date component is required.')
+
+    @classmethod
+    def generated_date_for_parts(cls, year, month, day, granularity):
+        if granularity == cls.GRANULARITY_YEAR:
+            return date_cls(year, 1, 1)
+        if granularity == cls.GRANULARITY_MONTH:
+            return date_cls(year, month, 1)
+        if granularity == cls.GRANULARITY_DAY:
+            return date_cls(year, month, day)
+        return None
+
+    @staticmethod
+    def key_for_parts(year, month, day):
+        parts = []
+        if year is not None:
+            parts.append('Y{:04d}'.format(year))
+        if month is not None:
+            parts.append('M{:02d}'.format(month))
+        if day is not None:
+            parts.append('D{:02d}'.format(day))
+        return '-'.join(parts)
+
+    def normalize_date_parts(self):
+        self.date_year = self._int_or_none(self.date_year)
+        self.date_month = self._int_or_none(self.date_month)
+        self.date_day = self._int_or_none(self.date_day)
+
+        legacy = self._legacy_date(self.date)
+        if self.date_year is None and self.date_month is None and self.date_day is None:
+            if legacy is not None:
+                granularity = (self.granularity or self.GRANULARITY_DAY).strip().upper()
+                if granularity == self.GRANULARITY_YEAR:
+                    self.date_year = legacy.year
+                elif granularity == self.GRANULARITY_MONTH:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                elif granularity == self.GRANULARITY_DAY:
+                    self.date_year = legacy.year
+                    self.date_month = legacy.month
+                    self.date_day = legacy.day
+                else:
+                    raise ValidationError('Partial date granularities require component fields.')
+
+        if self.date_year is not None and not (1 <= self.date_year <= 9999):
+            raise ValidationError({'date_year': 'Year must be between 1 and 9999.'})
+        if self.date_month is not None and not (1 <= self.date_month <= 12):
+            raise ValidationError({'date_month': 'Month must be between 1 and 12.'})
+        if self.date_day is not None and not (1 <= self.date_day <= 31):
+            raise ValidationError({'date_day': 'Day must be between 1 and 31.'})
+        if self.date_month is not None and self.date_day is not None:
+            max_day = self._max_day(self.date_year, self.date_month)
+            if self.date_day > max_day:
+                raise ValidationError({'date_day': 'Day is not valid for the selected month.'})
+
+        expected = self.granularity_for_parts(self.date_year, self.date_month, self.date_day)
+        supplied = (self.granularity or expected).strip().upper()
+        if supplied not in self.GRANULARITY_VALUES:
+            raise ValidationError({'granularity': 'Invalid date granularity.'})
+        if supplied != expected:
+            raise ValidationError({'granularity': 'Granularity does not match known date components.'})
+        self.granularity = expected
+        self.date = self.generated_date_for_parts(
+            self.date_year,
+            self.date_month,
+            self.date_day,
+            self.granularity,
+        )
+        self.date_key = self.key_for_parts(self.date_year, self.date_month, self.date_day)
+
+    def clean(self):
+        super().clean()
+        self.normalize_date_parts()
+
+    def save(self, *args, **kwargs):
+        self.normalize_date_parts()
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f'{self.subject_type} #{self.subject_id} -- {self.date} ({self.granularity})'
@@ -969,6 +1154,12 @@ class CoverValuation(TimestampedModel):
         verbose_name = 'Cover Valuation'
         verbose_name_plural = 'Cover Valuations'
         ordering = ['-appraisal_date']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['cover', 'appraisal_date'],
+                name='cover_valuation_cover_appraisal_date_unique',
+            ),
+        ]
 
     def __str__(self):
         return f'Cover #{self.cover_id} - ${self.amt} ({self.appraisal_date})'
@@ -1005,7 +1196,7 @@ class CoverMarking(TimestampedModel):
         max_length=20,
         choices=REVIEW_STATUS_CHOICES,
         default=REVIEW_APPROVED,
-        help_text='Editor moderation state for this cover–marking association.',
+        help_text='Editor moderation state for this cover-marking association.',
     )
     reviewer = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -1074,6 +1265,10 @@ class Citation(TimestampedModel):
             models.CheckConstraint(
                 check=Q(subject_type__in=['COVER', 'MARKING']),
                 name='citation_subject_type_valid',
+            ),
+            models.UniqueConstraint(
+                fields=['reference_work', 'subject_type', 'subject_id', 'citation_detail'],
+                name='citation_reference_subject_detail_unique',
             ),
         ]
 

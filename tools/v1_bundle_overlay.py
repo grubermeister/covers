@@ -1,0 +1,1736 @@
+#!/usr/bin/env python3
+"""Apply v1 tblRawStateData fields to a fresh munger bundle.
+
+Run from repo root:
+    PYTHONPATH=tools uv run python tools/v1_bundle_overlay.py \
+        --state VA \
+        --slice tools/wip/cache/v1/VA/slice.csv \
+        --image-refs tools/wip/cache/v1/VA/image_refs.csv \
+        --bundle-dir tools/wip/out/v1_va \
+        --v1-image-root tools/wip/in/v1_images \
+        --media-dir backend/media/va
+
+Expected exit code: 0.
+
+This script edits generated bundle CSVs before database import. It does not
+read v2 OCR data and it does not update database rows directly. Pass
+--preserve-images when v1_attach_images.py has already populated images.csv
+and this stage should only apply non-image v1 field warnings.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import mimetypes
+import os
+import re
+import shutil
+import sys
+from collections import defaultdict
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+from PIL import Image as PILImage
+
+from munger.fields.dates import FULL_DATE_RE, is_approximate_date, parse_date_field
+from munger.fields.rates import (
+    parse_rate_token,
+    split_inline_rate_from_inscription,
+    split_rate_tokens,
+)
+from munger.fields.sizes import parse_size_field
+from munger.head import (
+    head_note_desc_lines,
+    head_note_lettering_name,
+    split_head_annotation_notes,
+)
+from munger.rate_assembly import parse_rate_amount
+from munger.text_utils import normalize_post_office_town_text, strip_trailing_state_suffix
+from v1_to_v2_catalog_format import IMAGE_REF_COLUMNS, RAW_ID_COL
+from v1_synthetic_listing import (
+    DATE_SENTINEL_YEARS,
+    color_tokens as v1_color_tokens,
+    has_synthetic_listing_evidence,
+    synthetic_desc_lines,
+)
+from v1_massachusetts import (
+    BPM_REFERENCE_CODE,
+    boston_bpm_details,
+    boston_catalog_head,
+    boston_head_description_lines,
+    format_bpm_citation_detail,
+    format_bpm_description,
+    is_boston_row,
+)
+
+
+AUDIT_TAIL = ["created_date", "modified_date", "created_by", "modified_by"]
+RAW_TEXT_COL = "txtRawStateData"
+WARNING_COLUMNS = ["raw_id", "issue", "detail"]
+UNSUPPORTED_COLUMNS = [
+    "txtTownmarkFraming",
+    "txtTownmarkRateLocation",
+]
+IMAGE_COLUMNS = [
+    "subject_type",
+    "subject_id",
+    "original_filename",
+    "storage_filename",
+    "file_checksum",
+    "mime_type",
+    "image_width",
+    "image_height",
+    "file_size_bytes",
+    "image_view",
+    "image_description",
+    "is_tracing",
+    "display_order",
+    "uploaded_by",
+    *AUDIT_TAIL,
+]
+DATE_COLUMNS = [
+    "subject_type",
+    "subject_id",
+    "date",
+    "granularity",
+    "date_year",
+    "date_month",
+    "date_day",
+    *AUDIT_TAIL,
+]
+CITATION_COLUMNS = [
+    "reference_work",
+    "subject_type",
+    "subject_id",
+    "citation_detail",
+    *AUDIT_TAIL,
+]
+COVER_COLUMNS = [
+    "code",
+    "color",
+    "type",
+    "has_adhesive",
+    "height",
+    "is_institutional",
+    "width",
+    "display_submitter_name",
+    "description",
+    *AUDIT_TAIL,
+]
+COVER_MARKING_COLUMNS = [
+    "cover",
+    "marking",
+    "is_backstamp",
+    "placement",
+    "contributor_comment",
+    "review_status",
+    "reviewer",
+    "review_notes",
+    "reviewed_at",
+    *AUDIT_TAIL,
+]
+POST_OFFICE_REGION_COLUMNS = [
+    "post_office",
+    "region",
+    *AUDIT_TAIL,
+]
+
+
+def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    with Path(path).open(newline="", encoding="utf-8") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            return [], []
+        return list(reader.fieldnames), list(reader)
+
+
+def write_csv(path: Path, fieldnames: list[str], rows: list[dict[str, object]]) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="", encoding="utf-8") as fh:
+        writer = csv.DictWriter(fh, fieldnames=fieldnames, lineterminator="\n")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({name: row.get(name, "") for name in fieldnames})
+
+
+def nonblank(value: object) -> bool:
+    return str(value or "").strip() != ""
+
+
+def clean(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip())
+
+
+SAME_PREFIX_RE = re.compile(r"^\s*(?:The\s+)?Same\b", re.IGNORECASE)
+LEADING_INSCRIPTION_MARKER_RE = re.compile(r"^\s*(?:\(\s*\d(?:\.\d)?\s*\))\s*")
+TRAILING_INSCRIPTION_MARKER_RE = re.compile(r"\s*(?:\(\s*\d(?:\.\d)?\s*\))\s*$")
+CATALOG_DATE_MARKER_RE = re.compile(r"\s*[(\[{]\s*[EL]\s*[)\]}]\s*", re.IGNORECASE)
+
+
+def strip_unambiguous_star_marker(text: str) -> str:
+    """Remove one boundary catalog star; preserve multi-star inscriptions."""
+    if text.count("*") != 1:
+        return text
+    return re.sub(r"^\s*\*|\*\s*$", "", text).strip()
+
+
+def strip_inscription_markers(
+    inscription: object,
+    include_attached_notes: bool = True,
+) -> str:
+    """Remove catalog-only markers from inscription text."""
+    value = CATALOG_DATE_MARKER_RE.sub(" ", clean(inscription)).strip()
+    value, _notes = split_head_annotation_notes(
+        value,
+        include_attached_note=include_attached_notes,
+    )
+    value, _tokens = split_inline_rate_from_inscription(value)
+    value = strip_unambiguous_star_marker(value)
+    while value:
+        stripped = LEADING_INSCRIPTION_MARKER_RE.sub("", value, count=1).strip()
+        stripped = TRAILING_INSCRIPTION_MARKER_RE.sub("", stripped, count=1).strip()
+        stripped, _notes = split_head_annotation_notes(
+            stripped,
+            include_attached_note=include_attached_notes,
+        )
+        stripped, _tokens = split_inline_rate_from_inscription(stripped)
+        stripped = strip_unambiguous_star_marker(stripped)
+        if stripped == value:
+            return clean(stripped)
+        value = stripped
+    return ""
+
+
+def inscription_notes(raw_row: dict[str, str]) -> list[str]:
+    """Return parenthetical notes removed from v1 inscription text."""
+    notes = []
+    for column in ("txtTownPostmark", "txtPostmark"):
+        value = clean(raw_row.get(column))
+        if not value:
+            continue
+        postmark_is_same = column == "txtPostmark" and bool(
+            SAME_PREFIX_RE.match(
+                strip_inscription_markers(
+                    value,
+                    include_attached_notes=False,
+                )
+            )
+        )
+        _cleaned, found = split_head_annotation_notes(
+            value,
+            require_keyword=postmark_is_same,
+            include_attached_note=not postmark_is_same,
+        )
+        for note in found:
+            if note not in notes:
+                notes.append(note)
+    return notes
+
+
+def inscription_note_lines(raw_row: dict[str, str]) -> list[str]:
+    """Return townmark desc notes removed from v1 inscription text."""
+    return head_note_desc_lines(inscription_notes(raw_row))
+
+
+def inscription_lettering_name(raw_row: dict[str, str]) -> str | None:
+    """Return lettering implied by v1 inscription notes."""
+    return head_note_lettering_name(inscription_notes(raw_row))
+
+
+def split_location_state_suffix(text: object) -> tuple[str, str]:
+    value = clean(text)
+    for pattern in (
+        r"^(?P<location>.+?)(?P<state>/\s*[A-Za-z]{1,4}\.?)$",
+        r"^(?P<location>.+?)(?P<state>\s+[A-Za-z]{1,4}\.?)$",
+    ):
+        match = re.match(pattern, value)
+        if match:
+            return match.group("location").strip(), match.group("state")
+    return "", ""
+
+
+def compact_location_token(text: object) -> str:
+    return re.sub(r"[^A-Za-z0-9]+", "", clean(text)).upper()
+
+
+def trailing_location_token(text: object) -> str:
+    match = re.search(r"([A-Za-z.]+)\s*$", clean(text))
+    return match.group(1) if match else ""
+
+
+def same_suffix_repeats_parent_tail(parent_stem: str, suffix_location: str) -> bool:
+    parent_tail = compact_location_token(trailing_location_token(parent_stem))
+    suffix_tail = compact_location_token(suffix_location)
+    return 2 <= len(parent_tail) <= 4 and parent_tail == suffix_tail
+
+
+def townmark_text_stem(text: object) -> str:
+    """Return the townmark text prefix before a state or device suffix."""
+    value = strip_inscription_markers(text)
+    if "/" in value:
+        return value.split("/", 1)[0].strip()
+    return strip_trailing_state_suffix(value) or value
+
+
+def resolve_same_inscription(inscription: object, parent_text: object) -> str:
+    """Replace a leading Same placeholder with parent townmark text.
+
+    Example input shape:
+    inscription="Same/Wis."
+    parent_text="WATERTOWN/Wis."
+    returned value="WATERTOWN/Wis."
+    """
+    value = strip_inscription_markers(inscription)
+    if not value:
+        return ""
+    match = SAME_PREFIX_RE.match(value)
+    if not match:
+        return value
+    parent = strip_inscription_markers(parent_text)
+    if not parent:
+        return value
+    suffix = strip_inscription_markers(value[match.end():])
+    if not suffix.strip():
+        return parent
+    parent_stem = townmark_text_stem(parent)
+    if "/" not in parent:
+        suffix_location, suffix_state = split_location_state_suffix(suffix)
+        if suffix_state and same_suffix_repeats_parent_tail(parent_stem, suffix_location):
+            return strip_inscription_markers(parent_stem + suffix_state)
+    sep = "" if suffix.startswith("/") else " "
+    return strip_inscription_markers(parent_stem + sep + suffix)
+
+
+def row_town_key(raw_row: dict[str, str], townmark_text: str) -> str:
+    """Return the town key used for immediate Same carry-forward."""
+    town = clean(raw_row.get("txtTown")).upper()
+    if town:
+        return town
+    return townmark_text_stem(townmark_text).upper()
+
+
+def overlay_post_office_town(raw_row: dict[str, str]) -> str:
+    """Return v1 txtTown only when the townmark text has a real town."""
+    town = clean(raw_row.get("txtTown"))
+    if not town:
+        return ""
+    for value in (
+        townmark_text_stem(raw_row.get("txtTownPostmark")),
+        townmark_text_stem(raw_row.get("txtPostmark")),
+        town,
+    ):
+        if clean(value) and normalize_post_office_town_text(value) is None:
+            return ""
+    return town
+
+
+def overlay_row_inscription(
+    raw_row: dict[str, str],
+    carry_state: dict[str, str] | None = None,
+) -> str:
+    """Resolve v1 row inscription using immediate previous-row carry-forward."""
+    townmark_text = strip_inscription_markers(raw_row.get("txtTownPostmark"))
+    postmark_text = strip_inscription_markers(raw_row.get("txtPostmark"))
+    source_text = townmark_text
+    town_key = row_town_key(raw_row, townmark_text)
+    if SAME_PREFIX_RE.match(postmark_text):
+        if (
+            carry_state is not None
+            and carry_state.get("town_key") == town_key
+            and nonblank(carry_state.get("inscription"))
+        ):
+            source_text = clean(carry_state.get("inscription"))
+    inscription = resolve_same_inscription(raw_row.get("txtPostmark"), source_text)
+    if not inscription:
+        inscription = townmark_text
+    if carry_state is not None and inscription:
+        carry_state["town_key"] = town_key
+        carry_state["inscription"] = inscription
+    return inscription
+
+
+def truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "y", "t"}
+
+
+def falsey(value: object) -> bool:
+    return str(value or "").strip().lower() in {"0", "false", "no", "n", "f"}
+
+
+def bool_value(value: object) -> str | None:
+    if truthy(value):
+        return "True"
+    if falsey(value):
+        return "False"
+    return None
+
+
+def v1_manuscript_value(row: dict[str, str]) -> str | None:
+    for column in ("ynManuscript", "ynManuscriptTownmarks"):
+        value = bool_value(row.get(column))
+        if value == "True":
+            return "True"
+    for column in ("ynManuscript", "ynManuscriptTownmarks"):
+        value = bool_value(row.get(column))
+        if value == "False":
+            return "False"
+    return None
+
+
+def next_int(rows: list[dict[str, str]], column: str, default: int = 1) -> int:
+    values = []
+    for row in rows:
+        try:
+            values.append(int(str(row.get(column, "") or "0")))
+        except ValueError:
+            pass
+    return (max(values) + 1) if values else default
+
+
+def audit_from(rows: list[dict[str, str]]) -> dict[str, str]:
+    for row in rows:
+        if all(name in row for name in AUDIT_TAIL):
+            return {name: row.get(name, "") for name in AUDIT_TAIL}
+    now = os.environ.get("ASCC_AUDIT_TS")
+    if not now:
+        now = datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return {
+        "created_date": now,
+        "modified_date": now,
+        "created_by": "1",
+        "modified_by": "1",
+    }
+
+
+def add_warning(warnings: list[dict[str, str]], raw_id: str, issue: str, detail: str) -> None:
+    warnings.append({"raw_id": raw_id, "issue": issue, "detail": detail})
+
+
+def read_existing_warnings(path: Path) -> list[dict[str, str]]:
+    if not path.is_file():
+        return []
+    fields, rows = read_csv(path)
+    if not fields:
+        return []
+    return [
+        {
+            "raw_id": row.get("raw_id", ""),
+            "issue": row.get("issue", ""),
+            "detail": row.get("detail", ""),
+        }
+        for row in rows
+    ]
+
+
+def load_raw_rows(slice_path: Path) -> dict[str, dict[str, str]]:
+    fields, rows = read_csv(slice_path)
+    if RAW_ID_COL not in fields:
+        sys.exit("error: {0} has no '{1}' column".format(slice_path, RAW_ID_COL))
+    return {
+        clean(row.get(RAW_ID_COL)): row
+        for row in rows
+        if nonblank(row.get(RAW_ID_COL)) and has_synthetic_listing_evidence(row)
+    }
+
+
+def build_source_map_indexes(source_map_rows: list[dict[str, str]]) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    by_raw = defaultdict(list)
+    tm_by_raw = defaultdict(list)
+    for row in source_map_rows:
+        raw_id = clean(row.get("chunk"))
+        marking_code = clean(row.get("marking_code") or row.get("marking_id"))
+        if not raw_id or not marking_code:
+            continue
+        by_raw[raw_id].append(marking_code)
+        if clean(row.get("marking_type")).upper() == "TOWNMARK":
+            tm_by_raw[raw_id].append(marking_code)
+    return dict(by_raw), dict(tm_by_raw)
+
+
+def color_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
+    return {clean(row.get("name")).upper(): clean(row.get("name")).upper() for row in rows}
+
+
+def ensure_color(
+    name: str,
+    colors: list[dict[str, str]],
+    fields: list[str],
+    audit: dict[str, str],
+) -> str:
+    lookup = color_lookup(colors)
+    key = clean(name).upper()
+    if key in lookup:
+        return lookup[key]
+    row = {name: "" for name in fields}
+    row.update(audit)
+    row.update({"name": key, "hex_val": "#FFFFFF", "pantone_code": ""})
+    colors.append(row)
+    return key
+
+
+def normalized_shape_code(value: object) -> str:
+    text = clean(value).upper()
+    if not text:
+        return ""
+    text = text.replace("SEMI CIRCLE", "SEMI-CIRCLE")
+    aliases = {
+        "ARC OR SEMI-CIRCLE": "ARC",
+        "BOX": "BOX",
+        "CDS": "C",
+        "CIRCLE": "C",
+        "DOUBLE CIRCLE": "DC",
+        "DOUBLE LINE CIRCLE": "DLC",
+        "DOUBLE LINE DOUBLE CIRCLE": "DLDC",
+        "DOUBLE LINE DOUBLE OVAL": "DLDO",
+        "DOUBLE LINE OVAL": "DLO",
+        "DOUBLE OVAL": "DO",
+        "NO OUTER RIM": "NOR",
+        "OCTAGON": "OCTAGON",
+        "OVAL": "O",
+        "SL - STRAIGHT LINE": "SL",
+        "STRAIGHT LINE": "SL",
+    }
+    if text in aliases:
+        return aliases[text]
+    first = re.split(r"[^A-Z0-9]+", text)[0]
+    return aliases.get(first, first)
+
+
+def shape_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
+    out = {}
+    for row in rows:
+        row_name = clean(row.get("name"))
+        code = normalized_shape_code(row.get("code"))
+        if code:
+            out[code] = row_name
+        name = clean(row.get("name")).upper()
+        prefix = normalized_shape_code(name.split(" - ", 1)[0])
+        if prefix:
+            out[prefix] = row_name
+        out[normalized_shape_code(name)] = row_name
+    return out
+
+
+def lettering_lookup(rows: list[dict[str, str]]) -> dict[str, str]:
+    aliases = {
+        "ITALICS": "ITALIC",
+        "SANS SERIF": "SANS-SERIF",
+        "SANS SERIFS": "SANS-SERIF",
+    }
+    out = {}
+    for row in rows:
+        key = clean(row.get("name")).upper()
+        out[key] = clean(row.get("name"))
+    for alias, target in aliases.items():
+        if target in out:
+            out[alias] = out[target]
+    return out
+
+
+def normalized_date_fmt(value: object) -> str:
+    compact = re.sub(r"[^A-Z0-9]+", "", clean(value).upper())
+    aliases = {"MONTHDAY": "MDD", "MONTHDAYBELOW": "MDD", "MANUSCRIPT": ""}
+    if compact in aliases:
+        return aliases[compact]
+    if compact in {"MD", "MDD", "YD", "YMD", "YMDD"}:
+        return compact
+    for token in re.split(r"[^A-Z0-9]+", clean(value).upper()):
+        if token in {"MD", "MDD", "YD", "YMD", "YMDD"}:
+            return token
+    return ""
+
+
+def decimal_text(value: object) -> str:
+    text = clean(value).replace(",", "")
+    if not text:
+        return ""
+    try:
+        number = float(text)
+    except ValueError:
+        return ""
+    out = "{0:.2f}".format(number).rstrip("0").rstrip(".")
+    return out or "0"
+
+
+def parsed_dimensions(row: dict[str, str]) -> tuple[str, str]:
+    width = decimal_text(row.get("nWidth") or row.get("txtWidth"))
+    height = decimal_text(row.get("nHeight") or row.get("txtHeight"))
+    if width or height:
+        return width, height
+    raw_sizes = clean(row.get("txtSizes"))
+    if not raw_sizes:
+        return "", ""
+    for token in re.split(r"[;|]+", raw_sizes):
+        token = token.strip()
+        if not token:
+            continue
+        parsed = parse_size_field(token)
+        if parsed.get("size_error"):
+            continue
+        dim1 = parsed.get("size_dim1")
+        dim2 = parsed.get("size_dim2")
+        if dim1 is None:
+            continue
+        width = decimal_text(dim1)
+        height = decimal_text(dim2 if dim2 is not None else dim1)
+        return width, height
+    return "", ""
+
+
+def v1_size_is_bare_diameter(row: dict[str, str]) -> bool:
+    raw_sizes = clean(row.get("txtSizes"))
+    if not raw_sizes:
+        return False
+    tokens = [token.strip() for token in re.split(r"[;|]+", raw_sizes) if token.strip()]
+    if len(tokens) != 1:
+        return False
+    parsed = parse_size_field(tokens[0])
+    if parsed.get("size_error"):
+        return False
+    return (
+        parsed.get("size_dim1") is not None
+        and parsed.get("size_dim2") is None
+        and not parsed.get("size_shape_code")
+    )
+
+
+def should_keep_munger_circle_shape(
+    raw_row: dict[str, str],
+    townmark_rows: list[dict[str, str]],
+    shape_code: str,
+) -> bool:
+    if shape_code != "SL":
+        return False
+    if not v1_size_is_bare_diameter(raw_row):
+        return False
+    return any(
+        not truthy(row.get("is_manuscript"))
+        and normalized_shape_code(row.get("shape")) == "C"
+        for row in townmark_rows
+    )
+
+
+def split_date_tokens(value: object) -> list[str]:
+    tokens = []
+    for part in re.split(r"[;|]+", clean(value)):
+        part = part.strip()
+        if not part:
+            continue
+        if "," not in part or FULL_DATE_RE.search(part):
+            tokens.append(part)
+            continue
+        tokens.extend(piece.strip() for piece in part.split(",") if piece.strip())
+    return tokens
+
+
+def is_v1_sentinel_year(value: object) -> bool:
+    """Return True for legacy v1 date-placeholder years.
+
+    The v1 split-column export uses 1700 and 1900 as unknown-date sentinel
+    values. This helper is intentionally used only for v1 split-column date
+    sources such as txtDatesSeen; ordinary catalog text may still parse any
+    syntactically valid year through munger.fields.dates.parse_date_field.
+    """
+    return str(value or "").strip() in DATE_SENTINEL_YEARS
+
+
+def parsed_date_rows(value: object, subject_ids: list[str], audit: dict[str, str]) -> list[dict[str, str]]:
+    rows = []
+    seen = set()
+    for token in split_date_tokens(value):
+        parsed = parse_date_field(token)
+        if parsed.get("date_error") or parsed.get("date_granularity") == "UNKNOWN":
+            continue
+        if is_approximate_date(parsed):
+            continue
+        observations = []
+        gran = parsed.get("date_granularity")
+        try:
+            if gran == "DAY":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
+                observed = date(
+                    int(parsed["date_year_start"]),
+                    int(parsed["date_month"]),
+                    int(parsed["date_day"]),
+                )
+                observations.append((str(observed), "DAY", observed.year, observed.month, observed.day))
+            elif gran == "MONTH":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
+                observed = date(
+                    int(parsed["date_year_start"]),
+                    int(parsed["date_month"]),
+                    1,
+                )
+                observations.append((str(observed), "MONTH", observed.year, observed.month, ""))
+            elif gran == "YEAR":
+                if is_v1_sentinel_year(parsed.get("date_year_start")):
+                    continue
+                observed = date(int(parsed["date_year_start"]), 1, 1)
+                observations.append((str(observed), "YEAR", observed.year, "", ""))
+            elif gran == "RANGE":
+                for year in (parsed.get("date_year_start"), parsed.get("date_year_end")):
+                    if is_v1_sentinel_year(year):
+                        continue
+                    observed = date(int(year), 1, 1)
+                    observations.append((str(observed), "YEAR", observed.year, "", ""))
+            # Approximate dates stay out of dates_seen. The munger preserves
+            # their exact source text in the marking description.
+        except (TypeError, ValueError):
+            continue
+        for subject_id in subject_ids:
+            for date_text, granularity, date_year, date_month, date_day in observations:
+                key = (subject_id, date_text, granularity)
+                if key in seen:
+                    continue
+                seen.add(key)
+                row = {
+                    "subject_type": "MARKING",
+                    "subject_id": subject_id,
+                    "date": date_text,
+                    "granularity": granularity,
+                    "date_year": date_year,
+                    "date_month": date_month,
+                    "date_day": date_day,
+                }
+                row.update(audit)
+                rows.append(row)
+    return rows
+
+
+def dedupe_date_rows(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Return date rows without duplicate subject/date/granularity tuples."""
+    out = []
+    seen = set()
+    for row in rows:
+        key = (
+            clean(row.get("subject_type")),
+            clean(row.get("subject_id")),
+            clean(row.get("date")),
+            clean(row.get("granularity")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
+def parsed_rate_values(value: object) -> list[str]:
+    out = []
+    for token in split_rate_tokens(clean(value)):
+        # parse_rate_amount understands romans (X -> 10, V -> 5) and
+        # fractions (12-1/2 -> 12.5). decimal_text alone dropped those, so
+        # "X,PAID,PAID 3" collapsed to ["3"] and the single-value branch in
+        # apply_row_fields stamped 3 onto every ratemark in the listing.
+        # Try the whole token first (fractions survive only this way), then
+        # the amount parse_rate_token extracts (for "PAID 3" style tokens).
+        numeric, _ = parse_rate_amount(token)
+        if numeric is None:
+            amount = parse_rate_token(token).get("rate_amount_raw")
+            if amount:
+                numeric, _ = parse_rate_amount(amount)
+        if numeric is not None:
+            out.append(decimal_text(numeric))
+    if out:
+        return out
+    return [decimal_text(m.group(0)) for m in re.finditer(r"\d+(?:\.\d+)?", clean(value)) if decimal_text(m.group(0))]
+
+
+RATE_NOTE_PREFIX = "Rate note: "
+
+
+def append_desc(existing: object, extras: list[str]) -> str:
+    lines = []
+    for value in [existing, *extras]:
+        for line in str(value or "").splitlines():
+            line = clean(line)
+            if not line or line in lines:
+                continue
+            # The munger records an unparseable paren field verbatim ("day in
+            # ms") and the v1 overlay re-adds the same text as "Rate note:
+            # day in ms"; treat the two forms as one note, first one wins.
+            if line.startswith(RATE_NOTE_PREFIX) and line[len(RATE_NOTE_PREFIX):] in lines:
+                continue
+            if RATE_NOTE_PREFIX + line in lines:
+                continue
+            lines.append(line)
+    return "\n".join(lines)
+
+
+def source_post_office_regions(
+    post_office_id: str,
+    post_office_regions: list[dict[str, str]],
+    regions: list[dict[str, str]],
+) -> list[str]:
+    found = [
+        clean(row.get("region"))
+        for row in post_office_regions
+        if clean(row.get("post_office")) == post_office_id and nonblank(row.get("region"))
+    ]
+    if found:
+        return found
+    for row in regions:
+        if nonblank(row.get("code")):
+            return [clean(row.get("code"))]
+    return []
+
+
+def next_post_office_code(old_code: str, post_offices: list[dict[str, str]], regions: list[dict[str, str]]) -> str:
+    prefix = ""
+    if "-" in old_code:
+        prefix = old_code.rsplit("-", 1)[0] + "-"
+    if not prefix:
+        for region in regions:
+            if nonblank(region.get("code")):
+                prefix = clean(region.get("code")) + "-"
+                break
+    if not prefix:
+        prefix = "V1-"
+    max_serial = 0
+    for row in post_offices:
+        code = clean(row.get("code"))
+        if not code.startswith(prefix):
+            continue
+        try:
+            max_serial = max(max_serial, int(code[len(prefix):]))
+        except ValueError:
+            continue
+    return "{0}{1}".format(prefix, max_serial + 1)
+
+
+def ensure_post_office(
+    town: str,
+    old_post_office_id: str,
+    post_offices: list[dict[str, str]],
+    post_office_fields: list[str],
+    post_office_regions: list[dict[str, str]],
+    por_fields: list[str],
+    regions: list[dict[str, str]],
+    audit: dict[str, str],
+) -> str:
+    key = clean(town).upper()
+    for row in post_offices:
+        if clean(row.get("name")).upper() == key:
+            return clean(row.get("code"))
+    new_code = next_post_office_code(old_post_office_id, post_offices, regions)
+    po = {name: "" for name in post_office_fields}
+    po.update(audit)
+    po.update({"name": key, "code": new_code})
+    post_offices.append(po)
+    for region_id in source_post_office_regions(old_post_office_id, post_office_regions, regions):
+        por = {name: "" for name in por_fields}
+        por.update(audit)
+        por.update({"post_office": new_code, "region": region_id})
+        post_office_regions.append(por)
+    return new_code
+
+
+def clone_code(base_code: str, existing_codes: set[str]) -> str:
+    for serial in range(1, len(existing_codes) + 100):
+        suffix = "-C{0}".format(serial)
+        candidate = "{0}{1}".format(base_code[: max(1, 30 - len(suffix))], suffix)
+        if candidate not in existing_codes:
+            return candidate
+    raise RuntimeError("could not allocate clone marking code")
+
+
+def clone_townmark(
+    template: dict[str, str],
+    new_code: str,
+    color_name: str,
+    raw_id: str,
+    markings_fields: list[str],
+    source_map_rows: list[dict[str, str]],
+) -> dict[str, str]:
+    clone = {name: template.get(name, "") for name in markings_fields}
+    clone["code"] = new_code
+    clone["color"] = color_name
+    source_map_template = None
+    for row in source_map_rows:
+        if clean(row.get("marking_code") or row.get("marking_id")) == clean(template.get("code")):
+            source_map_template = row
+            break
+    if source_map_template is not None:
+        source_map_row = dict(source_map_template)
+        source_map_row.pop("marking_id", None)
+        source_map_row["marking_code"] = new_code
+        source_map_row["marking_type"] = "TOWNMARK"
+        source_map_row["chunk"] = raw_id
+        source_map_rows.append(source_map_row)
+    return clone
+
+
+def ensure_townmark_colors(
+    raw_id: str,
+    raw_row: dict[str, str],
+    markings: list[dict[str, str]],
+    markings_fields: list[str],
+    source_map_rows: list[dict[str, str]],
+    tm_by_raw: dict[str, list[str]],
+    colors: list[dict[str, str]],
+    color_fields: list[str],
+    audit: dict[str, str],
+    deleted_ids: set[str],
+    clone_sources: dict[str, str],
+    warnings: list[dict[str, str]],
+) -> None:
+    desired_names = v1_color_tokens(raw_row)
+    if not desired_names:
+        return
+    by_code = {clean(row.get("code")): row for row in markings}
+    tm_codes = [code for code in tm_by_raw.get(raw_id, []) if code in by_code]
+    if not tm_codes:
+        add_warning(warnings, raw_id, "missing_townmark", "v1 colors could not be applied")
+        return
+    desired_color_names = [
+        ensure_color(name, colors, color_fields, audit) for name in desired_names
+    ]
+    existing_codes = {clean(row.get("code")) for row in markings if nonblank(row.get("code"))}
+    while len(tm_codes) < len(desired_color_names):
+        template = by_code[tm_codes[-1]]
+        new_code = clone_code(clean(template.get("code")) or "V1", existing_codes)
+        existing_codes.add(new_code)
+        clone = clone_townmark(
+            template,
+            new_code,
+            desired_color_names[len(tm_codes)],
+            raw_id,
+            markings_fields,
+            source_map_rows,
+        )
+        markings.append(clone)
+        by_code[new_code] = clone
+        tm_codes.append(new_code)
+        tm_by_raw.setdefault(raw_id, []).append(new_code)
+        clone_sources[new_code] = clean(template.get("code"))
+    for tm_code, color_name in zip(tm_codes, desired_color_names):
+        by_code[tm_code]["color"] = color_name
+    for extra_code in tm_codes[len(desired_color_names):]:
+        deleted_ids.add(extra_code)
+        tm_by_raw[raw_id].remove(extra_code)
+
+
+def apply_row_fields(
+    raw_id: str,
+    raw_row: dict[str, str],
+    markings_by_id: dict[str, dict[str, str]],
+    marking_ids: list[str],
+    townmark_ids: list[str],
+    ratemark_ids: list[str],
+    lookups: dict[str, dict[str, str]],
+    tables: dict[str, object],
+    warnings: list[dict[str, str]],
+    carry_state: dict[str, str] | None = None,
+    state: str = "",
+) -> None:
+    townmark_rows = [markings_by_id[mid] for mid in townmark_ids if mid in markings_by_id]
+    ratemark_rows = [markings_by_id[mid] for mid in ratemark_ids if mid in markings_by_id]
+    marking_rows = [markings_by_id[mid] for mid in marking_ids if mid in markings_by_id]
+    overlay_town = overlay_post_office_town(raw_row)
+    if overlay_town and marking_rows:
+        first_po = clean(marking_rows[0].get("post_office"))
+        new_po = ensure_post_office(
+            overlay_town,
+            first_po,
+            tables["post_offices"],
+            tables["post_office_fields"],
+            tables["post_office_regions"],
+            tables["post_office_region_fields"],
+            tables["regions"],
+            tables["audit"],
+        )
+        for row in marking_rows:
+            row["post_office"] = new_po
+    boston_row = is_boston_row(state, raw_row)
+    if boston_row:
+        inscription = boston_catalog_head(raw_row)
+    else:
+        inscription = overlay_row_inscription(raw_row, carry_state)
+    if inscription:
+        for row in townmark_rows:
+            row["inscription_txt"] = inscription
+    width, height = parsed_dimensions(raw_row)
+    if width or height:
+        for row in townmark_rows:
+            if width:
+                row["width"] = width
+            if height:
+                row["height"] = height
+    shape_code = normalized_shape_code(raw_row.get("txtTownmarkShape"))
+    if shape_code:
+        if should_keep_munger_circle_shape(raw_row, townmark_rows, shape_code):
+            add_warning(
+                warnings,
+                raw_id,
+                "legacy_sl_shape_ignored",
+                "txtTownmarkShape is Straight line but txtSizes is a bare diameter",
+            )
+        else:
+            shape_id = lookups["shapes"].get(shape_code)
+            if shape_id:
+                for row in townmark_rows:
+                    if not truthy(row.get("is_manuscript")):
+                        row["shape"] = shape_id
+            else:
+                add_warning(warnings, raw_id, "unknown_shape", raw_row.get("txtTownmarkShape", ""))
+    lettering_key = clean(raw_row.get("txtTownmarkLettering")).upper()
+    if not lettering_key:
+        lettering_key = clean(inscription_lettering_name(raw_row)).upper()
+    if lettering_key:
+        lettering_id = lookups["letterings"].get(lettering_key)
+        if lettering_id:
+            for row in townmark_rows:
+                if not truthy(row.get("is_manuscript")):
+                    row["lettering"] = lettering_id
+        else:
+            add_warning(warnings, raw_id, "unknown_lettering", raw_row.get("txtTownmarkLettering", ""))
+    date_fmt = normalized_date_fmt(raw_row.get("txtTownmarkDateFormat"))
+    if date_fmt:
+        for row in townmark_rows:
+            row["date_fmt"] = date_fmt
+    manuscript = v1_manuscript_value(raw_row)
+    if manuscript is not None:
+        for row in townmark_rows:
+            if manuscript == "True":
+                row["is_manuscript"] = manuscript
+                row["shape"] = ""
+                row["lettering"] = ""
+                row["is_irreg"] = ""
+                continue
+            if not clean(row.get("shape")):
+                add_warning(
+                    warnings,
+                    raw_id,
+                    "manuscript_false_without_shape",
+                    "ynManuscript is false but no handstamp shape is available",
+                )
+                if truthy(row.get("is_manuscript")) or ";MS" in clean(row.get("catalog_txt")).upper():
+                    row["is_manuscript"] = "True"
+                    row["shape"] = ""
+                    row["lettering"] = ""
+                    row["is_irreg"] = ""
+                continue
+            row["is_manuscript"] = manuscript
+            if not row.get("is_irreg"):
+                row["is_irreg"] = "False"
+    desc_lines = [
+        *([] if boston_row else inscription_note_lines(raw_row)),
+        raw_row.get("txtOther", ""),
+        raw_row.get("memNotes", ""),
+    ]
+    if any(nonblank(value) for value in desc_lines):
+        for row in townmark_rows:
+            row["desc"] = append_desc(row.get("desc"), desc_lines)
+    rate_desc_lines = synthetic_desc_lines(raw_row)
+    if any(nonblank(value) for value in rate_desc_lines):
+        desc_targets = ratemark_rows if ratemark_rows else townmark_rows
+        for row in desc_targets:
+            row["desc"] = append_desc(row.get("desc"), rate_desc_lines)
+    if nonblank(raw_row.get("txtRatesText")):
+        rate_values = parsed_rate_values(raw_row.get("txtRatesText"))
+        # A single v1 value may only correct a uniform set of ratemarks.
+        # When the bundle already carries distinct values (e.g. X=10 and
+        # PAID 3=3 from the same listing), stamping the one v1 value over
+        # all of them destroys correct data -- warn instead.
+        existing_values = {
+            decimal_text(row.get("rate_val"))
+            for row in ratemark_rows
+            if nonblank(row.get("rate_val"))
+        }
+        if len(rate_values) == 1 and ratemark_rows and len(existing_values) <= 1:
+            for row in ratemark_rows:
+                row["rate_val"] = rate_values[0]
+        elif len(rate_values) == len(ratemark_rows):
+            for row, value in zip(ratemark_rows, rate_values):
+                row["rate_val"] = value
+        elif rate_values:
+            add_warning(
+                warnings,
+                raw_id,
+                "rate_structure",
+                "txtRatesText has {0} value(s), bundle has {1} ratemark(s)".format(
+                    len(rate_values), len(ratemark_rows)
+                ),
+            )
+    for column in UNSUPPORTED_COLUMNS:
+        if nonblank(raw_row.get(column)):
+            add_warning(warnings, raw_id, "unsupported_column", column)
+
+
+def rebuild_dates(
+    raw_rows: dict[str, dict[str, str]],
+    by_raw: dict[str, list[str]],
+    dates: list[dict[str, str]],
+    clone_sources: dict[str, str],
+    audit: dict[str, str],
+) -> list[dict[str, str]]:
+    replaced_subjects = set()
+    new_rows = []
+    for raw_id, raw_row in raw_rows.items():
+        if not nonblank(raw_row.get("txtDatesSeen")):
+            continue
+        subject_ids = by_raw.get(raw_id, [])
+        replaced_subjects.update(subject_ids)
+        new_rows.extend(parsed_date_rows(raw_row.get("txtDatesSeen"), subject_ids, audit))
+    kept = [row for row in dates if clean(row.get("subject_id")) not in replaced_subjects]
+    existing_by_subject = defaultdict(list)
+    for row in kept:
+        existing_by_subject[clean(row.get("subject_id"))].append(row)
+    for new_id, source_id in clone_sources.items():
+        if new_id in replaced_subjects:
+            continue
+        for row in existing_by_subject.get(source_id, []):
+            clone = dict(row)
+            clone["subject_id"] = new_id
+            kept.append(clone)
+    out = kept + new_rows
+    for row in out:
+        for key, value in audit.items():
+            row.setdefault(key, value)
+    return dedupe_date_rows(out)
+
+
+def rebuild_citations(
+    source_map_rows: list[dict[str, str]],
+    reference_work: str,
+    audit: dict[str, str],
+) -> list[dict[str, str]]:
+    rows = []
+    seen = set()
+    for source_map_row in source_map_rows:
+        marking_code = clean(source_map_row.get("marking_code") or source_map_row.get("marking_id"))
+        if not marking_code or marking_code in seen:
+            continue
+        seen.add(marking_code)
+        row = {
+            "reference_work": reference_work,
+            "subject_type": "MARKING",
+            "subject_id": marking_code,
+            "citation_detail": "",
+        }
+        row.update(audit)
+        rows.append(row)
+    return rows
+
+
+def reference_work_has_code(rows: list[dict[str, str]], code: str) -> bool:
+    return any(clean(row.get("code")) == code for row in rows)
+
+
+def keyword_matches_marking(marking: dict[str, str], keyword: str) -> bool:
+    if not keyword:
+        return True
+    text = "{0} {1} {2}".format(
+        marking.get("inscription_txt", ""),
+        marking.get("catalog_txt", ""),
+        marking.get("desc", ""),
+    ).upper()
+    return bool(re.search(r"\b{0}\b".format(re.escape(keyword.upper())), text))
+
+
+def append_massachusetts_bpm_metadata(
+    state: str,
+    raw_rows: dict[str, dict[str, str]],
+    source_map_rows: list[dict[str, str]],
+    markings_by_id: dict[str, dict[str, str]],
+    citations: list[dict[str, str]],
+    reference_works: list[dict[str, str]],
+    audit: dict[str, str],
+    warnings: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    boston_raw_ids = [
+        raw_id for raw_id, raw_row in raw_rows.items()
+        if is_boston_row(state, raw_row)
+    ]
+    if not boston_raw_ids:
+        return citations
+    if not reference_work_has_code(reference_works, BPM_REFERENCE_CODE):
+        raise RuntimeError(
+            "error: Massachusetts Boston overlay requires reference work {0}".format(
+                BPM_REFERENCE_CODE
+            )
+        )
+
+    rows_by_raw = defaultdict(list)
+    for source_map_row in source_map_rows:
+        raw_id = clean(source_map_row.get("chunk"))
+        marking_code = clean(
+            source_map_row.get("marking_code") or source_map_row.get("marking_id")
+        )
+        if raw_id and marking_code:
+            rows_by_raw[raw_id].append(source_map_row)
+
+    out = list(citations)
+    seen_citations = {
+        (
+            clean(row.get("reference_work")),
+            clean(row.get("subject_type")),
+            clean(row.get("subject_id")),
+            clean(row.get("citation_detail")),
+        )
+        for row in out
+    }
+
+    for raw_id in boston_raw_ids:
+        raw_row = raw_rows[raw_id]
+        source_rows = rows_by_raw.get(raw_id, [])
+        if not source_rows:
+            continue
+        codes = []
+        townmark_codes = []
+        non_townmark_codes = []
+        for row in source_rows:
+            code = clean(row.get("marking_code") or row.get("marking_id"))
+            if not code:
+                continue
+            codes.append(code)
+            if clean(row.get("marking_type")).upper() == "TOWNMARK":
+                townmark_codes.append(code)
+            else:
+                non_townmark_codes.append(code)
+
+        explicit_details: dict[str, list[str]] = defaultdict(list)
+        head_details, inline_refs = boston_bpm_details(raw_row)
+        head_desc_lines = boston_head_description_lines(raw_row)
+        if head_desc_lines:
+            for code in townmark_codes or codes:
+                marking = markings_by_id.get(code)
+                if marking:
+                    marking["desc"] = append_desc(marking.get("desc"), head_desc_lines)
+
+        if head_details:
+            for code in townmark_codes or codes:
+                explicit_details[code].extend(head_details)
+
+        for inline_ref in inline_refs:
+            candidates = [
+                code for code in non_townmark_codes
+                if keyword_matches_marking(markings_by_id.get(code, {}), inline_ref.keyword)
+            ]
+            if not candidates:
+                candidates = non_townmark_codes
+                if inline_ref.keyword:
+                    add_warning(
+                        warnings,
+                        raw_id,
+                        "bpm_inline_target",
+                        "could not match {0} to a non-townmark".format(
+                            inline_ref.keyword
+                        ),
+                    )
+            if not candidates:
+                candidates = codes
+            for code in candidates:
+                explicit_details[code].append(inline_ref.detail)
+
+        for code, details in explicit_details.items():
+            marking = markings_by_id.get(code)
+            if not marking:
+                continue
+            desc = format_bpm_description(details)
+            if desc:
+                marking["desc"] = append_desc(marking.get("desc"), [desc])
+
+        for code in codes:
+            details = explicit_details.get(code, [])
+            detail = format_bpm_citation_detail(details)
+            key = (BPM_REFERENCE_CODE, "MARKING", code, detail)
+            if key in seen_citations:
+                continue
+            seen_citations.add(key)
+            row = {
+                "reference_work": BPM_REFERENCE_CODE,
+                "subject_type": "MARKING",
+                "subject_id": code,
+                "citation_detail": detail,
+            }
+            row.update(audit)
+            out.append(row)
+    return out
+
+
+def resolve_image_source(root: Path, source_filename: str) -> Path | None:
+    source = Path(source_filename)
+    candidates = []
+    if source.is_absolute():
+        candidates.append(source)
+    candidates.append(root / source_filename)
+    candidates.append(root / source.name)
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def cover_row(code: str, audit: dict[str, str]) -> dict[str, object]:
+    """A minimal Cover for a v1 image that turned out to be a whole-cover scan.
+
+    Every descriptive field is left empty on purpose: v1 recorded nothing about
+    the cover itself, only that the image showed one. is_institutional is False
+    -- unlike the munger's covers, which exist precisely because a listing was
+    starred as institutional.
+    """
+    row = {
+        "code": code,
+        "color": "",
+        "type": "",
+        "has_adhesive": "False",
+        "height": "",
+        "is_institutional": "False",
+        "width": "",
+        "display_submitter_name": "False",
+        "description": "",
+    }
+    row.update(audit)
+    return row
+
+
+def cover_marking_row(
+    cover: str,
+    marking: str,
+    audit: dict[str, str],
+) -> dict[str, object]:
+    """Link a v1-derived cover to the marking its image was catalogued under."""
+    row = {
+        "cover": cover,
+        "marking": marking,
+        "is_backstamp": "False",
+        "placement": "",
+        "contributor_comment": "",
+        # Matches the munger's institutional covers: this is catalog data being
+        # restated, not a contributor submission awaiting moderation.
+        "review_status": "approved",
+        "reviewer": "",
+        "review_notes": "",
+        "reviewed_at": "",
+    }
+    row.update(audit)
+    return row
+
+
+def cover_code_prefix(marking_codes: list[str]) -> str:
+    """Derive the '<RW>-<ST>-' prefix that cover codes share with marking codes.
+
+    Marking codes look like 'ASCC6-VA-M1301'; covers built by the munger use
+    'ASCC6-VA-C1001'. Mirrors next_post_office_code's approach of reading the
+    prefix off an existing code rather than reconstructing it from arguments.
+    """
+    for code in marking_codes:
+        code = clean(code)
+        if code.count("-") >= 2:
+            return code.rsplit("-", 1)[0] + "-"
+    return "V1-"
+
+
+def next_cover_serial(covers: list[dict[str, str]], prefix: str) -> int:
+    """Highest existing '<prefix>C<n>' serial, or 1000 if there are none.
+
+    Starting at 1000 means the first allocated code is C1001, matching the
+    munger's institutional-cover series so the two are visually consistent.
+    """
+    max_serial = 1000
+    marker = prefix + "C"
+    for row in covers:
+        code = clean(row.get("code"))
+        if not code.startswith(marker):
+            continue
+        try:
+            max_serial = max(max_serial, int(code[len(marker):]))
+        except ValueError:
+            continue
+    return max_serial
+
+
+def build_images(
+    state: str,
+    image_refs: list[dict[str, str]],
+    tm_by_raw: dict[str, list[str]],
+    image_root: Path,
+    media_dir: Path,
+    allow_missing: bool,
+    audit: dict[str, str],
+    warnings: list[dict[str, str]],
+    existing_covers: list[dict[str, str]] | None = None,
+) -> tuple[list[dict[str, object]], list[dict[str, object]], list[dict[str, object]]]:
+    """Build image rows from v1 refs, plus any covers those images require.
+
+    Returns (images, covers, cover_markings).
+
+    A ref whose subject_type is COVER (v1 txtView was Front or Back -- see
+    v1_to_v2_catalog_format.V1_VIEW_ROUTING) is a scan of a whole cover, not a
+    closeup of the marking. v1 had no cover records, so one is created here and
+    linked to the marking the image was catalogued under.
+
+    Deliberately conservative: **one Cover per cover-view image**, never pairing
+    a Front with a Back. In the v1 export only 11 raw rows are a clean
+    (front, back) pair, while 31 carry two Fronts and 4 carry four -- those are
+    separate physical covers, so pairing by position would merge distinct covers.
+    Splitting a wrongly-merged cover is harder than merging two with the existing
+    move-image endpoint (issue #48), so the error is taken in the safe direction.
+    Raw rows that yield more than one cover emit a warning for human review.
+    """
+    media_dir.mkdir(parents=True, exist_ok=True)
+    rows = []
+    cover_rows: list[dict[str, object]] = []
+    cover_marking_rows: list[dict[str, object]] = []
+    display_order = defaultdict(int)
+    prefix = cover_code_prefix(
+        [code for codes in tm_by_raw.values() for code in codes]
+    )
+    cover_serial = next_cover_serial(existing_covers or [], prefix)
+    covers_per_raw = defaultdict(int)
+    for ref in image_refs:
+        raw_id = clean(ref.get("source_row_id"))
+        subject_ids = tm_by_raw.get(raw_id, [])
+        if not subject_ids:
+            add_warning(warnings, raw_id, "image_without_townmark", ref.get("source_filename", ""))
+            continue
+        source_filename = clean(ref.get("source_filename"))
+        source_path = resolve_image_source(image_root, source_filename)
+        if source_path is None:
+            add_warning(warnings, raw_id, "missing_image_file", source_filename)
+            if allow_missing:
+                continue
+            raise FileNotFoundError("missing v1 image file: {0}".format(source_filename))
+        basename = source_path.name
+        dest_path = media_dir / basename
+        if source_path.resolve() != dest_path.resolve():
+            shutil.copy2(source_path, dest_path)
+        data = dest_path.read_bytes()
+        with PILImage.open(dest_path) as image:
+            image_width, image_height = image.size
+        # Color fan-out can map one raw row to several townmarks. The source
+        # image belongs only to the first generated townmark.
+        marking_code = subject_ids[0]
+        # Refs written before subject-type routing existed have no subject_type
+        # column; MARKING is what they were treated as unconditionally.
+        subject_type = clean(ref.get("subject_type")).upper() or "MARKING"
+        if subject_type == "COVER":
+            cover_serial += 1
+            covers_per_raw[raw_id] += 1
+            subject_id = "{0}C{1}".format(prefix, cover_serial)
+            cover_rows.append(cover_row(subject_id, audit))
+            cover_marking_rows.append(
+                cover_marking_row(subject_id, marking_code, audit)
+            )
+            default_view = "FRONT"
+        else:
+            subject_id = marking_code
+            default_view = "FULL"
+        display_order[subject_id] += 1
+        row = {
+            "subject_type": subject_type,
+            "subject_id": subject_id,
+            "original_filename": basename,
+            "storage_filename": "{0}/{1}".format(state.lower(), basename),
+            "file_checksum": hashlib.sha256(data).hexdigest(),
+            "mime_type": mimetypes.guess_type(basename)[0] or "application/octet-stream",
+            "image_width": str(image_width),
+            "image_height": str(image_height),
+            "file_size_bytes": str(len(data)),
+            "image_view": clean(ref.get("image_view")) or default_view,
+            "image_description": clean(ref.get("image_description")),
+            "is_tracing": clean(ref.get("is_tracing")) or "False",
+            "display_order": str(display_order[subject_id]),
+            "uploaded_by": "1",
+        }
+        row.update(audit)
+        rows.append(row)
+    for raw_id, count in sorted(covers_per_raw.items()):
+        if count > 1:
+            add_warning(
+                warnings,
+                raw_id,
+                "multiple_covers_from_one_row",
+                "{0} cover-view images became {0} separate covers; "
+                "review whether any are two views of one cover".format(count),
+            )
+    return rows, cover_rows, cover_marking_rows
+
+
+def reconcile_preserved_images(
+    images: list[dict[str, str]],
+    deleted_ids: set[str],
+) -> list[dict[str, str]]:
+    rows = [
+        dict(row)
+        for row in images
+        if clean(row.get("subject_id")) not in deleted_ids
+    ]
+    display_order = defaultdict(int)
+    for row in rows:
+        subject_id = clean(row.get("subject_id"))
+        if subject_id and "display_order" in row:
+            display_order[subject_id] += 1
+            row["display_order"] = str(display_order[subject_id])
+    return rows
+
+
+def reconcile_cover_markings(
+    cover_markings: list[dict[str, str]],
+    deleted_ids: set[str],
+    clone_sources: dict[str, str],
+) -> list[dict[str, str]]:
+    """Keep institutional CoverMarking rows aligned with color fan-out."""
+    source_rows = [dict(row) for row in cover_markings]
+    by_marking = defaultdict(list)
+    for row in source_rows:
+        marking_code = clean(row.get("marking"))
+        if marking_code:
+            by_marking[marking_code].append(row)
+    rows = [
+        row
+        for row in source_rows
+        if clean(row.get("marking")) not in deleted_ids
+    ]
+    existing_pairs = {
+        (clean(row.get("cover")), clean(row.get("marking")))
+        for row in rows
+        if clean(row.get("cover")) and clean(row.get("marking"))
+    }
+    for new_code, source_code in clone_sources.items():
+        if new_code in deleted_ids:
+            continue
+        for source_row in list(by_marking.get(source_code, [])):
+            cover_code = clean(source_row.get("cover"))
+            pair = (cover_code, new_code)
+            if not cover_code or pair in existing_pairs:
+                continue
+            clone = dict(source_row)
+            clone["marking"] = new_code
+            rows.append(clone)
+            by_marking[new_code].append(clone)
+            existing_pairs.add(pair)
+    return rows
+
+
+def apply_overlay(args: argparse.Namespace) -> int:
+    state = args.state.strip().upper()
+    bundle_dir = Path(args.bundle_dir)
+    raw_rows = load_raw_rows(Path(args.slice))
+    image_ref_fields, image_refs = read_csv(Path(args.image_refs))
+    missing_image_columns = [c for c in IMAGE_REF_COLUMNS if c not in image_ref_fields]
+    if missing_image_columns:
+        sys.exit("error: image refs missing columns: {0}".format(missing_image_columns))
+
+    paths = {
+        "markings": bundle_dir / "markings.csv",
+        "source_map": bundle_dir / "source_marking_map.csv",
+        "post_offices": bundle_dir / "post_offices.csv",
+        "post_office_regions": bundle_dir / "post_office_regions.csv",
+        "regions": bundle_dir / "regions.csv",
+        "colors": bundle_dir / "colors.csv",
+        "letterings": bundle_dir / "letterings.csv",
+        "shapes": bundle_dir / "shapes.csv",
+        "dates": bundle_dir / "dates_seen.csv",
+        "covers": bundle_dir / "covers.csv",
+        "cover_markings": bundle_dir / "cover_markings.csv",
+        "citations": bundle_dir / "citations.csv",
+        "images": bundle_dir / "images.csv",
+        "reference_works": bundle_dir / "reference_works.csv",
+    }
+    for label, path in paths.items():
+        if label in {"images", "covers", "cover_markings"}:
+            continue
+        if not path.is_file():
+            sys.exit("error: missing bundle CSV: {0}".format(path))
+
+    markings_fields, markings = read_csv(paths["markings"])
+    source_map_fields, source_map_rows = read_csv(paths["source_map"])
+    post_office_fields, post_offices = read_csv(paths["post_offices"])
+    por_fields, post_office_regions = read_csv(paths["post_office_regions"])
+    region_fields, regions = read_csv(paths["regions"])
+    color_fields, colors = read_csv(paths["colors"])
+    lettering_fields, letterings = read_csv(paths["letterings"])
+    shape_fields, shapes = read_csv(paths["shapes"])
+    date_fields, dates = read_csv(paths["dates"])
+    cover_fields, covers = (
+        read_csv(paths["covers"])
+        if paths["covers"].is_file()
+        else (COVER_COLUMNS, [])
+    )
+    cover_marking_fields, cover_markings = (
+        read_csv(paths["cover_markings"])
+        if paths["cover_markings"].is_file()
+        else (COVER_MARKING_COLUMNS, [])
+    )
+    citation_fields, citations = read_csv(paths["citations"])
+    image_fields, existing_images = read_csv(paths["images"]) if paths["images"].is_file() else (IMAGE_COLUMNS, [])
+    reference_work_fields, reference_works = read_csv(paths["reference_works"])
+    audit = audit_from(markings or colors or post_offices)
+    warnings = read_existing_warnings(Path(args.warnings)) if args.preserve_images else []
+
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
+    lookups = {
+        "shapes": shape_lookup(shapes),
+        "letterings": lettering_lookup(letterings),
+    }
+    deleted_ids = set()
+    clone_sources = {}
+    for raw_id, raw_row in raw_rows.items():
+        if raw_id not in by_raw:
+            add_warning(warnings, raw_id, "missing_source_map", "no generated marking rows")
+            continue
+        ensure_townmark_colors(
+            raw_id,
+            raw_row,
+            markings,
+            markings_fields,
+            source_map_rows,
+            tm_by_raw,
+            colors,
+            color_fields,
+            audit,
+            deleted_ids,
+            clone_sources,
+            warnings,
+        )
+    if deleted_ids:
+        markings = [row for row in markings if clean(row.get("code")) not in deleted_ids]
+        source_map_rows = [
+            row for row in source_map_rows
+            if clean(row.get("marking_code") or row.get("marking_id")) not in deleted_ids
+        ]
+        dates = [row for row in dates if clean(row.get("subject_id")) not in deleted_ids]
+        citations = [
+            row for row in citations
+            if clean(row.get("subject_id")) not in deleted_ids
+        ]
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
+
+    markings_by_id = {clean(row.get("code")): row for row in markings}
+    ratemark_by_raw = defaultdict(list)
+    for row in source_map_rows:
+        if clean(row.get("marking_type")).upper() == "RATEMARK":
+            ratemark_by_raw[clean(row.get("chunk"))].append(clean(row.get("marking_code") or row.get("marking_id")))
+    tables = {
+        "post_offices": post_offices,
+        "post_office_fields": post_office_fields,
+        "post_office_regions": post_office_regions,
+        "post_office_region_fields": por_fields or POST_OFFICE_REGION_COLUMNS,
+        "regions": regions,
+        "audit": audit,
+    }
+    carry_state: dict[str, str] = {}
+    for raw_id, raw_row in raw_rows.items():
+        apply_row_fields(
+            raw_id,
+            raw_row,
+            markings_by_id,
+            by_raw.get(raw_id, []),
+            tm_by_raw.get(raw_id, []),
+            ratemark_by_raw.get(raw_id, []),
+            lookups,
+            tables,
+            warnings,
+            carry_state,
+            state=state,
+        )
+
+    by_raw, tm_by_raw = build_source_map_indexes(source_map_rows)
+    dates = rebuild_dates(raw_rows, by_raw, dates, clone_sources, audit)
+    cover_markings = reconcile_cover_markings(
+        cover_markings,
+        deleted_ids,
+        clone_sources,
+    )
+    reference_work_id = ""
+    if citations:
+        reference_work_id = clean(citations[0].get("reference_work"))
+    if not reference_work_id and reference_works:
+        reference_work_id = clean(reference_works[0].get("code"))
+    reference_work_id = reference_work_id or "ASCC"
+    citations = rebuild_citations(source_map_rows, reference_work_id, audit)
+    citations = append_massachusetts_bpm_metadata(
+        state,
+        raw_rows,
+        source_map_rows,
+        markings_by_id,
+        citations,
+        reference_works,
+        audit,
+        warnings,
+    )
+    if args.preserve_images:
+        images = reconcile_preserved_images(existing_images, deleted_ids)
+    else:
+        images, new_covers, new_cover_markings = build_images(
+            state,
+            image_refs,
+            tm_by_raw,
+            Path(args.v1_image_root),
+            Path(args.media_dir),
+            bool(args.allow_missing_v1_images),
+            audit_from(existing_images or markings),
+            warnings,
+            covers,
+        )
+        # Appended, not merged: these codes are freshly allocated above the
+        # highest serial already present, so they cannot collide with the
+        # munger's institutional covers.
+        covers = covers + new_covers
+        cover_markings = cover_markings + new_cover_markings
+
+    write_csv(paths["markings"], markings_fields, markings)
+    write_csv(paths["source_map"], source_map_fields, source_map_rows)
+    write_csv(paths["post_offices"], post_office_fields, post_offices)
+    write_csv(paths["post_office_regions"], por_fields or POST_OFFICE_REGION_COLUMNS, post_office_regions)
+    write_csv(paths["colors"], color_fields, colors)
+    write_csv(paths["dates"], date_fields or DATE_COLUMNS, dates)
+    # Written when the file already existed OR when routing produced rows for
+    # it -- a bundle with no cover side until now gains one here.
+    if covers or paths["covers"].is_file():
+        write_csv(paths["covers"], cover_fields or COVER_COLUMNS, covers)
+    if cover_markings or paths["cover_markings"].is_file():
+        write_csv(
+            paths["cover_markings"],
+            cover_marking_fields or COVER_MARKING_COLUMNS,
+            cover_markings,
+        )
+    write_csv(paths["citations"], citation_fields or CITATION_COLUMNS, citations)
+    write_csv(paths["images"], image_fields or IMAGE_COLUMNS, images)
+    write_csv(Path(args.warnings), WARNING_COLUMNS, warnings)
+
+    print("v1 overlay rows: {0}".format(len(raw_rows)))
+    print("markings: {0}".format(len(markings)))
+    print("dates_seen: {0}".format(len(dates)))
+    if covers or paths["covers"].is_file():
+        print("covers: {0}".format(len(covers)))
+    if cover_markings or paths["cover_markings"].is_file():
+        print("cover_markings: {0}".format(len(cover_markings)))
+    print("citations: {0}".format(len(citations)))
+    image_note = " (preserved)" if args.preserve_images else ""
+    print("images: {0}{1}".format(len(images), image_note))
+    print("warnings rows: {0} -> {1}".format(len(warnings), args.warnings))
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Apply v1 fields to a munger bundle.")
+    parser.add_argument("--state", required=True)
+    parser.add_argument("--slice", required=True)
+    parser.add_argument("--image-refs", required=True)
+    parser.add_argument("--bundle-dir", required=True)
+    parser.add_argument("--v1-image-root", required=True)
+    parser.add_argument("--media-dir", required=True)
+    parser.add_argument("--warnings", required=True)
+    parser.add_argument("--allow-missing-v1-images", action="store_true")
+    parser.add_argument(
+        "--preserve-images",
+        action="store_true",
+        help="leave existing images.csv rows untouched and apply fields only",
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    return apply_overlay(build_parser().parse_args(argv))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
