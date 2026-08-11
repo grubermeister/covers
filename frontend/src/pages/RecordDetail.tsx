@@ -19,6 +19,7 @@ import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
 import { CropImageDialog } from "@/components/CropImageDialog";
 import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
+import { dashboardHrefForTab } from "@/lib/dashboardParams";
 import { buildMarkingFields } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
 import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
@@ -512,8 +513,12 @@ const RecordDetail = () => {
   } | null;
   const fromDashboard = locationState?.fromDashboard === true;
   const dashboardTab = locationState?.dashboardTab;
+  // Issue #87: this used to send everyone to /search, so an editor who opened a
+  // record from their review queue was dumped into catalog search. When they
+  // arrived from the dashboard, go back to the dashboard view they left.
   const handleBack = () => {
-    navigate("/search");
+    if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
+    else navigate("/search");
   };
 
   if (loading) {
@@ -853,7 +858,7 @@ const RecordDetail = () => {
           <div className="mb-6">
             <Button variant="ghost" onClick={handleBack} className="-ml-4">
               <ArrowLeft className="mr-2 h-4 w-4" />
-              Back
+              {fromDashboard ? "Back to Dashboard" : "Back"}
             </Button>
           </div>
 

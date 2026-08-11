@@ -17,7 +17,7 @@ import {
 } from "@/components/ui/pagination";
 import { ArrowDown, ArrowUp, Calendar, Loader2, Pencil, Plus, Search as SearchIcon, SlidersHorizontal } from "lucide-react";
 import { useState, useEffect, useMemo, useRef } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
+import { useNavigate, useLocation, useSearchParams } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import { formatSizeFromSubmittedData } from "@/lib/dimensionsMm";
 import {
@@ -33,6 +33,13 @@ import { getRecycleBinCovers, type RecycleBinCover } from "@/services/covers";
 import { listContributions } from "@/services/contributions";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useFilterOptions } from "@/hooks/useFilterOptions";
+import {
+  buildDashboardParams,
+  dashboardHref,
+  parseDashboardParams,
+  rememberDashboardLocation,
+  type DashboardParams,
+} from "@/lib/dashboardParams";
 
 const noImageClassName = "w-full h-full min-w-0 min-h-0 object-cover bg-muted";
 
@@ -268,11 +275,24 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const location = useLocation();
   const { toast } = useToast();
   const user = useAuth();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Issue #87: the dashboard's view (tab, page, page size, sort, filters) is
+  // backed by the URL so it survives the round trip to a detail screen, a
+  // reload and the back button. Read once on mount -- after that this component
+  // owns the state and writes it back out; re-reading would fight the user.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const initialParams = useMemo(() => parseDashboardParams(searchParams), []);
 
   const dashboardReturnState = () => ({
     fromDashboard: true,
     dashboardTab: activeTab,
   });
+
+  // Concrete href back to the view currently on screen. Screens that take a
+  // plain `from` string (CoverEdit, Contribute) navigate straight to it, so
+  // handing them the query string is what preserves page size and filters (#87).
+  const dashboardFrom = () => dashboardHref(searchParams.toString());
 
   // Resume a draft submission. Cover drafts edit through CoverEdit; marking drafts
   // through the Contribute form. A cover draft with no resolvable parent marking
@@ -282,11 +302,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       // Pass `from` so CoverEdit returns here (the dashboard) on save/back,
       // instead of dumping the user on the parent marking record.
       navigate(`/record/${s.cover_parent_marking_id}/cover/new?edit=${s.id}`, {
-        state: { from: "/dashboard" },
+        state: { from: dashboardFrom() },
       });
       return;
     }
-    navigate(`/contribute?edit=${s.id}`);
+    navigate(`/contribute?edit=${s.id}`, { state: { from: dashboardFrom() } });
   };
 
   const goEditSubmission = (s: DashboardItem) => {
@@ -295,11 +315,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     if (statusNorm === "pending" || statusNorm === "needs_revision" || statusNorm === "rejected") {
       if (s.isCover && coverParentMarkingId != null) {
         navigate(`/record/${coverParentMarkingId}/cover/new?edit=${s.id}`, {
-          state: { from: "/dashboard" },
+          state: { from: dashboardFrom() },
         });
         return;
       }
-      navigate(`/contribute?edit=${s.id}`, { state: { from: "/dashboard" } });
+      navigate(`/contribute?edit=${s.id}`, { state: { from: dashboardFrom() } });
       return;
     }
 
@@ -308,7 +328,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       // Edit that cover directly instead of sending an approved contribution id
       // through the draft/resubmission endpoint.
       navigate(`/record/${coverParentMarkingId}/cover/${s.cover_id}/edit`, {
-        state: { from: "/dashboard" },
+        state: { from: dashboardFrom() },
       });
       return;
     }
@@ -318,14 +338,14 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       // contribution id. Routing to /edit/:markingId would open the parent
       // marking editor instead.
       navigate(`/record/${coverParentMarkingId}/cover/new?edit=${s.id}`, {
-        state: { from: "/dashboard" },
+        state: { from: dashboardFrom() },
       });
       return;
     }
 
     if (s.marking_id != null) {
       navigate(`/edit/${s.marking_id}`, {
-        state: { from: "/dashboard", fromDashboard: true, fromDashboardDirect: true },
+        state: { from: dashboardFrom(), fromDashboard: true, fromDashboardDirect: true },
       });
     }
   };
@@ -362,7 +382,11 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     }
     navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });
   };
-  const [activeTab, setActiveTab] = useState<DashboardTab>(initialTab);
+  // `?tab=` wins when present; otherwise fall back to the route's initialTab so
+  // the Navigation menu's location-state links keep working unchanged.
+  const [activeTab, setActiveTab] = useState<DashboardTab>(
+    searchParams.has("tab") ? initialParams.tab : initialTab,
+  );
 
   // When returning from contribution detail, switch to editor tab if requested
   useEffect(() => {
@@ -376,9 +400,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [loading, setLoading] = useState(true);
   const [submissionsRefetchKey, setSubmissionsRefetchKey] = useState(0);
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(initialParams.submissions.page);
   const [goToPageInput, setGoToPageInput] = useState("");
-  const [itemsPerPage, setItemsPerPage] = useState(10);
+  const [itemsPerPage, setItemsPerPage] = useState(initialParams.submissions.pageSize);
 
   // Editor tab: history of user contributions in assigned states, not full catalog.
   const [editorHistoryItems, setEditorHistoryItems] = useState<EditorHistoryItem[]>([]);
@@ -391,17 +415,19 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [removedCovers, setRemovedCovers] = useState<RecycleBinCover[]>([]);
   const [editorHistoryLoading, setEditorHistoryLoading] = useState(false);
   const [editorHistoryError, setEditorHistoryError] = useState<string | null>(null);
-  const [editorHistoryStatusFilter, setEditorHistoryStatusFilter] = useState("all");
-  const [editorStateFilter, setEditorStateFilter] = useState("all");
-  const [editorSearchQuery, setEditorSearchQuery] = useState("");
-  const [editorTownFilter, setEditorTownFilter] = useState("");
-  const [editorShapeFilter, setEditorShapeFilter] = useState("all");
-  const [editorColorFilter, setEditorColorFilter] = useState("all");
-  const [editorDateFrom, setEditorDateFrom] = useState("");
-  const [editorDateTo, setEditorDateTo] = useState("");
-  const [submissionQueueSort, setSubmissionQueueSort] = useState<SortEntry<EditorHistorySortField>[]>([
-    { field: "submitted", dir: "desc" },
-  ]);
+  const [editorHistoryStatusFilter, setEditorHistoryStatusFilter] = useState(
+    initialParams.editor.status,
+  );
+  const [editorStateFilter, setEditorStateFilter] = useState(initialParams.editor.state);
+  const [editorSearchQuery, setEditorSearchQuery] = useState(initialParams.editor.q);
+  const [editorTownFilter, setEditorTownFilter] = useState(initialParams.editor.town);
+  const [editorShapeFilter, setEditorShapeFilter] = useState(initialParams.editor.shape);
+  const [editorColorFilter, setEditorColorFilter] = useState(initialParams.editor.color);
+  const [editorDateFrom, setEditorDateFrom] = useState(initialParams.editor.from);
+  const [editorDateTo, setEditorDateTo] = useState(initialParams.editor.to);
+  const [submissionQueueSort, setSubmissionQueueSort] = useState<SortEntry<EditorHistorySortField>[]>(
+    initialParams.editor.sort,
+  );
   const toggleEditorHistorySort = (field: EditorHistorySortField, dir: SortDir) => {
     // Single-column sort: clicking an arrow replaces the sort. Clicking the
     // already-active direction clears the sort (returns to API order). The
@@ -414,10 +440,12 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       return [{ field, dir }];
     });
   };
-  const [editorHistoryPage, setEditorHistoryPage] = useState(1);
+  const [editorHistoryPage, setEditorHistoryPage] = useState(initialParams.editor.page);
   const [editorHistoryTotal, setEditorHistoryTotal] = useState<number | null>(null);
   const [editorHistoryGoToInput, setEditorHistoryGoToInput] = useState("");
-  const [editorHistoryPageSize, setEditorHistoryPageSize] = useState(10);
+  const [editorHistoryPageSize, setEditorHistoryPageSize] = useState(
+    initialParams.editor.pageSize,
+  );
 
   // Assigned-collections header: clip to one line by default, expandable on
   // click. Overflow is measured against the truncated span so the "Show more"
@@ -427,15 +455,15 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   const [assignedCollectionsOverflowing, setAssignedCollectionsOverflowing] = useState(false);
 
   // Filter states (mirror Catalog Search)
-  const [searchQuery, setSearchQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [stateFilter, setStateFilter] = useState("all");
-  const [townFilter, setTownFilter] = useState("");
-  const [shapeFilter, setShapeFilter] = useState("all");
-  const [colorFilter, setColorFilter] = useState("all");
-  const [mySubmissionsSort, setMySubmissionsSort] = useState<SortEntry<MySubmissionsSortField>[]>([
-    { field: "submitted", dir: "desc" },
-  ]);
+  const [searchQuery, setSearchQuery] = useState(initialParams.submissions.q);
+  const [statusFilter, setStatusFilter] = useState(initialParams.submissions.status);
+  const [stateFilter, setStateFilter] = useState(initialParams.submissions.state);
+  const [townFilter, setTownFilter] = useState(initialParams.submissions.town);
+  const [shapeFilter, setShapeFilter] = useState(initialParams.submissions.shape);
+  const [colorFilter, setColorFilter] = useState(initialParams.submissions.color);
+  const [mySubmissionsSort, setMySubmissionsSort] = useState<SortEntry<MySubmissionsSortField>[]>(
+    initialParams.submissions.sort,
+  );
   const toggleMySubmissionsSort = (field: MySubmissionsSortField, dir: SortDir) => {
     // See toggleEditorHistorySort for the single-column rationale.
     setMySubmissionsSort((prev) => {
@@ -444,8 +472,8 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       return [{ field, dir }];
     });
   };
-  const [dateFrom, setDateFrom] = useState("");
-  const [dateTo, setDateTo] = useState("");
+  const [dateFrom, setDateFrom] = useState(initialParams.submissions.from);
+  const [dateTo, setDateTo] = useState(initialParams.submissions.to);
   const dateFromInputRef = useRef<HTMLInputElement>(null);
   const dateToInputRef = useRef<HTMLInputElement>(null);
   const editorDateFromInputRef = useRef<HTMLInputElement>(null);
@@ -725,9 +753,15 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       .finally(() => setEditorHistoryLoading(false));
   }, [isEditor, activeTab, editorHistoryStatusFilter, editorHistoryPage, editorHistoryPageSize, submissionsRefetchKey, editorStateFilter]);
 
-  // Reset editor pagination when changing history status filter or tab
+  // Reset editor pagination when changing history status filter or tab. Skipped
+  // on the first run so a page restored from the URL survives mount (#87).
+  const editorFiltersMounted = useRef(false);
   useEffect(() => {
     if (!isEditor || activeTab !== "editor") return;
+    if (!editorFiltersMounted.current) {
+      editorFiltersMounted.current = true;
+      return;
+    }
     setEditorHistoryPage(1);
   }, [
     isEditor,
@@ -909,10 +943,65 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     }
   };
 
-  // Reset submissions pagination when filters or page size change
+  // Reset submissions pagination when filters or page size change. Skipped on
+  // the first run so a page restored from the URL is not immediately clobbered
+  // back to 1 (Issue #87).
+  const submissionsFiltersMounted = useRef(false);
   useEffect(() => {
+    if (!submissionsFiltersMounted.current) {
+      submissionsFiltersMounted.current = true;
+      return;
+    }
     setCurrentPage(1);
   }, [searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter, mySubmissionsSort, dateFrom, dateTo, itemsPerPage]);
+
+  // Issue #87: mirror the whole dashboard view into the URL, and remember it so
+  // detail screens several navigations away can send the editor back here.
+  useEffect(() => {
+    const next: DashboardParams = {
+      tab: activeTab,
+      submissions: {
+        q: searchQuery,
+        status: statusFilter,
+        state: stateFilter,
+        town: townFilter,
+        shape: shapeFilter,
+        color: colorFilter,
+        from: dateFrom,
+        to: dateTo,
+        sort: mySubmissionsSort,
+        page: currentPage,
+        pageSize: itemsPerPage,
+      },
+      editor: {
+        q: editorSearchQuery,
+        status: editorHistoryStatusFilter,
+        state: editorStateFilter,
+        town: editorTownFilter,
+        shape: editorShapeFilter,
+        color: editorColorFilter,
+        from: editorDateFrom,
+        to: editorDateTo,
+        sort: submissionQueueSort,
+        page: editorHistoryPage,
+        pageSize: editorHistoryPageSize,
+      },
+    };
+    const params = buildDashboardParams(next);
+    const serialized = params.toString();
+    rememberDashboardLocation(serialized);
+    if (serialized !== searchParams.toString()) {
+      setSearchParams(serialized ? params : {}, { replace: true });
+    }
+  }, [
+    activeTab,
+    searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter,
+    dateFrom, dateTo, mySubmissionsSort, currentPage, itemsPerPage,
+    editorSearchQuery, editorHistoryStatusFilter, editorStateFilter, editorTownFilter,
+    editorShapeFilter, editorColorFilter, editorDateFrom, editorDateTo,
+    submissionQueueSort, editorHistoryPage, editorHistoryPageSize,
+    searchParams, setSearchParams,
+  ]);
 
   // Measure whether the assigned-collections line is truncated. When expanded
   // we always treat it as "overflowing" so the user can still collapse it.
@@ -1385,7 +1474,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                 <div className="flex items-center gap-2">
                   <Button
                     size="sm"
-                    onClick={() => navigate("/contribute", { state: { from: "/dashboard" } })}
+                    onClick={() => navigate("/contribute", { state: { from: dashboardFrom() } })}
                     className="shrink-0 bg-green-800 hover:bg-green-900 text-white"
                   >
                     <Plus className="mr-2 h-4 w-4" />
@@ -1989,7 +2078,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      navigate(`/record/${m.id}`, { state: { fromDashboard: true } })
+                                      navigate(`/record/${m.id}`, { state: dashboardReturnState() })
                                     }
                                     className="w-16 h-16 shrink-0 p-0 border-0 bg-transparent cursor-pointer rounded overflow-hidden focus:outline-none focus:ring-2 focus:ring-ring"
                                     aria-label={`Open ${displayLabel}`}
@@ -2044,7 +2133,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                               >
                                 <button
                                   type="button"
-                                  onClick={() => navigate(`/covers/${c.id}`)}
+                                  onClick={() =>
+                                    navigate(`/covers/${c.id}`, { state: dashboardReturnState() })
+                                  }
                                   className="min-w-0 flex-1 text-left p-0 border-0 bg-transparent cursor-pointer rounded focus:outline-none focus:ring-2 focus:ring-ring"
                                   aria-label={`Open ${coverLabel}`}
                                 >

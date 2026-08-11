@@ -20,7 +20,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Link, useNavigate, useParams, useLocation } from "react-router-dom";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
+import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
 import { useAuth } from "@/hooks/useAuth";
 import { normalizeImageUrl } from "@/services/markings";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious, type CarouselApi } from "@/components/ui/carousel";
@@ -241,14 +243,24 @@ const ContributionDetail = () => {
         ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
-      toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && result.markingId != null) {
-        navigate(`/record/${result.markingId}`, {
-          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
-        });
-        return;
-      }
-      navigate("/dashboard", { state: { tab: "editor" } });
+      // Issue #87: every decision returns to the review queue the editor came
+      // from. Approving used to redirect to the new catalog record instead,
+      // which stranded the editor mid-queue; the record is reachable from the
+      // toast action rather than by hijacking the navigation.
+      toast({
+        title: actionLabel,
+        description: "Your comment was saved for the contributor.",
+        action:
+          kind === "approve" && result.markingId != null ? (
+            <ToastAction
+              altText="View the approved record"
+              onClick={() => navigate(`/record/${result.markingId}`)}
+            >
+              View record
+            </ToastAction>
+          ) : undefined,
+      });
+      navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
     } catch (err) {
       toast({
         title: "Could not submit",
@@ -262,8 +274,11 @@ const ContributionDetail = () => {
 
 
   const handleBack = () => {
-    if (fromDashboard) navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
-    else navigate("/dashboard");
+    // Issue #87: return to the dashboard view the editor actually left, not a
+    // freshly defaulted one. dashboardHrefForTab keeps their filters and page
+    // while pinning the tab they came in on.
+    if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "submissions"));
+    else navigate(dashboardHref());
   };
 
   const handleDeleteConfirm = async () => {
@@ -273,7 +288,7 @@ const ContributionDetail = () => {
       await deleteOwnContribution(contribution.id);
       toast({ title: "Draft deleted" });
       setDeleteOpen(false);
-      navigate("/dashboard");
+      navigate(dashboardHref());
     } catch (err) {
       toast({
         title: "Could not delete",
