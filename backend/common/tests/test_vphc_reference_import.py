@@ -171,6 +171,58 @@ class VphcReferenceImportTests(TestCase):
             ["STATE"])
         self.assertIsNone(PostOffice.objects.get(pk=decoy.pk).population)
 
+    def test_a_town_routed_to_the_other_of_va_wv_still_resolves(self):
+        """The source is pre-1863 Virginia — one jurisdiction, two modern states.
+
+        R3 routes each row to its modern state by county, and the same town can
+        be routed differently by different rows: Falls Mill's postmaster rows
+        say WV while its marking rows say VA. Refusing the mismatch silently
+        dropped 51 real appointments on woco.dev.
+        """
+        write(os.path.join(self.dir, "extract", "t3_postmasters.csv"), T3_FIELDS, [
+            # the town will be created as Virginia, but this row claims WV
+            {"src": "T3:r20000", "state": "WV", "county": "Washington",
+             "town": "ABINGDON", "town_key": "ABINGDON",
+             "postmaster": "Jane Roe", "event": "appointment",
+             "appointed_date": "1801-01-01", "appointed_granularity": "DAY"},
+        ])
+        self.run_import()
+
+        tenure = PostmasterTenure.objects.get(postmaster__name="Jane Roe")
+        self.assertEqual(tenure.post_office.name, "Abingdon")
+        self.assertEqual(
+            [r.region.abbrev for r in
+             tenure.post_office.post_office_regions.filter(
+                 region__region_tier="STATE")],
+            ["VA"])
+
+    def test_the_va_wv_fallback_never_reaches_a_third_state(self):
+        """The fallback exists because VA and WV were once one state. It must
+        not become a general name match — that is the Michigan-town bug."""
+        maryland = Region.objects.create(
+            code="USA-MD1", name="Maryland", abbrev="MD", region_tier="STATE",
+            created_by=self.user, modified_by=self.user)
+        decoy = PostOffice.objects.create(
+            code="USA-MD1-1", name="Rockville",
+            created_by=self.user, modified_by=self.user)
+        PostOfficeRegion.objects.create(
+            post_office=decoy, region=maryland,
+            created_by=self.user, modified_by=self.user)
+        write(os.path.join(self.dir, "extract", "t3_postmasters.csv"), T3_FIELDS, [
+            {"src": "T3:r20001", "state": "VA", "county": "",
+             "town": "ROCKVILLE", "town_key": "ROCKVILLE",
+             "postmaster": "John Roe", "event": "appointment",
+             "appointed_date": "1810-01-01", "appointed_granularity": "DAY"},
+        ])
+        write(os.path.join(self.dir, "crossexam", "post_offices_to_create.csv"),
+              PO_FIELDS, [])
+        self.run_import()
+
+        # skipped, not silently hung off Maryland's Rockville
+        self.assertFalse(PostmasterTenure.objects.filter(
+            post_office=decoy).exists())
+        self.assertEqual(PostmasterTenure.objects.count(), 0)
+
     def test_post_office_without_a_state_is_refused(self):
         """Rule P1: never invent a home for a town that has none."""
         write(os.path.join(self.dir, "crossexam", "post_offices_to_create.csv"),

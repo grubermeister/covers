@@ -101,6 +101,28 @@ def index_post_offices_by_state():
     return index
 
 
+def resolve_office(index, state, key):
+    """Find a town, preferring the state the sheet names but accepting the other.
+
+    The source is *pre-1863 Virginia*, one jurisdiction that later became two
+    states, and R3 routes each row to its modern state by county. The same town
+    can therefore be routed differently by different rows -- Falls Mill's
+    postmaster rows say WV while its marking rows say VA, and Sweet Springs is
+    the reverse. Refusing the mismatch loses 51 real appointments.
+
+    The fallback is deliberately limited to VA and WV. It exists because these
+    two states were once one, which is not true of anywhere else, and widening
+    it would reintroduce the Michigan-town bug this scoping was added to fix.
+    """
+    order = ([state] if state in STATE_CODES else []) + [
+        s for s in STATE_CODES if s != state]
+    for candidate in order:
+        offices = index.get((candidate, key))
+        if offices:
+            return offices[0], candidate
+    return None, None
+
+
 def read_csv(path):
     if not os.path.exists(path):
         raise CommandError(f"missing input: {path}")
@@ -247,10 +269,13 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"post office {row['town']!r} has no usable state -- it should "
                     "have been quarantined by rule P1, not offered for creation")
-            key = (state, row["town_key"])
-            if by_key.get(key):
+            existing, found_in = resolve_office(by_key, state, row["town_key"])
+            if existing is not None:
                 totals["post offices already present"] += 1
+                if found_in != state:
+                    totals["...already present under the other of VA/WV"] += 1
                 continue
+            key = (state, row["town_key"])
             po = PostOffice(
                 code=f"{STATE_CODES[state]}-{next_serial[state]}",
                 name=row["town"].title(),
@@ -315,12 +340,13 @@ class Command(BaseCommand):
         }
         totals["tenures already present"] = len(seen)
         for row in t3:
-            key = (row["state"].strip().upper(), row["town_key"])
-            offices = by_key.get(key)
-            if not offices:
+            po, found_in = resolve_office(
+                by_key, row["state"].strip().upper(), row["town_key"])
+            if po is None:
                 totals["tenures skipped (no post office)"] += 1
                 continue
-            po = offices[0]
+            if found_in != row["state"].strip().upper():
+                totals["tenures matched via the other of VA/WV"] += 1
             person = self.people.get(row["postmaster"].strip())
             date = row["appointed_date"].strip() or None
             gran = row["appointed_granularity"].strip() or None
