@@ -52,3 +52,63 @@ merge node keeps the graph linear and avoids generating a second merge migration
 **Source / evidence.** `manage.py makemigrations --check --dry-run` → "No changes detected";
 `manage.py check` → no issues; `manage.py showmigrations common` shows a single linear tail
 ending at `0014_image_cropped_from`.
+
+## 2026-08-12 — VPHC `vphc` provenance blob is deliberately ignored by the field adapter; `lettering` is consumed
+
+**What was decided.** `KNOWN_SUBMITTED_DATA_KEYS` in
+`frontend/src/lib/contributionToFields.ts` gained two keys, on opposite sides of the
+allowlist's consumed/ignored split:
+
+- `vphc` — **ignored.** The nested provenance blob `apply_vphc_ledger` attaches to every
+  ingested contribution (`src`, `cancel_no`, `vphc_code`, `rules_version`,
+  `why_unmatched`, `flags`, `county`, `state`). None of it is a catalog field and
+  `contribution_apply` never reads it, so it has no row in the field list.
+- `lettering` — **consumed**, resolved in `resolveLettering` after
+  `lettering_style_name` / `letteringStyleName`. This is *not* a meta key:
+  `contribution_apply._resolve_fk(Lettering, payload, "lettering_style_id", "lettering",
+  "lettering_id")` uses it as the name key, so a payload carrying it does set the
+  marking's lettering on approval. Ignoring it would have hidden a value the reviewer is
+  approving.
+
+**Why.** Both keys were absent from the allowlist, so `submittedDataToFieldInput` threw and
+`ContributionDetail` rendered its error banner instead of the field list — on all 2,062
+pending contributions, i.e. the entire review queue. The fail-loud policy worked exactly as
+designed; the adapter had simply not been updated when the VPHC ingest landed (#106).
+
+**The blob is ignored by the adapter but surfaced by the page.** Ignoring `vphc` is the
+correct *adapter* decision — it is not a catalog field — but on its own it would have left
+the ingest's uncertainty invisible. 1,284 of the 2,062 contributions carry at least one
+`vphc.flags` entry (`date_low_confidence` alone accounts for 759), and only
+`type_defaulted` and the multi-colour case reached the reviewer, as prose that
+`apply_vphc_ledger._description` writes into `desc`. A marking whose century was inferred
+and whose county could not be resolved was therefore indistinguishable from one read
+cleanly off the sheet.
+
+So `frontend/src/lib/vphcProvenance.ts` + `components/VphcProvenanceCard.tsx` render the
+blob as a read-only strip under the field list on `ContributionDetail`: the source
+coordinates (VPHC code, cancel no., county, sheet cell), why the row was catalogued as new
+rather than matched, and each flag with its explanation. Flags are split into *uncertain*
+("this may still be wrong") and *repaired* ("the ingest changed this and is telling you"),
+uncertain sorted first. Nothing in the strip is applied to the marking.
+
+**Flag wording is copied, not invented.** `FLAG_REASONS` in the frontend mirrors
+`FLAG_REASONS` in `tools/vphc_crossexam.py:228`, which is the source of truth — a reviewer
+should read the same sentence in the UI as in the crossexam report. The two flags
+`apply_vphc_ledger` adds itself (`type_defaulted`, `color_unrecognised`) have no entry
+there and are worded here. An unrecognised flag is displayed rather than dropped: the
+crossexam vocabulary can grow, and a flag we don't know is the one a reviewer most needs.
+
+**Source / evidence.**
+- Ground truth from the local `worldcovers` DB, not inferred from the ingest script:
+  the distinct top-level key set across all 2,062 `Contributions.submitted_data` rows
+  diffed against the allowlist yields exactly `["vphc", "lettering"]`.
+- `lettering` is present on the 310 edit submissions and is `null` on 305 of them
+  (`"Serif"` ×3, `"Outline"` ×2) — `toStr(null)` → `""`, so the renderer prints "-".
+- All 2,062 real payloads replayed through `submittedDataToFieldInput` *and*
+  `readVphcProvenance` (temporary harness, not committed): 0 failures, 2,062 with
+  provenance, 1,284 with flags, 5 lettering values displayed, 0 flags missing from the
+  glossary, and all 7 `why_unmatched` verdicts present in the data (`ambiguous`,
+  `town_damaged`, `no_colour_match`, `unclassified_device`, `create_no_town`,
+  `create_no_prod_markings`, `create_no_inscription`) covered by `UNMATCHED_REASONS`.
+- Node 22 (CI's version, not local Node 26): `npm run lint`, `npm run typecheck`,
+  `npm test` (25 suites / 130 tests), `npm run build` all pass.

@@ -136,6 +136,71 @@ describe("submittedDataToFieldInput", () => {
     expect(fieldInput.town).toBe("Richmond");
   });
 
+  // The VPHC ingest (apply_vphc_ledger) is the source of every pending
+  // submission in the review queue, so its payload shape is the one that
+  // matters most for the adapter's allowlist.
+  it("renders a VPHC ingest payload without tripping the allowlist", () => {
+    const fieldInput = submittedDataToFieldInput(
+      {
+        submission_kind: "marking",
+        type: "TOWNMARK",
+        state: "VA",
+        town: "Abingdon",
+        inscription_txt: "ABINGDON Va.",
+        is_manuscript: false,
+        is_irreg: false,
+        desc: "Virginia Postal History Catalog Abingdon #5 (T1:r8).",
+        reference_work_ids: [3],
+        reference_work_details: [{ reference_work_id: 3, page_number: "5" }],
+        contributor_comment: "",
+        vphc: {
+          src: "T1:r8",
+          flags: ["date_low_confidence"],
+          state: "VA",
+          county: "WASHINGTON",
+          cancel_no: "5",
+          vphc_code: "VPHC-VA-ABINGDON-5",
+          rules_version: 2,
+          why_unmatched: "ambiguous",
+        },
+      },
+      lookups,
+      { contributionId: 4173 },
+    );
+
+    expect(fieldInput.town).toBe("Abingdon");
+    expect(fieldInput.state).toBe("VA");
+    expect(fieldInput.catalogTxt).toContain("Virginia Postal History Catalog");
+  });
+
+  it("displays the bare lettering name a VPHC edit submission carries", () => {
+    const fieldInput = submittedDataToFieldInput(
+      { edit_marking_id: 91, lettering: "Serif" },
+      lookups,
+      { contributionId: 4173 },
+    );
+
+    expect(fieldInput.letteringName).toBe("Serif");
+  });
+
+  // apply_vphc_ledger writes lettering: null when the edited marking has no
+  // lettering, which must read as "absent" rather than the string "null".
+  it("treats a null lettering as no lettering", () => {
+    const fieldInput = submittedDataToFieldInput(
+      { edit_marking_id: 91, lettering: null },
+      lookups,
+      { contributionId: 4173 },
+    );
+
+    expect(fieldInput.letteringName).toBe("");
+  });
+
+  it("still throws on a genuinely unknown key", () => {
+    expect(() =>
+      submittedDataToFieldInput({ some_new_field: "x" }, lookups, { contributionId: 99 }),
+    ).toThrow(/Unknown submitted_data key "some_new_field"/);
+  });
+
   it("does not display ARC semi-circle dimensions as a diameter", () => {
     const fieldInput = submittedDataToFieldInput(
       {
