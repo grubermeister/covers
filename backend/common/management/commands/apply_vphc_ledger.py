@@ -334,9 +334,13 @@ class Command(BaseCommand):
     def _state_from_catalog(self, town_key):
         """Which state an existing town sits in, by its post office's region."""
         if not hasattr(self, "_town_states"):
+            # Only VA and WV. Town names repeat across states, so an unscoped
+            # index would answer "Michigan" for a Virginia town and the
+            # marking would be filed against the wrong state's collection.
             self._town_states = {}
             for por in PostOfficeRegion.objects.filter(
-                    region__region_tier="STATE").select_related(
+                    region__region_tier="STATE",
+                    region__abbrev__in=list(self.collections)).select_related(
                         "post_office", "region"):
                 key = re.sub(r"[^A-Z0-9]", "", por.post_office.name.upper())
                 self._town_states.setdefault(key, por.region.abbrev.upper())

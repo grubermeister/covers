@@ -138,6 +138,39 @@ class VphcReferenceImportTests(TestCase):
         self.assertEqual(PostmasterTenure.objects.count(), 0)
         self.assertFalse(Region.objects.filter(region_tier="COUNTY").exists())
 
+    def test_a_same_named_town_in_another_state_is_not_reused(self):
+        """woco.dev holds every state, and town names repeat across them.
+
+        Matching on name alone made Virginia's ANNA look like it already
+        existed because Maryland has one, and would then have hung a Virginia
+        county off the Maryland post office. Invisible on a VA/WV-only
+        database; caught by the dry run against the real one.
+        """
+        maryland = Region.objects.create(
+            code="USA-MD1", name="Maryland", abbrev="MD", region_tier="STATE",
+            created_by=self.user, modified_by=self.user)
+        decoy = PostOffice.objects.create(
+            code="USA-MD1-1", name="Abingdon",
+            created_by=self.user, modified_by=self.user)
+        PostOfficeRegion.objects.create(
+            post_office=decoy, region=maryland,
+            created_by=self.user, modified_by=self.user)
+
+        self.run_import()
+
+        # Virginia's Abingdon is created rather than skipped
+        virginias = [
+            po for po in PostOffice.objects.filter(name="Abingdon")
+            if any(r.region == self.va for r in po.post_office_regions.all())]
+        self.assertEqual(len(virginias), 1)
+        self.assertNotEqual(virginias[0].pk, decoy.pk)
+
+        # and Maryland's is left entirely alone -- no Virginia county on it
+        self.assertEqual(
+            [r.region.region_tier for r in decoy.post_office_regions.all()],
+            ["STATE"])
+        self.assertIsNone(PostOffice.objects.get(pk=decoy.pk).population)
+
     def test_post_office_without_a_state_is_refused(self):
         """Rule P1: never invent a home for a town that has none."""
         write(os.path.join(self.dir, "crossexam", "post_offices_to_create.csv"),
