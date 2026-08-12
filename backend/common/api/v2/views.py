@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import Min, Max, Q
+from django.db.models import F, Min, Max, Q
 from django.db.models.functions import ExtractYear
 from django.http import Http404
 from django.utils import timezone
@@ -96,6 +96,8 @@ from common.models import (
     MarkingRecycleBin,
     MarkingVersion,
     PostOffice,
+    Postmaster,
+    PostmasterTenure,
     ReferenceWork,
     Region,
     Shape,
@@ -132,6 +134,8 @@ from .serializers import (
     MarkingListSerializer,
     MarkingSerializer,
     PostOfficeSerializer,
+    PostmasterSerializer,
+    PostmasterTenureSerializer,
     RecycleBinMarkingSerializer,
     ReferenceWorkSerializer,
     RegionSerializer,
@@ -412,6 +416,34 @@ class ReferenceWorkViewSet(viewsets.ModelViewSet):
             for work in rows
         ]
         return Response(out, status=status.HTTP_200_OK)
+
+
+class PostmasterViewSet(viewsets.ReadOnlyModelViewSet):
+    """Postmasters, read-only. Editing belongs to the source catalogs."""
+    queryset = Postmaster.objects.all()
+    serializer_class = PostmasterSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name", "sort_name"]
+    ordering_fields = ["sort_name", "name"]
+    ordering = ["sort_name"]
+
+
+class PostmasterTenureViewSet(viewsets.ReadOnlyModelViewSet):
+    """Appointment events, filterable by office or by person.
+
+    Ordered by date with undated events last, so a town's list reads as a
+    succession rather than starting with the rows nobody could date.
+    """
+    queryset = PostmasterTenure.objects.select_related(
+        "postmaster", "post_office"
+    ).order_by(F("date_appointed").asc(nulls_last=True), "tenure_id")
+    serializer_class = PostmasterTenureSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = {"post_office": ["exact"], "postmaster": ["exact"],
+                        "event": ["exact"]}
+    ordering_fields = ["date_appointed", "tenure_id"]
 
 
 class FAQEntryViewSet(viewsets.ReadOnlyModelViewSet):

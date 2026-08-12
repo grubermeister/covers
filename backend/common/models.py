@@ -776,6 +776,10 @@ class PostOffice(TimestampedModel):
     """
     code = models.CharField(max_length=40, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=255, help_text='Normalized town name, e.g. Abingdon, Richmond')
+    population = models.PositiveIntegerField(
+        null=True, blank=True,
+        help_text='Contemporary population as recorded by the source catalog, where given',
+    )
 
     class Meta:
         db_table = 'post_office'
@@ -827,23 +831,140 @@ class PostOffice(TimestampedModel):
 class PostOfficeRegion(TimestampedModel):
     """
     Association linking a PostOffice to a Region under whose jurisdiction
-    it operated. Temporal bounds are derived from Region.established_date
-    and Region.defunct_date; this junction carries no temporal columns.
+    it operated.
+
+    Validity is normally derived from Region.established_date and
+    Region.defunct_date, which is enough while a town's jurisdiction only ever
+    ends because the region itself ceased to exist. County boundaries break
+    that assumption: when Rappahannock was formed out of Culpeper in 1833 both
+    counties survived, so a town's membership ended without either region
+    becoming defunct. valid_from/valid_to carry that case and are null whenever
+    the region's own lifespan is sufficient.
 
     model.md domain type: post_office_regions
     """
     post_office = models.ForeignKey(PostOffice, on_delete=models.CASCADE, related_name='post_office_regions')
     region = models.ForeignKey(Region, on_delete=models.PROTECT, related_name='post_office_regions')
+    valid_from = models.DateField(
+        null=True, blank=True,
+        help_text='First date this jurisdiction applied; null = from the region\'s own start',
+    )
+    valid_to = models.DateField(
+        null=True, blank=True,
+        help_text='Last date this jurisdiction applied; null = still current',
+    )
 
     class Meta:
         db_table = 'post_office_region'
         verbose_name = 'Post Office Region'
         verbose_name_plural = 'Post Office Regions'
-        unique_together = [['post_office', 'region']]
+        # valid_from participates so one town can belong to the same region
+        # across two disjoint spans; NULL repeats stay unique in MySQL only by
+        # convention, so the importer keeps at most one open-ended row per pair.
+        unique_together = [['post_office', 'region', 'valid_from']]
         ordering = ['post_office__name', 'region__name']
 
     def __str__(self):
         return f'{self.post_office.name} -- {self.region.name}'
+
+
+class Postmaster(TimestampedModel):
+    """
+    A person appointed to run a post office.
+
+    Deliberately just the person. Everything about *when* they served belongs to
+    PostmasterTenure, because the same name recurs across towns and decades and
+    a postmaster who moved is one person with two tenures, not two rows.
+
+    model.md domain type: Postmaster
+    """
+    name = models.CharField(max_length=255, help_text='Name as printed in the source, e.g. Gerrard T. Conn')
+    sort_name = models.CharField(
+        max_length=255, db_index=True,
+        help_text='Surname-first form used for ordering and de-duplication',
+    )
+
+    class Meta:
+        db_table = 'postmaster'
+        verbose_name = 'Postmaster'
+        verbose_name_plural = 'Postmasters'
+        ordering = ['sort_name', 'name']
+        indexes = [models.Index(fields=['name'], name='postmaster_name_idx')]
+
+    def __str__(self):
+        return self.name
+
+
+class PostmasterTenure(TimestampedModel):
+    """
+    One appointment event: this person, this post office, this date.
+
+    The grain is the *event*, not the span, because that is what the sources
+    record -- an appointment date and occasionally a discontinuation. An end
+    date is implied by the next appointment at the same office and is left to
+    the reader rather than invented here.
+
+    Dates carry their own granularity for the same reason DateSeen does: the
+    source often gives a year alone, and storing 1 January would assert a
+    precision nobody has.
+
+    model.md domain type: PostmasterTenure
+    """
+    EVENT_APPOINTMENT = 'appointment'
+    EVENT_DISCONTINUED = 'discontinued'
+    EVENT_REAPPOINTMENT = 'reappointment'
+    EVENT_UNKNOWN = 'unknown'
+    EVENT_CHOICES = [
+        (EVENT_APPOINTMENT, 'Appointment'),
+        (EVENT_DISCONTINUED, 'Office discontinued'),
+        (EVENT_REAPPOINTMENT, 'Reappointment'),
+        (EVENT_UNKNOWN, 'Unknown'),
+    ]
+    GRANULARITY_CHOICES = [('DAY', 'Day'), ('MONTH', 'Month'), ('YEAR', 'Year')]
+
+    tenure_id = models.AutoField(primary_key=True)
+    post_office = models.ForeignKey(
+        PostOffice, on_delete=models.PROTECT, related_name='postmaster_tenures')
+    postmaster = models.ForeignKey(
+        Postmaster, on_delete=models.PROTECT, related_name='tenures', null=True, blank=True,
+        help_text='Null for an office-level event such as a discontinuation')
+    event = models.CharField(max_length=16, choices=EVENT_CHOICES, default=EVENT_APPOINTMENT)
+    date_appointed = models.DateField(
+        null=True, blank=True, help_text='Null when the source gives no usable date')
+    date_appointed_granularity = models.CharField(
+        max_length=5, choices=GRANULARITY_CHOICES, null=True, blank=True,
+        help_text='How much of date_appointed the source actually stated')
+    source_ref = models.CharField(
+        max_length=32, blank=True, default='',
+        help_text='Cell reference in the source workbook, e.g. T3:r15904')
+    rules_version = models.PositiveSmallIntegerField(
+        null=True, blank=True, help_text='RULES.md version that decoded this row')
+
+    class Meta:
+        db_table = 'postmaster_tenure'
+        verbose_name = 'Postmaster Tenure'
+        verbose_name_plural = 'Postmaster Tenures'
+        ordering = ['post_office__name', 'date_appointed', 'tenure_id']
+        indexes = [
+            models.Index(fields=['post_office', 'date_appointed'],
+                         name='tenure_office_date_idx'),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=Q(event__in=['appointment', 'discontinued', 'reappointment', 'unknown']),
+                name='tenure_event_valid',
+            ),
+            # The source is the authority on duplicates: one row per source cell.
+            models.UniqueConstraint(
+                fields=['post_office', 'postmaster', 'date_appointed', 'event'],
+                name='tenure_office_person_date_event_unique',
+            ),
+        ]
+
+    def __str__(self):
+        who = self.postmaster.name if self.postmaster_id else self.get_event_display()
+        return f'{who} @ {self.post_office.name} ({self.date_appointed or "undated"})'
+
 
 class Lettering(TimestampedModel):
     """

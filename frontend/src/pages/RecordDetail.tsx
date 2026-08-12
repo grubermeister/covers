@@ -721,6 +721,7 @@ const RecordDetail = () => {
         to: `/search?state=${encodeURIComponent(r.name)}`,
       })),
       town: record.town,
+      postOfficeId: record.postOfficeId,
       inscriptionTxt: record.inscriptionTxt,
       earliestSeen: earliestValue,
       earliestSeenTo,
