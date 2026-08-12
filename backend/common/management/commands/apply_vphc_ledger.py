@@ -141,6 +141,7 @@ class Command(BaseCommand):
                 "nowhere to be filed")
 
         self.auto = {s.strip() for s in opts["auto_approve"].split(",") if s.strip()}
+        self.scanned = set()
         totals = Counter()
         applied = []
 
@@ -223,7 +224,18 @@ class Command(BaseCommand):
             return
 
         colours = [c for c in row["sheet_colors"].split(";") if c]
-        images = self._images(row, totals, dry)
+        # E5: one scan, one attachment. A sheet marking that matched several
+        # fan-out members is one physical device recorded in several colours,
+        # so copying its scan onto each colour variant would assert that the
+        # same photograph is evidence for three separate records.
+        vphc_key = f"{row['town_key']}#{row['cancel_no']}"
+        if vphc_key in self.scanned:
+            images = []
+            totals["scans not repeated across colour variants"] += 1
+        else:
+            images = self._images(row, totals, dry)
+            if images:
+                self.scanned.add(vphc_key)
 
         payload = {
             "submission_kind": "marking",
