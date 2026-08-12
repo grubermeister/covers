@@ -28,6 +28,8 @@ router = DefaultRouter()
 # Geography and lookups
 router.register(r"regions", views.RegionViewSet, basename="region")
 router.register(r"post-offices", views.PostOfficeViewSet, basename="post-office")
+router.register(r"postmasters", views.PostmasterViewSet, basename="postmaster")
+router.register(r"postmaster-tenures", views.PostmasterTenureViewSet, basename="postmaster-tenure")
 router.register(r"letterings", views.LetteringViewSet, basename="lettering")
 router.register(r"shapes", views.ShapeViewSet, basename="shape")
 router.register(r"colors", views.ColorViewSet, basename="color")

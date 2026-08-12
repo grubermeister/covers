@@ -39,6 +39,7 @@ export interface MarkingFieldInput {
   // `state` string renders instead. (issue #28)
   regionTags?: MarkingFieldTag[];
   town: string;
+  postOfficeId?: number | null;
   inscriptionTxt: string;
   // Already formatted according to DateSeen granularity.
   earliestSeen: string;
@@ -97,7 +98,13 @@ export function buildMarkingFields(
       alwaysShow: false,
       tags: i.regionTags && i.regionTags.length > 0 ? i.regionTags : undefined,
     },
-    { label: "Town", value: i.town, alwaysShow: false },
+    {
+      label: "Town",
+      value: i.town,
+      alwaysShow: false,
+      // Links to the town page, which is where the postmasters live.
+      to: i.postOfficeId ? `/post-office/${i.postOfficeId}` : undefined,
+    },
     { label: inscriptionLabel(i.type), value: i.inscriptionTxt, alwaysShow: false },
     { label: "Earliest Seen", value: i.earliestSeen, alwaysShow: true, to: i.earliestSeenTo },
     { label: "Latest Seen", value: i.latestSeen, alwaysShow: true, to: i.latestSeenTo },

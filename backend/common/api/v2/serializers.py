@@ -36,6 +36,8 @@ from common.models import (
     MarkingRecycleBin,
     MarkingType,
     PostOffice,
+    Postmaster,
+    PostmasterTenure,
     ReferenceWork,
     Region,
     Shape,
@@ -115,6 +117,32 @@ class PostOfficeSerializer(serializers.ModelSerializer):
         model = PostOffice
         fields = "__all__"
         read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
+
+
+class PostmasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Postmaster
+        fields = ["id", "name", "sort_name"]
+
+
+class PostmasterTenureSerializer(serializers.ModelSerializer):
+    """One appointment event, flattened for display.
+
+    The office keeps its own name alongside the id so a postmaster's career can
+    be listed without a second round trip per town.
+    """
+    postmaster_name = serializers.CharField(
+        source="postmaster.name", read_only=True, default="")
+    post_office_name = serializers.CharField(
+        source="post_office.name", read_only=True, default="")
+
+    class Meta:
+        model = PostmasterTenure
+        fields = [
+            "tenure_id", "post_office", "post_office_name", "postmaster",
+            "postmaster_name", "event", "date_appointed",
+            "date_appointed_granularity", "source_ref",
+        ]
 
 
 class LetteringSerializer(serializers.ModelSerializer):
