@@ -81,6 +81,26 @@ def sort_name(name):
     return f"{surname}, {' '.join(rest)}".strip().rstrip(",")
 
 
+def index_post_offices_by_state():
+    """`(state abbrev, town key) -> [PostOffice]`.
+
+    Keyed by state, never by name alone. Town names repeat across states --
+    woco.dev holds an ANNA in Maryland and Illinois, an AUBURN in Alabama,
+    Illinois and Michigan -- so a name-only index makes Virginia's ANNA look
+    like it already exists and would hang a Virginia county off an Illinois
+    post office. Invisible on a database holding only VA and WV; caught by the
+    dry run against the real one.
+    """
+    index = defaultdict(list)
+    rows = PostOfficeRegion.objects.filter(
+        region__region_tier="STATE"
+    ).select_related("post_office", "region")
+    for link in rows:
+        index[(link.region.abbrev.upper(),
+               town_key(link.post_office.name))].append(link.post_office)
+    return index
+
+
 def read_csv(path):
     if not os.path.exists(path):
         raise CommandError(f"missing input: {path}")
@@ -207,9 +227,7 @@ class Command(BaseCommand):
             if row["county"].strip() and row["state"].strip() and key not in counties:
                 counties[key] = (row["state"].strip(), row["county"].strip())
 
-        by_key = defaultdict(list)
-        for po in PostOffice.objects.all():
-            by_key[town_key(po.name)].append(po)
+        by_key = index_post_offices_by_state()
 
         # New codes continue the existing dense per-region series.
         next_serial = {}
@@ -229,7 +247,7 @@ class Command(BaseCommand):
                 raise CommandError(
                     f"post office {row['town']!r} has no usable state -- it should "
                     "have been quarantined by rule P1, not offered for creation")
-            key = row["town_key"]
+            key = (state, row["town_key"])
             if by_key.get(key):
                 totals["post offices already present"] += 1
                 continue
@@ -246,7 +264,9 @@ class Command(BaseCommand):
 
         # Populations and county links for every town this ingest touches.
         for key, (state, county) in counties.items():
-            for po in by_key.get(key, []):
+            # Scoped by state: a Virginia county must never be hung off a
+            # same-named town in Michigan or Illinois.
+            for po in by_key.get((state, key), []):
                 region = self.counties.get((state, town_key(county)))
                 if region is not None:
                     self._link(po, region, actor, totals)
@@ -284,9 +304,7 @@ class Command(BaseCommand):
     # ---------------------------------------------------------------- tenures
 
     def _tenures(self, t3, actor, totals):
-        by_key = defaultdict(list)
-        for po in PostOffice.objects.all():
-            by_key[town_key(po.name)].append(po)
+        by_key = index_post_offices_by_state()
 
         # Preload what is already stored so a second run is a no-op rather than
         # an IntegrityError on the (office, person, date, event) constraint.
@@ -297,7 +315,7 @@ class Command(BaseCommand):
         }
         totals["tenures already present"] = len(seen)
         for row in t3:
-            key = row["town_key"]
+            key = (row["state"].strip().upper(), row["town_key"])
             offices = by_key.get(key)
             if not offices:
                 totals["tenures skipped (no post office)"] += 1
