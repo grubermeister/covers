@@ -38,6 +38,8 @@ import {
   type CatalogFieldValues,
 } from "@/lib/catalogRecordDisplay";
 import { submittedDataToFieldInput } from "@/lib/contributionToFields";
+import { readVphcProvenance } from "@/lib/vphcProvenance";
+import { VphcProvenanceCard } from "@/components/VphcProvenanceCard";
 import type { MarkingFieldInput } from "@/lib/markingFields";
 import {
   type Contribution,
@@ -350,6 +352,8 @@ const ContributionDetail = () => {
       sd.comment ??
       ""
   ).trim();
+  // Null for anything that did not come from the VPHC ingest.
+  const vphc = readVphcProvenance(sd);
   const baseImageUrl = (import.meta.env.VITE_IMAGE_URL ?? "").replace(/\/+$/, "");
   const imageRoot = baseImageUrl || "/media";
   const resolveStorageImageUrl = (storageFilename: string) =>
@@ -736,6 +740,9 @@ const ContributionDetail = () => {
                       <p className="text-sm text-foreground whitespace-pre-line">{contributorComment}</p>
                     </div>
                   ) : null}
+                  {/* Provenance for ingested records. The fields above are what
+                      the ingest concluded; this is how much of it is guesswork. */}
+                  {vphc ? <VphcProvenanceCard provenance={vphc} /> : null}
                 </CardContent>
               </Card>
 

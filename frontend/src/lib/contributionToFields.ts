@@ -68,6 +68,10 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   "lettering_id",
   "lettering_style", "letteringStyle",
   "lettering_style_name", "letteringStyleName",
+  // "lettering" is the bare name form. contribution_apply resolves the
+  // Lettering FK through it (_resolve_fk name_key), so a payload carrying it
+  // WILL set lettering on approval -- it has to be shown, not ignored.
+  "lettering",
   "date_fmt", "dateFmt",
   // consumed: free-text catalog suggestions from the contributor
   "description",
@@ -110,6 +114,14 @@ export const KNOWN_SUBMITTED_DATA_KEYS: ReadonlySet<string> = new Set([
   // submitted_data before the backend started stripping them.
   "save_as_draft", "saveAsDraft",
   "status",
+  // ignored: VPHC ingest provenance (apply_vphc_ledger). A nested blob of
+  // source coordinates and uncertainty -- src, cancel_no, vphc_code,
+  // rules_version, why_unmatched, flags, county, state. None of it is a
+  // catalog field, and contribution_apply never reads it, so it has no row
+  // in the field list. The reviewer-facing parts already reach the page by
+  // other routes: the cancel number as the reference-work citation detail,
+  // and the human-readable source line inside "desc".
+  "vphc",
   // ignored: reference-work payload from the contribute form
   "reference_work_ids", "referenceWorkIds",
   "reference_work_ids[]",
@@ -248,15 +260,16 @@ function readLetteringId(sd: Record<string, unknown>): number | undefined {
 }
 
 // Resolve "Lettering" display text: prefer the id lookup, fall back to the
-// embedded *_name field if the id isn't usable. Returns "" when neither is
-// available (renderer prints "-").
+// embedded *_name field if the id isn't usable, then to the bare "lettering"
+// name the backend resolves the FK from. Returns "" when none is available
+// (renderer prints "-").
 function resolveLettering(sd: Record<string, unknown>, lookups: ContributionLookups): string {
   const id = readLetteringId(sd);
   if (id != null) {
     const opt = lookups.letteringOptions.find((o) => o.id === id);
     if (opt) return opt.name;
   }
-  return toStr(sd.lettering_style_name ?? sd.letteringStyleName);
+  return toStr(sd.lettering_style_name ?? sd.letteringStyleName ?? sd.lettering);
 }
 
 function resolveDateFormat(sd: Record<string, unknown>, lookups: ContributionLookups): string {
