@@ -1784,17 +1784,19 @@ const Contribute = () => {
         if (!isManuscriptSelected && shapeIdVal != null) form.append("shape_id", String(shapeIdVal));
         if (colorIdVal != null) form.append("color_id", String(colorIdVal));
         form.append("color", colorVal);
-        if (widthToSend) form.append("width_mm", widthToSend);
-        if (heightToSend) form.append("height_mm", heightToSend);
+        // Approval merges rather than replaces (RFC 7396), so an omitted key
+        // means "leave this alone" -- which makes an omitted key the wrong way
+        // to say "the contributor emptied this box". Send these unconditionally
+        // and let "" carry the clear.
+        form.append("width_mm", widthToSend);
+        form.append("height_mm", heightToSend);
         form.append("is_manuscript", String(isManuscriptSelected));
+        form.append("impression", isManuscriptSelected ? "" : impression.trim());
         if (!isManuscriptSelected) {
           form.append("is_irreg", String(isIrregular));
-          if (impression.trim()) form.append("impression", impression.trim());
         }
-        if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
-        if (description.trim()) {
-          form.append("desc", description.trim());
-        }
+        form.append("rate_val", showRateValueField ? rateValueToSend : "");
+        form.append("desc", description.trim());
         form.append("display_submitter_name", String(displaySubmitterName));
         if (canEditCatalogCode && catalogCodeToSend) {
           form.append("catalog_code", catalogCodeToSend);
@@ -1804,9 +1806,10 @@ const Contribute = () => {
         if (referenceWorkDetailsToSend.length > 0) {
           form.append("reference_work_details", JSON.stringify(referenceWorkDetailsToSend));
         }
-        if (!isManuscriptSelected && letteringId) form.append("lettering_style_id", letteringId);
-        if (!isManuscriptSelected && letteringId) form.append("lettering_id", letteringId);
-        if (showDateFormatField && dateFmtCode) form.append("date_fmt", dateFmtCode);
+        const letteringToSend = isManuscriptSelected ? "" : letteringId || "";
+        form.append("lettering_style_id", letteringToSend);
+        form.append("lettering_id", letteringToSend);
+        form.append("date_fmt", showDateFormatField ? dateFmtCode : "");
         // ERD/LRD are editor-only (issue #27): never send them from a
         // non-editor, even if stale state lingers. The server also strips them.
         if (isStateEditor && erdToSend) {
@@ -1859,23 +1862,30 @@ const Contribute = () => {
           shape_id: isManuscriptSelected ? null : shapeIdVal ?? null,
           color_id: colorIdVal ?? undefined,
           color: colorVal,
-          width_mm: widthToSend || undefined,
-          height_mm: heightToSend || undefined,
+          // Approval merges rather than replaces (RFC 7396), so an omitted key
+          // means "leave this alone" -- which makes an omitted key the wrong
+          // way to say "the contributor emptied this box". These are always
+          // present, and "" carries the clear. `undefined` would be dropped by
+          // JSON.stringify and read as silence.
+          width_mm: widthToSend,
+          height_mm: heightToSend,
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
-          impression: isManuscriptSelected ? null : impression.trim() || undefined,
-          rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
-          desc: description.trim() || undefined,
+          impression: isManuscriptSelected ? null : impression.trim(),
+          rate_val: showRateValueField ? rateValueToSend : "",
+          desc: description.trim(),
           display_submitter_name: displaySubmitterName,
           ...(canEditCatalogCode && catalogCodeToSend
             ? { catalog_code: catalogCodeToSend }
             : {}),
           inscription_txt: inscriptionToSend || undefined,
-          reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
-          reference_work_details: referenceWorkDetailsToSend.length > 0 ? referenceWorkDetailsToSend : undefined,
-          lettering_style_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
-          lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
-          date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
+          // An empty list is a real instruction ("remove every citation"), so
+          // it has to be sent rather than collapsed to undefined.
+          reference_work_ids: referenceWorkIdsToSend,
+          reference_work_details: referenceWorkDetailsToSend,
+          lettering_style_id: isManuscriptSelected || !letteringId ? null : Number(letteringId),
+          lettering_id: isManuscriptSelected || !letteringId ? null : Number(letteringId),
+          date_fmt: showDateFormatField ? dateFmtCode : "",
           ...(isStateEditor && erdToSend
             ? markingBoundaryDatePayload("marking_erd", erdToSend)
             : {}),

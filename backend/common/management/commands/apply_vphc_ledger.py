@@ -21,9 +21,9 @@ Two inputs, and the split is deliberate:
   crossexam/ledger/proposed.jsonl   the authority on *what happens*, reviewed
                                     beforehand and replayed verbatim into
                                     docs/vphc/LEDGER.jsonl
-  crossexam/crosswalk.csv           the field values, because a contribution
-                                    edit rebuilds the whole marking from its
-                                    payload rather than applying a delta
+  crossexam/crosswalk.csv           the field values the sheet actually
+                                    supplies; approval merges these into the
+                                    existing row rather than replacing it
 
 Nothing is invented. Where the source cannot supply a required field -- a
 device code the vocabulary does not know, leaving no type and no inscription --
@@ -49,6 +49,7 @@ from django.db import transaction
 from common.audit import log_marking_removed
 from common.images import read_image_metadata_from_path
 from common.models import (
+    Citation,
     Collection,
     Color,
     Contribution,
@@ -299,8 +300,10 @@ class Command(BaseCommand):
                 totals["updates skipped (marking gone)"] += 1
                 return
             payload["edit_marking_id"] = marking.pk
-            # An edit rebuilds the whole marking from its payload, so anything
-            # the sheet does not speak to must come from the record as it is.
+            # Approval merges rather than replaces, so these are no longer
+            # needed to protect the record -- they are here so the review UI,
+            # which renders submitted_data as the field rows an editor reads,
+            # shows the marking's actual values instead of blank rows.
             payload.setdefault("lettering", marking.lettering.name
                                if marking.lettering_id else None)
             if "color" not in payload and marking.color_id:
@@ -312,6 +315,19 @@ class Command(BaseCommand):
             if "height_mm" not in payload and marking.height is not None:
                 payload["height_mm"] = str(marking.height)
             payload["is_irreg"] = bool(marking.is_irreg)
+            # Citations are the one field where silence is not an option: the
+            # payload has to name VPHC1 to add it, and naming any id states the
+            # complete desired set. So the marking's existing bibliography --
+            # in practice its ASCC citation -- has to travel with it or
+            # approval deletes it. VPHC1 stays first: catalog_codes derives the
+            # code prefix from the first id.
+            already_cited = Citation.objects.filter(
+                subject_type="MARKING", subject_id=marking.pk
+            ).values_list("reference_work_id", flat=True)
+            payload["reference_work_ids"] = [self.reference.pk] + [
+                rid for rid in dict.fromkeys(already_cited)
+                if rid != self.reference.pk
+            ]
 
         status = (Contribution.STATUS_APPROVED
                   if line.get("why_unmatched") in self.auto

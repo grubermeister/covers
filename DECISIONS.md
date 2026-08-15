@@ -112,3 +112,83 @@ crossexam vocabulary can grow, and a flag we don't know is the one a reviewer mo
   `create_no_prod_markings`, `create_no_inscription`) covered by `UNMATCHED_REASONS`.
 - Node 22 (CI's version, not local Node 26): `npm run lint`, `npm run typecheck`,
   `npm test` (25 suites / 130 tests), `npm run build` all pass.
+
+## 2026-08-15 — Marking edits merge (RFC 7396) instead of rebuilding the row
+
+**What was decided.** `_apply_marking_edit` no longer rebuilds a Marking from the
+contribution payload. It merges: a key the payload never mentions leaves the stored value
+alone, and only an explicitly empty value clears it. `Contribute.tsx` was changed to match
+— the marking submit form now always sends its optional scalars, using `""` rather than an
+omitted key to mean "the contributor emptied this box". Both halves are required; either
+alone is wrong.
+
+**What changed.** Previously every column was assigned unconditionally from
+`payload.get(...)`, so an absent key was written as `NULL`. Only `color` and
+`display_submitter_name` were presence-checked. `_sync_citations` likewise deleted every
+existing Citation before reading the payload, so silence about citations read as "delete
+them all".
+
+**Why.** Approving the 310 queued VPHC edit contributions would have destroyed catalog data
+without erroring — `full_clean()` passed, the approval returned 200, and a clean audit trail
+was written. Measured read-only against woco.dev 2026-08-13: `impression` nulled on 288 of
+288 matched markings, the existing ASCC citation deleted on 118 of 120 sampled, `desc`
+overwritten on 9, `date_fmt` nulled on 4. The crosswalk carries
+`prod_code/type/insc/shape/width/height/color` and has no `impression`, `date_fmt`,
+`rate_val` or `desc` column at all, which is why the cross-examination never compared the
+fields that were being nulled.
+
+This is *not* a change to the overwrite policy ("where the sheet and production disagree,
+the sheet wins"). These are fields the sheet never spoke to.
+
+**Why the frontend had to change too.** The obvious fix — copy `_apply_cover_edit`'s
+absent⇒keep semantics — is unsafe on its own, because the submit form collapsed "empty" to
+an omitted key (`impression.trim() || undefined` in the JSON branch; a skipped
+`form.append` in the multipart one). Backend-only would have fixed the ingest while making
+it impossible to ever clear a field from the UI. `_apply_cover_edit` gets away with
+absent⇒keep because `CoverEdit` is a genuinely partial form.
+
+**Alternatives ruled out.** Back-filling the missing fields in `apply_vphc_ledger` only —
+smallest change, but leaves the approval path armed for the next partial producer, and
+issue #101 (bulk approve) would amplify it. A marker key declaring a payload "partial" —
+no frontend change, but makes correctness depend on a flag every producer must remember to
+set.
+
+**Two things in scope that were not in the original framing.**
+1. `_sync_citations` did not know the `reference_work_ids[]` spelling that multipart
+   submissions actually produce (`catalog_codes._first_reference_work_id` already read all
+   three spellings). Any image-carrying marking submission therefore had its citations
+   deleted and not recreated. Fixed by teaching `_sync_citations` the third spelling.
+2. Naming any citation id states the complete desired set, so merge semantics alone does
+   not save the ASCC citations — the *producer* was wrong. `apply_vphc_ledger` now sends
+   the union of the marking's existing reference works plus VPHC1, VPHC1 first
+   (`catalog_codes` derives the code prefix from the first id).
+
+**Known consequence, accepted.** Clearing *all* citations from a multipart (image-carrying)
+submission is no longer possible — the empty case sends no key, which now reads as silence.
+The path it replaces deleted every citation on every multipart submission, so this is a net
+improvement; a proper fix belongs with the separate defect that the submit view flattens
+`reference_work_ids[]` to its last value only (`api/v2/views.py`, "Strip multi-value form
+keys to plain values").
+
+**Source / evidence.**
+- IETF RFC 7396, JSON Merge Patch — absent members are left untouched, null removes:
+  https://www.rfc-editor.org/rfc/rfc7396
+- DRF partial updates — omitted fields come from `self.instance`, the same reading:
+  https://www.django-rest-framework.org/api-guide/serializers/#partial-updates
+- Django field options — `blank=True` makes an empty value valid and `choices` are not
+  enforced against empty values, so `""` passes `full_clean()` on `impression` / `date_fmt`
+  and the existing `.strip() or None` normalizes it to NULL:
+  https://docs.djangoproject.com/en/5.2/ref/models/fields/#blank
+- Regression fixture: `backend/common/tests/fixtures/vphc_edit_payloads.json` — one real
+  payload per distinct key-set across the 310 queued edits (18 shapes, censused from the
+  local `Contributions` table). None of the 18 mentions `impression`, `date_fmt` or
+  `description`.
+- Verified: `manage.py test common` (222 tests) OK; `manage.py check` clean; `tools`
+  suite (283 tests) OK; Node 22 `npm run lint` / `typecheck` / `test` (25 suites, 130
+  tests) / `build` all pass.
+
+**Operational follow-up (not code).** The 310 already-queued edits still carry
+`reference_work_ids: [VPHC1]`. Merge semantics fixes their scalars with no regeneration,
+but not their citations — they must be deleted and re-emitted with
+`manage.py apply_vphc_ledger --only update` (note: `--only`, not `--steps`).
+`apply_vphc_ledger` is not idempotent, so the delete is mandatory.
