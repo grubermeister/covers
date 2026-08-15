@@ -32,6 +32,15 @@ MEDIA_ROOT="${WOCO_MEDIA_ROOT:-${APP_ROOT}/backend/media}"
 ZSTD_LEVEL="${WOCO_ZSTD_LEVEL:-19}"
 LOCK_WAIT="${WOCO_LOCK_WAIT:-1800}"
 
+# `sudo -u wocod worldcovers-backup ...` inherits the CALLER's working
+# directory, which wocod typically cannot read (e.g. /home/reese, mode 0750).
+# GNU find then aborts with "Failed to restore initial working directory" after
+# it has already done its work. Resolve $0 first, then move somewhere every user
+# can read. The systemd unit sets WorkingDirectory=, so this only bites the
+# interactive and pre-import-hook paths -- which is exactly where it matters.
+SELF="$(readlink -f "$0")"
+cd /
+
 MODE=""
 TAG=""
 VERIFY_TARGET=""
@@ -41,7 +50,7 @@ DEEP=0
 die() { echo "worldcovers-backup: $*" >&2; exit 1; }
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
 
-usage() { sed -n '2,9p' "$0" >&2; }
+usage() { sed -n '2,9p' "$SELF" >&2; }
 
 # ---------------------------------------------------------------------------
 # Retention selector.
@@ -303,7 +312,7 @@ if (( DRY_RUN )); then
   log "  dump:  $DUMP_BIN $DB_NAME -> db/${DB_NAME}.sql.zst (zstd -$ZSTD_LEVEL)"
   log "  media: $MEDIA_ROOT ($MEDIA_BYTES bytes) link-dest=$(readlink "$DEST/latest" 2>/dev/null || echo none) deep=$DEEP"
   if [[ "$MODE" == "scheduled" ]]; then
-    log "  prune: $(ls -1 "$DEST/snapshots" 2>/dev/null | WOCO_KEEP_LATEST="$(basename "$(readlink -f "$DEST/latest" 2>/dev/null || echo '')")" "$0" --select-prunable | tr '\n' ' ')"
+    log "  prune: $(ls -1 "$DEST/snapshots" 2>/dev/null | WOCO_KEEP_LATEST="$(basename "$(readlink -f "$DEST/latest" 2>/dev/null || echo '')")" "$SELF" --select-prunable | tr '\n' ' ')"
   else
     log "  prune: skipped (tagged runs never prune)"
   fi
@@ -468,7 +477,7 @@ if [[ "$MODE" == "scheduled" ]]; then
   # Prune ONLY after a verified publish, so a night that produced a bad dump
   # can never rotate away the good ones. Tagged runs never reach here at all,
   # which is what makes the NOPASSWD sudo grant non-destructive by construction.
-  mapfile -t DOOMED < <(ls -1 "$DEST/snapshots" | WOCO_KEEP_LATEST="$NAME" "$0" --select-prunable)
+  mapfile -t DOOMED < <(ls -1 "$DEST/snapshots" | WOCO_KEEP_LATEST="$NAME" "$SELF" --select-prunable)
   for d in "${DOOMED[@]}"; do
     [[ -n "$d" && -d "$DEST/snapshots/$d" ]] || continue
     log "prune $d"

@@ -25,11 +25,17 @@ MYSQL_CNF="${WOCO_MYSQL_CNF:-${APP_ROOT}/mysql.cnf}"
 MEDIA_ROOT="${WOCO_MEDIA_ROOT:-${APP_ROOT}/backend/media}"
 SERVICE="${WOCO_SERVICE:-worldcovers}"
 
+# See the note in worldcovers-backup.sh: under `sudo -u wocod` the caller's
+# working directory is inherited and may be unreadable to wocod, which makes
+# GNU find fail after it has already done its work.
+SELF="$(readlink -f "$0")"
+cd /
+
 SNAPSHOT=""; INTO=""; CONFIRM=""; SKIP_MEDIA=0
 
 die() { echo "worldcovers-restore: $*" >&2; exit 1; }
 log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"; }
-usage() { sed -n '2,17p' "$0" >&2; }
+usage() { sed -n '2,17p' "$SELF" >&2; }
 
 while (( $# )); do
   case "$1" in
