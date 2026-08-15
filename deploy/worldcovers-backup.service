@@ -15,6 +15,12 @@ Type=oneshot
 User=wocod
 Group=wocod
 WorkingDirectory=/srv/woco
+# Optional HEALTHCHECK_URL for the dead-man's switch. The leading `-` means
+# "absent is fine". This MUST be here and not only on the alert unit: the
+# success heartbeat is what the dead-man's switch actually watches for. Without
+# it the failure ping still works but the daily "I am alive" ping never fires,
+# so the monitor reports down every day while backups are succeeding.
+EnvironmentFile=-/etc/worldcovers-backup.env
 ExecStart=/usr/local/sbin/worldcovers-backup --scheduled
 # Keep a 1.3 GB rsync from competing with gunicorn for disk and CPU.
 Nice=10

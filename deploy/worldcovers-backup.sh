@@ -469,8 +469,14 @@ status_write "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(status_get last_failure)" "$NAM
 touch "$DEST/LAST_SUCCESS"
 rm -f "$DEST/ALERT"
 
+# Dead-man's switch: the monitor alerts on the ABSENCE of this ping, which is
+# what makes it the only signal that survives the box being gone. Send the run
+# summary as the body so the dashboard shows what succeeded, not just that
+# something did. Never fatal -- a monitoring outage must not fail a good backup.
 if [[ -n "${HEALTHCHECK_URL:-}" ]]; then
-  curl -fsS -m 10 --retry 3 "$HEALTHCHECK_URL" >/dev/null 2>&1 || true
+  curl -fsS -m 10 --retry 3 --data-binary \
+    "$NAME db=$(( DUMP_BYTES_C / 1024 ))KB media=${MEDIA_FILES}f/$(( MEDIA_TOTAL / 1048576 ))MB tables=$TABLE_COUNT${WARNINGS:+ warn=$WARNINGS}" \
+    "$HEALTHCHECK_URL" >/dev/null 2>&1 || true
 fi
 
 if [[ "$MODE" == "scheduled" ]]; then
