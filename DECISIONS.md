@@ -112,3 +112,60 @@ crossexam vocabulary can grow, and a flag we don't know is the one a reviewer mo
   `create_no_prod_markings`, `create_no_inscription`) covered by `UNMATCHED_REASONS`.
 - Node 22 (CI's version, not local Node 26): `npm run lint`, `npm run typecheck`,
   `npm test` (25 suites / 130 tests), `npm run build` all pass.
+
+## 2026-08-15 — Backups: mysqldump over MySQL Shell, `/var/backups` over `/srv/woco/backups`, DB before media
+
+**What was decided.** The automated backup system (`deploy/worldcovers-backup.sh` and
+friends) makes three choices that a reasonable reader might expect to go the other way.
+
+**1. `mysqldump`, not the MySQL Shell dump utilities.** The MySQL 8.0 manual now
+carries a Tip recommending Shell's utilities over `mysqldump`
+([using-mysqldump](https://dev.mysql.com/doc/refman/8.0/en/using-mysqldump.html)),
+and `mysqlpump` is deprecated as of 8.0.34
+([mysqlpump](https://dev.mysql.com/doc/refman/8.0/en/mysqlpump.html)). Shell's
+advantage is parallel dumping and integrated compression, which matters on large
+datasets; ours is a **1.7 MB compressed / 22.2 MB raw** dump. Against it: Shell has its
+own dump format, and there is no equivalent on prod's MariaDB — so adopting it means
+carrying two tools and two restore paths for two environments whose comparability is the
+whole point. `mysqldump` is also what the 2026-08-07 manual backup used and what the
+2026-08-10 restore rehearsal passed with. The flag set is frozen to that proven set plus
+`--no-tablespaces` (`PROCESS` is required without it as of 8.0.21, and `wocod`
+deliberately lacks it). Deliberately excluded: `--databases` (keeps the dump loadable
+into a scratch DB for rehearsal), `--events` (none exist), and `--set-gtid-purged`
+(MySQL-only; MariaDB's dumper rejects it — the same portability trap as
+`ISSUE-2026-08-10-01`, one layer down).
+
+**2. `/var/backups/woco`, not `/srv/woco/backups`.** The latter already exists and
+already holds 1.9 GB. It is also **inside the git checkout** that `deploy/deploy.sh`
+runs `git reset --hard` against, and that a recovery would re-clone. Backups must not
+live in a directory the deploy process manages. `/var/backups` is the FHS location and
+is on the same filesystem as the media tree, which is what makes `rsync --link-dest`
+hardlinks work at all. The 1.9 GB of pre-existing content was left alone: deleting data
+during a backup rollout is exactly backwards.
+
+**3. The database is dumped before media, and the order is a correctness property.**
+`mysqldump --single-transaction` snapshots at time T; the media rsync finishes at T+n. A
+file created in that window lands on disk with no DB row — a harmless orphan. The
+reverse order yields DB rows pointing at files that were never copied — a broken image
+link, which is precisely the failure `backups/2026-08-07/README.md` warns about.
+
+**Accepted limitation, recorded rather than hidden.** `--single-transaction` is not
+isolated from concurrent DDL: the manual states that while such a dump is in process, no
+other connection should use `ALTER TABLE`, `CREATE TABLE`, `DROP TABLE`, `RENAME TABLE`
+or `TRUNCATE TABLE`
+([mysqldump](https://dev.mysql.com/doc/refman/8.0/en/mysqldump.html)). A `deploy.sh`
+migration racing the 02:30 UTC window would produce an inconsistent dump that passes
+every check we make. Low probability, not cheaply fixable, documented in `BACKUP.md`.
+
+**Related:** the manifest's row-count census is taken from the live database a few
+seconds before `START TRANSACTION`, so `worldcovers-restore` treats a row-count
+difference as a **report** and only a missing table as a hard failure. Claiming exactness
+we do not have would be worse than saying so.
+
+**Source / evidence.** Verified end to end on woco.dev 2026-08-15: first snapshot 43
+tables / 7,693 media files / 1.33 GB, with `common_region` (199) and `post_office`
+(5,754) matching the live API exactly from an independent path. Restore rehearsal from
+the pulled copy passed with the census exact and media 0 missing / 0 corrupt / 0 size
+drift. Hardlinking measured: two snapshots that would be 2.52 GB as independent copies
+occupy 1.26 GB. Failure injection (unreachable database) left `LAST_SUCCESS` untouched,
+pruned nothing, and wrote `ALERT` with `consecutive_failures=1`.
