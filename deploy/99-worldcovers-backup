@@ -1,0 +1,24 @@
+#!/bin/sh
+# /etc/update-motd.d/99-worldcovers-backup
+# Print a loud banner at SSH login if the backup has not succeeded recently.
+# With no MTA on either box, this is the highest-hit-rate on-box signal for a
+# two-person operation: you cannot ssh in to do anything without seeing it.
+DEST="${WOCO_BACKUP_DIR:-/var/backups/woco}"
+STALE_SECONDS=129600   # 36h: 24h interval + 10m jitter + runtime, with margin
+
+[ -d "$DEST" ] || exit 0
+
+if [ ! -f "$DEST/LAST_SUCCESS" ]; then
+  printf '\n\033[1;31m!! WorldCovers backup has NEVER succeeded on this host.\033[0m\n'
+  printf '   Check: systemctl status worldcovers-backup.timer\n\n'
+  exit 0
+fi
+
+AGE=$(( $(date +%s) - $(stat -c %Y "$DEST/LAST_SUCCESS") ))
+if [ "$AGE" -gt "$STALE_SECONDS" ]; then
+  printf '\n\033[1;31m!! WorldCovers backup is STALE: last success %s hours ago.\033[0m\n' "$(( AGE / 3600 ))"
+  [ -f "$DEST/ALERT" ] && printf '   %s\n' "$(head -1 "$DEST/ALERT")"
+  printf '   Check: journalctl -u worldcovers-backup -n 50\n\n'
+fi
+
+exit 0

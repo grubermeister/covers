@@ -1,0 +1,27 @@
+# /etc/systemd/system/worldcovers-backup.service
+# Nightly verified database + media snapshot. Triggered by worldcovers-backup.timer.
+[Unit]
+Description=WorldCovers nightly database + media backup
+# Both engines are listed deliberately: one unit file serves woco.dev (MySQL)
+# and prod (MariaDB). An unknown unit in After= is inert, so this is safe.
+# Wants= would NOT be -- it would try to start the absent one.
+After=network-online.target mysql.service mariadb.service
+OnFailure=worldcovers-backup-alert@%n.service
+
+[Service]
+Type=oneshot
+# wocod owns both /srv/woco/mysql.cnf and the media tree, so the backup needs
+# no privilege escalation at runtime. Root is required only at install time.
+User=wocod
+Group=wocod
+WorkingDirectory=/srv/woco
+ExecStart=/usr/local/sbin/worldcovers-backup --scheduled
+# Keep a 1.3 GB rsync from competing with gunicorn for disk and CPU.
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=3600
+NoNewPrivileges=true
+ReadWritePaths=/var/backups/woco
+
+[Install]
+WantedBy=multi-user.target

@@ -31,6 +31,14 @@ if [[ ! -d "$NORMALIZED_BUNDLE" ]]; then
   exit 2
 fi
 
+# --truncate DELETEs all 14 catalog tables before reloading, so take a tagged
+# snapshot first. Guarding here rather than in push_data.sh covers BOTH entry
+# points -- the remote `push_data.sh --import` and a human running this script
+# on the box -- and needs no sudo, since this script already runs as wocod.
+# shellcheck source=tools/pre_change_backup.sh
+. "$REPO_ROOT/tools/pre_change_backup.sh"
+pre_change_backup "import-$(basename "$NORMALIZED_BUNDLE")" || exit 2
+
 echo "[1/1] ascc import --truncate $NORMALIZED_BUNDLE"
 ./woco ascc import "$NORMALIZED_BUNDLE" --truncate
 

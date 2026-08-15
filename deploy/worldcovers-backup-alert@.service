@@ -1,0 +1,14 @@
+# /etc/systemd/system/worldcovers-backup-alert@.service
+# OnFailure= handler for worldcovers-backup.service. %i is the failed unit name.
+[Unit]
+Description=Report a failed WorldCovers backup (%i)
+
+[Service]
+Type=oneshot
+User=wocod
+Group=wocod
+# HEALTHCHECK_URL lives here, not in the repo. Optional; absent is fine.
+EnvironmentFile=-/etc/worldcovers-backup.env
+ExecStart=/usr/local/sbin/worldcovers-backup-alert %i
+NoNewPrivileges=true
+ReadWritePaths=/var/backups/woco

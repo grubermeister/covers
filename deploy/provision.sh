@@ -155,6 +155,11 @@ systemctl enable worldcovers
 log "Installing staging unit helper"
 install -o root -g root -m 0755 "${ROOT}/deploy/worldcovers-apply-unit.sh" /usr/local/sbin/worldcovers-apply-unit
 
+log "Installing the automated backup system"
+# A freshly provisioned box has scheduled backups from minute one, rather than
+# waiting for someone to remember. Idempotent; safe to re-run.
+"${ROOT}/deploy/install-backup.sh"
+
 log "Installing sudoers drop-in for ${APP_USER} (staging deploy commands only)"
 cat > /etc/sudoers.d/wocod-deploy <<SUDO
 ${APP_USER} ALL=(ALL) NOPASSWD: /bin/systemctl stop worldcovers
