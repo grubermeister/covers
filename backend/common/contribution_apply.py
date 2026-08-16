@@ -1072,16 +1072,19 @@ def _sync_citations(subject_type: str, subject_id, payload: dict, actor) -> None
     if isinstance(ids_raw, (str, int)) and not isinstance(ids_raw, bool):
         ids_raw = [ids_raw] if str(ids_raw).strip() else []
 
+    if ids_raw and not isinstance(ids_raw, (list, tuple)):
+        raise ContributionApplyError(
+            "reference_work_ids must be a list of ids."
+        )
+
+    # Guard, extract and validate all happen above, so there is no path that
+    # deletes without either repopulating or having been told to clear.
     Citation.objects.filter(
         subject_type=subject_type, subject_id=subject_id
     ).delete()
 
     if not ids_raw:
         return
-    if not isinstance(ids_raw, (list, tuple)):
-        raise ContributionApplyError(
-            "reference_work_ids must be a list of ids."
-        )
 
     details_raw = payload.get("reference_work_details")
     if details_raw is None:

@@ -1806,6 +1806,10 @@ const Contribute = () => {
         if (referenceWorkDetailsToSend.length > 0) {
           form.append("reference_work_details", JSON.stringify(referenceWorkDetailsToSend));
         }
+        // Both spellings carry the same value on purpose: the backend's
+        // _resolve_lettering accepts either, and older payloads use the other
+        // one. Do not "clean up" to a single key without changing
+        // _LETTERING_KEYS in common/contribution_apply.py first.
         const letteringToSend = isManuscriptSelected ? "" : letteringId || "";
         form.append("lettering_style_id", letteringToSend);
         form.append("lettering_id", letteringToSend);
@@ -1872,6 +1876,9 @@ const Contribute = () => {
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
           impression: isManuscriptSelected ? null : impression.trim(),
+          // "" when the rate field is not shown is deliberate, not an
+          // oversight: the field is hidden because this marking type carries
+          // no rate, so a rate left over from a previous type should clear.
           rate_val: showRateValueField ? rateValueToSend : "",
           desc: description.trim(),
           display_submitter_name: displaySubmitterName,
