@@ -29,6 +29,12 @@ if [[ "${1:-}" == "--reload" ]]; then
     echo "wipe_user_data.sh: refusing to import bare tools/wip/out." >&2
     exit 2
   fi
+  # --reload wipes user data AND truncate-imports the catalog: the most
+  # destructive path in the repo. Snapshot before either half runs.
+  # shellcheck source=tools/pre_change_backup.sh
+  . "$REPO_ROOT/tools/pre_change_backup.sh"
+  pre_change_backup "wipe-$(basename "$NORMALIZED_BUNDLE")" || exit 2
+
   echo "[1/2] wipe_user_data --no-input"
   uv run python backend/manage.py wipe_user_data --no-input
   echo "[2/2] ascc import --truncate $NORMALIZED_BUNDLE"

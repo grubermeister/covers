@@ -137,14 +137,35 @@ sudo -u wocod -H bash -lc 'rm -f /tmp/woco-auth.json'    # on the target
 
 ## Database Restore
 
-Database backups live under `backups/` when present.
+Snapshots are taken nightly by `worldcovers-backup.timer` and live under
+`/var/backups/woco/snapshots/`. Full detail in [BACKUP.md](BACKUP.md).
 
 ```sh
-mysql -u wocod -p worldcovers < backups/worldcovers_YYYY-MM-DD.sql
-./woco migrate
+# health, without logging in
+ssh reese@<host> 'cat /var/backups/woco/STATUS.json'
+
+# on-demand snapshot before something destructive (no password needed)
+sudo -u wocod /usr/local/sbin/worldcovers-backup --tag pre-something
+
+# rehearsal restore into a scratch database (service and media untouched)
+sudo -u wocod /usr/local/sbin/worldcovers-restore \
+  --snapshot <name> --into worldcovers_rehearsal
+
+# real restore: stops gunicorn, reloads the DB, restores media, restarts
+sudo -u wocod /usr/local/sbin/worldcovers-restore \
+  --snapshot <name> --into worldcovers \
+  --i-understand-this-overwrites $(hostname)
 ```
 
 Expected exit code: `0`.
+
+⚠ **Always restore both halves.** The dump contains the `images` rows but not
+the files — `MEDIA_ROOT` is a directory on disk. A database-only restore gives a
+complete-looking catalog with every image link broken.
+
+⚠ **Dumps are not portable between MySQL (woco.dev) and MariaDB (prod).** The
+restore tool refuses a cross-engine restore rather than failing halfway
+(`ISSUE-2026-08-10-01`).
 
 ## Revision Maintenance
 
@@ -160,7 +181,8 @@ cd /srv/woco
 Expected exit code: `0`. The command prints per-model counts.
 
 Run revision pruning manually as needed, for example monthly. No systemd timer
-or cron job is installed for this yet.
+or cron job is installed for *revision pruning* yet (the only timer this project
+installs is `worldcovers-backup.timer`; see [BACKUP.md](BACKUP.md)).
 
 ```sh
 cd /srv/woco

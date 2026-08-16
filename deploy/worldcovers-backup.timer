@@ -1,0 +1,23 @@
+# /etc/systemd/system/worldcovers-backup.timer
+[Unit]
+Description=Run the WorldCovers backup nightly
+Documentation=file:///srv/woco/docs/devel/BACKUP.md
+
+[Timer]
+# Both boxes run UTC. 02:30 sits clear of the existing timer cluster
+# (00:00 logrotate/dpkg-db-backup, 01:38-01:55, 03:10 e2scrub, 06:04 apt-upgrade).
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=10m
+AccuracySec=1m
+# "the service unit is triggered immediately if it would have been triggered at
+# least once during the time when the timer was inactive" -- systemd.timer(5).
+# Without this a night missed to a reboot (e.g. the 06:04 apt-daily-upgrade
+# taking a kernel) is silently skipped forever, which is the precise failure
+# mode this whole system exists to eliminate. The cost is one catch-up run at
+# boot, which may land at an odd hour and briefly make the NEXT interval look
+# long to the staleness check. That is expected; do not "fix" it.
+Persistent=true
+Unit=worldcovers-backup.service
+
+[Install]
+WantedBy=timers.target
