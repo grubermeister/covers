@@ -196,3 +196,48 @@ class ApplyVphcLedgerTests(TestCase):
         with self.assertRaises(CommandError) as ctx:
             self.run_apply()
         self.assertIn("VPHC1", str(ctx.exception))
+
+    def test_an_edit_carries_the_marking_s_existing_citations(self):
+        """Naming a citation states the complete set, so an edit that named
+        only VPHC1 deleted whatever the marking was already cited to -- in
+        production, its ASCC citation on 118 of 120 sampled markings."""
+        ascc = ReferenceWork.objects.create(
+            code="ASCC6", title="American Stampless Cover Catalog",
+            authorship="David G. Phillips", publisher="David G. Phillips",
+            publication_year=1985,
+            created_by=self.user, modified_by=self.user)
+        Citation.objects.create(
+            reference_work=ascc, subject_type="MARKING",
+            subject_id=self.doomed.pk, citation_detail="p. 214",
+            created_by=self.user, modified_by=self.user)
+
+        self.rows.append(cw_row(
+            vphc_key="ABINGDON#7", vphc_code="VPHC-VA-ABINGDON-7", src="T1:r10",
+            state="VA", county="Washington", town="ABINGDON",
+            town_key="ABINGDON", cancel_no="7", sheet_type="TOWNMARK",
+            sheet_insc="ABINGDON/VA.", sheet_colors="BLACK",
+            prod_code="ASCC6-VA-M9999", landing="update", verdict="resolved"))
+        self.lines.append({
+            "run": "test", "mode": "dryrun", "applied": False, "src": "T1:r10",
+            "town": "ABINGDON", "county": "Washington", "cancel": "7",
+            "action": "update", "target": "marking",
+            "target_code": "ASCC6-VA-M9999", "marking_id": self.doomed.pk,
+            "rule": "I3", "rule_version": 2, "confidence": 1.0,
+            "fields": ["color"], "before": {}, "after": {}, "rejected": {},
+            "why_unmatched": "", "editor_comment": "",
+        })
+        self.write()
+        self.run_apply(only="update")
+
+        contribution = Contribution.objects.get(
+            submitted_data__edit_marking_id=self.doomed.pk)
+        # VPHC1 first: catalog_codes derives the code prefix from the first id.
+        self.assertEqual(contribution.submitted_data["reference_work_ids"],
+                         [self.reference.pk, ascc.pk])
+
+        apply_contribution_to_catalog(contribution)
+        self.assertEqual(
+            set(Citation.objects.filter(
+                subject_type="MARKING", subject_id=self.doomed.pk
+            ).values_list("reference_work__code", flat=True)),
+            {"VPHC1", "ASCC6"})

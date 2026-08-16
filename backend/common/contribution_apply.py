@@ -75,6 +75,26 @@ _BOOL_FALSE = {"false", "no", "0"}
 _MARKING_TYPES = ("TOWNMARK", "RATEMARK", "AUXMARK")
 _COVER_TYPES = ("FC", "FL")
 
+# Every spelling _resolve_lettering understands, so "did the payload mention
+# lettering at all?" and "what does it resolve to?" stay in step.
+_LETTERING_KEYS = (
+    "lettering_style_id",
+    "lettering",
+    "lettering_id",
+    "lettering_style",
+    "letteringStyle",
+)
+
+# Multipart submissions arrive as "reference_work_ids[]" (the browser's array
+# spelling); JSON ones as reference_work_ids / referenceWorkIds. All three are
+# the same field -- catalog_codes._first_reference_work_id already reads all of
+# them, and _sync_citations must agree or it deletes rows it cannot see.
+_CITATION_ID_KEYS = (
+    "reference_work_ids",
+    "referenceWorkIds",
+    "reference_work_ids[]",
+)
+
 
 class ContributionApplyError(ValueError):
     """Raised when contribution submitted_data is malformed.
@@ -191,11 +211,22 @@ def apply_contribution_to_catalog(contrib):
 
 def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marking:
     """
-    Apply an approved marking-EDIT contribution in place: re-resolve the
-    marking's scalar fields from submitted_data, overwrite the existing row
-    (no new Marking), then reconcile its Images and Citations against the FULL
-    desired set. Returns the updated Marking -- the same contract as the create
-    path.
+    Apply an approved marking-EDIT contribution in place: merge the submitted
+    scalars into the existing row (no new Marking), then reconcile its Images
+    and Citations. Returns the updated Marking -- the same contract as the
+    create path.
+
+    Scalars follow RFC 7396 merge semantics, matching _apply_cover_edit: a key
+    the payload never mentions leaves the stored value alone, and an explicitly
+    empty value clears it. The submit form states emptiness explicitly (""),
+    so "the contributor cleared this box" still reads as a clear.
+
+    This is load-bearing, not stylistic. Rebuilding the row from the payload
+    instead meant any producer that spoke to a subset of columns silently
+    NULLed the rest -- and full_clean() passed, so the approval returned 200
+    with a clean audit trail. The VPHC ingest speaks to none of impression,
+    date_fmt, rate_val or desc; approving its 310 edits under the old behavior
+    nulled impression on all 288 matched markings.
 
     Marking.all_objects is used so a pending edit still applies even if the
     entry was recycle-binned after the edit was submitted; the removal sidecar
@@ -210,58 +241,69 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
             "Unknown marking id for edit: {}".format(marking_id)
         )
 
-    # Re-resolve scalars with the SAME helpers the create path uses, including
-    # the manuscript branch, so create and edit validate identically.
+    # Resolve with the SAME helpers the create path uses so create and edit
+    # validate identically; the difference is only which fields get assigned.
     state = _required_str(payload, "state")
     town = _required_str(payload, "town")
     inscription = _required_str(payload, "inscription_txt")
     is_manuscript = _coerce_required_bool(payload, "is_manuscript")
     post_office = _resolve_post_office(state, town, actor)
 
-    if is_manuscript:
-        shape = None
-        lettering = None
-        is_irreg = None
-    else:
-        shape = _resolve_fk(Shape, payload, "shape_id", "shape")
-        lettering = _resolve_lettering(payload)
-        is_irreg = _coerce_required_bool(payload, "is_irreg")
-
-    color = _resolve_fk(Color, payload, "color_id", "color")
-    width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
-    height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
-
-    desc_raw = (payload.get("desc") or payload.get("description") or "")
-    desc_raw = desc_raw.strip() if isinstance(desc_raw, str) else str(desc_raw).strip()
-
-    date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
-    if isinstance(date_fmt, str):
-        date_fmt = date_fmt.strip() or None
-
-    impression = payload.get("impression") or None
-    if isinstance(impression, str):
-        impression = impression.strip() or None
-
-    # type was validated against _MARKING_TYPES by the dispatch before this ran.
+    # Required by the submission contract, so always restated.
     catalog_code = code_value_from_payload(payload)
     if catalog_code:
         marking.code = catalog_code
-    marking.type = payload.get("type")
     marking.inscription_txt = inscription
-    marking.desc = desc_raw or None
     marking.is_manuscript = is_manuscript
-    marking.shape = shape
-    marking.lettering = lettering
-    marking.is_irreg = is_irreg
-    marking.width = width
-    marking.height = height
-    marking.date_fmt = date_fmt
-    marking.impression = impression
-    marking.rate_val = _parse_decimal(payload.get("rate_val"))
     marking.post_office = post_office
-    # Omitted color means "no change"; explicit blank/null means "clear".
+
+    if is_manuscript:
+        # Derived, not submitted: a manuscript marking has no shape, lettering
+        # or irregularity, so these clear whether or not the payload said so.
+        marking.shape = None
+        marking.lettering = None
+        marking.is_irreg = None
+    else:
+        if _payload_mentions_fk(payload, "shape_id", "shape"):
+            marking.shape = _resolve_fk(Shape, payload, "shape_id", "shape")
+        if _payload_mentions(payload, *_LETTERING_KEYS):
+            marking.lettering = _resolve_lettering(payload)
+        if "is_irreg" in payload:
+            marking.is_irreg = _coerce_optional_bool(
+                payload, "is_irreg", marking.is_irreg
+            )
+
+    # type was validated against _MARKING_TYPES by the dispatch before this ran.
+    if "type" in payload:
+        marking.type = payload.get("type")
     if _payload_mentions_fk(payload, "color_id", "color"):
-        marking.color = color
+        marking.color = _resolve_fk(Color, payload, "color_id", "color")
+    if _payload_mentions(payload, "width_mm", "widthMm"):
+        marking.width = _parse_decimal(
+            payload.get("width_mm") or payload.get("widthMm")
+        )
+    if _payload_mentions(payload, "height_mm", "heightMm"):
+        marking.height = _parse_decimal(
+            payload.get("height_mm") or payload.get("heightMm")
+        )
+    if _payload_mentions(payload, "desc", "description"):
+        desc_raw = payload.get("desc") or payload.get("description") or ""
+        desc_raw = (
+            desc_raw.strip() if isinstance(desc_raw, str) else str(desc_raw).strip()
+        )
+        marking.desc = desc_raw or None
+    if _payload_mentions(payload, "date_fmt", "dateFmt"):
+        date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
+        if isinstance(date_fmt, str):
+            date_fmt = date_fmt.strip() or None
+        marking.date_fmt = date_fmt
+    if "impression" in payload:
+        impression = payload.get("impression") or None
+        if isinstance(impression, str):
+            impression = impression.strip() or None
+        marking.impression = impression
+    if "rate_val" in payload:
+        marking.rate_val = _parse_decimal(payload.get("rate_val"))
     if "display_submitter_name" in payload:
         marking.display_submitter_name = bool(
             _coerce_optional_bool(
@@ -725,9 +767,17 @@ def _resolve_fk(model, payload: dict, id_key: str, name_key: str, *fallback_id_k
     return model.objects.filter(name__iexact=name).first()
 
 
-def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id_keys: str) -> bool:
-    keys = (id_key, name_key) + fallback_id_keys
+def _payload_mentions(payload: dict, *keys: str) -> bool:
+    """
+    Did the submission speak to this field at all? An edit merges rather than
+    replaces (RFC 7396): a key the payload never mentions leaves the stored
+    value alone; only an explicitly empty value clears it.
+    """
     return any(key in payload for key in keys)
+
+
+def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id_keys: str) -> bool:
+    return _payload_mentions(payload, id_key, name_key, *fallback_id_keys)
 
 
 def _resolve_lettering(payload: dict) -> Lettering | None:
@@ -997,23 +1047,44 @@ def _sync_citations(subject_type: str, subject_id, payload: dict, actor) -> None
     """
     Replace all Citation rows for (subject_type, subject_id) with the set built
     from reference_work_ids + reference_work_details. Deletes the existing rows
-    first, then recreates; zero ids therefore clears citations. On a freshly
-    created subject the delete is a no-op, so this matches the old create-only
-    behavior. subject_type is the Citation subject string ("MARKING" | "COVER").
+    first, then recreates; an explicitly empty id list therefore clears
+    citations. On a freshly created subject the delete is a no-op, so this
+    matches the old create-only behavior. subject_type is the Citation subject
+    string ("MARKING" | "COVER").
+
+    A payload that never mentions the field is not a request to delete: an edit
+    merges rather than replaces (RFC 7396), and an ingest that speaks only to
+    the columns it knows about must not wipe a marking's existing bibliography.
+    Clearing citations requires an explicitly empty list.
     """
+    if not _payload_mentions(payload, *_CITATION_ID_KEYS):
+        return
+
+    ids_raw = None
+    for key in _CITATION_ID_KEYS:
+        if key in payload:
+            ids_raw = payload.get(key)
+            break
+
+    # A multipart QueryDict is flattened to its last value at submit time, so
+    # this arrives as a bare id rather than a list. Treat it as the one-element
+    # list it is instead of discarding it.
+    if isinstance(ids_raw, (str, int)) and not isinstance(ids_raw, bool):
+        ids_raw = [ids_raw] if str(ids_raw).strip() else []
+
+    if ids_raw and not isinstance(ids_raw, (list, tuple)):
+        raise ContributionApplyError(
+            "reference_work_ids must be a list of ids."
+        )
+
+    # Guard, extract and validate all happen above, so there is no path that
+    # deletes without either repopulating or having been told to clear.
     Citation.objects.filter(
         subject_type=subject_type, subject_id=subject_id
     ).delete()
 
-    ids_raw = payload.get("reference_work_ids")
-    if ids_raw is None:
-        ids_raw = payload.get("referenceWorkIds")
     if not ids_raw:
         return
-    if not isinstance(ids_raw, (list, tuple)):
-        raise ContributionApplyError(
-            "reference_work_ids must be a list of ids."
-        )
 
     details_raw = payload.get("reference_work_details")
     if details_raw is None:
