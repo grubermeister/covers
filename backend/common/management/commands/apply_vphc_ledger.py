@@ -225,6 +225,10 @@ class Command(BaseCommand):
             return
 
         colours = [c for c in row["sheet_colors"].split(";") if c]
+        known = self._colour_names()
+        recognised = [c for c in colours if c.upper() in known]
+        unrecognised = [c for c in colours if c.upper() not in known]
+
         # E5: one scan, one attachment. A sheet marking that matched several
         # fan-out members is one physical device recorded in several colours,
         # so copying its scan onto each colour variant would assert that the
@@ -238,6 +242,66 @@ class Command(BaseCommand):
             if images:
                 self.scanned.add(vphc_key)
 
+        # Production's grain is one Marking row per type x colour -- the
+        # incumbent ASCC shape, settled 2026-08-15 (docs/DECISIONS.md). A NEW
+        # listing recorded in three colours is therefore three markings. The
+        # ingest used to emit one, keep colours[0], and bury the rest in the
+        # description as "Colours recorded: ...", which is the book's
+        # (town, cancel #) grain, not the site's: 277 of 1,798 create listings
+        # with 347 colour observations stranded in prose.
+        #
+        # EDITS ARE DELIBERATELY UNTOUCHED, and "untouched" is stricter than it
+        # looks. Rule I3 already paired them one-per-colour against live rows,
+        # so an edit targets exactly one existing marking and stays exactly one
+        # contribution -- but it must also keep the *same* colour it had.
+        # `recognised[0]` is not the same as the old `colours[0] if recognised`:
+        # where the sheet's FIRST colour is one the vocabulary rejects, the old
+        # code sent no colour at all and the edit branch below backfilled the
+        # marking's own, whereas picking the first recognised colour instead
+        # sends a different one and repaints a live marking on approval.
+        # Measured over the real crosswalk: 3 of the 310 edits changed, one of
+        # them RED -> BLACK. All 310 are already queued and verified on
+        # woco.dev; they must come out of this byte-identical so they do not
+        # need re-emitting a second time.
+        if edit_code:
+            sheet_colour = colours[0] if colours else None
+            if sheet_colour and sheet_colour.upper() not in known:
+                flags.append("color_unrecognised")
+                totals["colours not in the catalog vocabulary"] += 1
+                sheet_colour = None
+            colour_variants = [sheet_colour]
+        else:
+            if unrecognised:
+                # A colour the catalog has never heard of is dropped silently
+                # by the contribution path. Say so instead.
+                flags.append("color_unrecognised")
+                totals["colours not in the catalog vocabulary"] += len(unrecognised)
+            colour_variants = recognised or [None]
+        if len(colour_variants) > 1:
+            totals["create listings fanned out by colour"] += 1
+            totals["extra rows from the colour fan-out"] += len(colour_variants) - 1
+
+        for variant_index, colour in enumerate(colour_variants):
+            if not self._emit(
+                row, line, edit_code, actor, totals, applied, dry,
+                state=state, flags=flags, marking_type=marking_type,
+                inscription=inscription, colours=colours,
+                unrecognised=unrecognised, colour=colour,
+                # E5 again, one level down: the scan is evidence for one
+                # physical device, so within a fanned-out listing it attaches
+                # to the first colour variant only.
+                images=images if variant_index == 0 else [],
+            ):
+                return
+        # One line per ledger entry, not per contribution: LEDGER.jsonl is the
+        # replayable record of what the ledger decided, and a colour fan-out is
+        # one decision that produced several rows.
+        applied.append({**line, "applied": True, "mode": "applied"})
+
+    def _emit(self, row, line, edit_code, actor, totals, applied, dry, *,
+              state, flags, marking_type, inscription, colours, unrecognised,
+              colour, images):
+        """Build and create one contribution. False means stop the whole row."""
         payload = {
             "submission_kind": "marking",
             "type": marking_type,
@@ -246,7 +310,11 @@ class Command(BaseCommand):
             "inscription_txt": inscription,
             "is_manuscript": False,
             "is_irreg": False,
-            "desc": self._description(row, colours, flags),
+            "desc": self._description(
+                row, flags,
+                unplaced_colours=colours if edit_code else (),
+                rejected_colours=() if edit_code else unrecognised,
+            ),
             "reference_work_ids": [self.reference.pk],
             "reference_work_details": [{
                 "reference_work_id": self.reference.pk,
@@ -269,14 +337,8 @@ class Command(BaseCommand):
             payload["height_mm"] = dec(row["sheet_height"])
         if row["sheet_shape"].strip():
             payload["shape"] = row["sheet_shape"].strip()
-        if colours:
-            # A colour the catalog has never heard of is dropped silently by
-            # the contribution path. Say so instead.
-            if colours[0].upper() in self._colour_names():
-                payload["color"] = colours[0]
-            else:
-                flags.append("color_unrecognised")
-                totals["colours not in the catalog vocabulary"] += 1
+        if colour:
+            payload["color"] = colour
         if marking_type == "RATEMARK":
             rate = re.search(r"\d+", row["cancel_no"] or "")
             if inscription.isdigit():
@@ -298,7 +360,7 @@ class Command(BaseCommand):
             marking = Marking.all_objects.filter(code=edit_code).first()
             if marking is None:
                 totals["updates skipped (marking gone)"] += 1
-                return
+                return False
             payload["edit_marking_id"] = marking.pk
             # Approval merges rather than replaces, so these are no longer
             # needed to protect the record -- they are here so the review UI,
@@ -339,7 +401,7 @@ class Command(BaseCommand):
         totals[f"contributions created ({'edit' if edit_code else 'new'})"] += 1
         if flags:
             totals["contributions carrying a flag"] += 1
-        applied.append({**line, "applied": True, "mode": "applied"})
+        return True
 
     def _colour_names(self):
         if not hasattr(self, "_colours"):
@@ -363,12 +425,30 @@ class Command(BaseCommand):
         state = self._town_states.get(town_key)
         return state if state in self.collections else None
 
-    def _description(self, row, colours, flags):
+    def _description(self, row, flags, unplaced_colours=(), rejected_colours=()):
+        """Two different colour remainders, deliberately worded differently.
+
+        `unplaced_colours` (edit path): the row already exists and
+        Marking.color is single-valued, so the sheet's other observations have
+        nowhere to go but prose. Wording and the >1 guard are unchanged from
+        before the fan-out, so the 310 queued edits stay byte-identical.
+
+        `rejected_colours` (create path): a create now emits one marking per
+        recognised colour, so the only homeless ones are those the catalog
+        vocabulary does not know. Those are named at ANY count -- the
+        color_unrecognised flag says a colour was dropped, but not which one,
+        and an editor fixing it needs the name.
+        """
         parts = [f"Virginia Postal History Catalog {row['town'].title()} "
                  f"#{row['cancel_no']} ({row['src']})."]
-        if len(colours) > 1:
+        if len(unplaced_colours) > 1:
             # Marking.color is single-valued; the rest would be lost silently.
-            parts.append("Colours recorded: " + ", ".join(colours) + ".")
+            parts.append("Colours recorded: " + ", ".join(unplaced_colours) + ".")
+        if rejected_colours:
+            parts.append(
+                "Colours recorded but not in the catalog vocabulary: "
+                + ", ".join(rejected_colours) + "."
+            )
         if row["catalog_marker"]:
             parts.append(row["catalog_marker"])
         if "type_defaulted" in flags:

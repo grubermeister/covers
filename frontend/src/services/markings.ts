@@ -627,16 +627,51 @@ function mapCitationList(raw: unknown): MarkingCitation[] {
 }
 
 /**
+ * Region tiers that are sub-state divisions rather than jurisdictions in their
+ * own right. Mirrors Region.SUBREGION_TIERS on the backend. A marking's
+ * `regions` list carries every link, county rows included, so any consumer
+ * that means "state/territory" has to filter. (issue #103)
+ */
+const SUBREGION_TIERS = new Set(["COUNTY", "CITY"]);
+
+/** The state/territory affiliations of a marking's town, county rows removed. */
+export function primaryRegions(
+  record: Pick<MarkingRecord, "regions">,
+): MarkingRegion[] {
+  return record.regions.filter((r) => !SUBREGION_TIERS.has(r.regionTier.toUpperCase()));
+}
+
+/** The county rows of a marking's town, which render as their own field. */
+export function countyRegions(
+  record: Pick<MarkingRecord, "regions">,
+): MarkingRegion[] {
+  return record.regions.filter((r) => r.regionTier.toUpperCase() === "COUNTY");
+}
+
+/**
  * Display string for the "State/Territory" row: every territory a town belonged
  * to, current-first, comma-separated (multi-territory support, #24). Falls back
  * to the single primary region (`state`) when the regions list is absent (e.g.
  * search-list payloads that don't include it). Exported for unit testing.
+ *
+ * Counties are excluded: since the VPHC ingest every VA/WV town is also linked
+ * to its county, which made this read "Virginia, Accomack". (issue #103)
  */
 export function regionsDisplay(
   record: Pick<MarkingRecord, "regions" | "state">,
 ): string {
-  const names = record.regions.map((r) => r.name.trim()).filter((n) => n !== "");
+  const names = primaryRegions(record)
+    .map((r) => r.name.trim())
+    .filter((n) => n !== "");
   return names.length > 0 ? names.join(", ") : record.state;
+}
+
+/** Display string for the "County" row: comma-separated county names, or "". */
+export function countyDisplay(record: Pick<MarkingRecord, "regions">): string {
+  return countyRegions(record)
+    .map((r) => r.name.trim())
+    .filter((n) => n !== "")
+    .join(", ");
 }
 
 function mapRegionList(raw: unknown): MarkingRegion[] {
