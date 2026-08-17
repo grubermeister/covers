@@ -46,7 +46,12 @@ type SortDir = "asc" | "desc";
 type SortEntry = { field: SortField; dir: SortDir };
 
 const SORT_FIELD_COLUMN: Record<SortField, string> = {
-  state: "post_office__post_office_regions__region__name",
+  // Not the post_office_regions path: ordering across that junction fans a
+  // marking out once per region link and LIMIT/OFFSET then drops an equal
+  // number of other markings off the end. The backend exposes a
+  // primary_region_name annotation instead. Old bookmarked URLs carrying the
+  // junction spelling are rewritten server-side. (issue #103)
+  state: "primary_region_name",
   town: "post_office__name",
   type: "type",
   shape: "shape__name",
@@ -99,7 +104,7 @@ function orderingParamForSort(entries: SortEntry[]): string {
   if (entries.length === 0) return "id";
   if (isDefaultSort(entries)) {
     return [
-      "post_office__post_office_regions__region__name",
+      "primary_region_name",
       "is_manuscript",
       "post_office__name",
       "earliest_seen",

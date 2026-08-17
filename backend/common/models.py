@@ -749,6 +749,14 @@ class Region(TimestampedModel):
     model.md domain type: Region
     """
     REGION_TIER_CHOICES = [('COUNTRY', 'Country'), ('TERRITORY', 'Territory'), ('STATE', 'State'), ('PROVINCE', 'Province'), ('COUNTY', 'County'), ('CITY', 'City'), ('DISTRICT', 'District'), ('OTHER', 'Other')]
+    # Tiers that are never an answer to "which state is this marking in?".
+    # The VPHC ingest gave every VA/WV post office a second, COUNTY-tier region
+    # link (issue #103), so any read path that resolves or matches a town's
+    # state has to exclude these or it sees the county as an equal candidate.
+    # Deliberately an exclusion list rather than an allowlist: a future
+    # PROVINCE (Canada) is a legitimate primary jurisdiction and must not have
+    # to be remembered here to keep working.
+    SUBREGION_TIERS = ('COUNTY', 'CITY')
     code = models.CharField(max_length=30, unique=True, null=True, blank=True, help_text='Editor-assigned reference identifier')
     name = models.CharField(max_length=100, help_text='Canonical region name for the applicable historical period')
     abbrev = models.CharField(max_length=3, help_text='Canonical two or three character abbreviation')
@@ -793,12 +801,19 @@ class PostOffice(TimestampedModel):
 
     @property
     def region(self):
-        # Resolve the most-recent active Region linked via the
+        # Resolve the most-recent active *primary* Region linked via the
         # post_office_regions junction. "Active" means defunct_date IS NULL;
         # NULLS-FIRST on defunct_date_desc puts active rows ahead of expired
         # ones, then we tie-break by latest established_date.
+        #
+        # The SUBREGION_TIERS exclusion is load-bearing, not defensive. Since
+        # the VPHC ingest, a VA/WV town is linked to its county as well as its
+        # state (issue #103). This resolved to the state anyway -- but only by
+        # accident, because VA/WV carry an established_date and the counties do
+        # not. Give one county a date and the tie-break flips the town's state.
         link = (
             self.post_office_regions
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
             .select_related('region')
             .order_by(
                 F('region__defunct_date').desc(nulls_first=True),
@@ -816,6 +831,12 @@ class PostOffice(TimestampedModel):
         # Unlike .region (which collapses to one), this exposes a town's full
         # multi-territory history -- e.g. Michigan Territory + Michigan -- so a
         # town spanning several jurisdictions over time shows all of them.
+        #
+        # This deliberately does NOT exclude SUBREGION_TIERS the way .region
+        # does: the marking detail page needs the COUNTY link to render its
+        # County field (issue #103). Callers that want only primary
+        # jurisdictions must filter by region_tier themselves -- the serializer
+        # ships region_tier on every entry precisely so they can.
         return [
             link.region
             for link in (

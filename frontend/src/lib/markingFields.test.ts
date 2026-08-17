@@ -108,3 +108,36 @@ describe("buildMarkingFields — State/Territory tags (issue #28)", () => {
     expect(row?.tags).toBeUndefined();
   });
 });
+
+describe("buildMarkingFields — County row (issue #103)", () => {
+  it("renders County as its own labelled row, directly under State/Territory", () => {
+    const rows = buildMarkingFields(
+      baseInput({ county: "Accomack" }),
+      { isStaff: false },
+    );
+    const labels = rows.map((r) => r.label);
+    expect(labels).toContain("County");
+    expect(labels.indexOf("County")).toBe(labels.indexOf("State/Territory") + 1);
+    expect(rows.find((r) => r.label === "County")?.value).toBe("Accomack");
+  });
+
+  it("renders County as plain text, never as a link or a chip", () => {
+    // The search `state` param matches on region name and three VPHC county
+    // names collide with real states (Ohio, Washington, Wyoming), so a linked
+    // county would run the wrong search.
+    const county = buildMarkingFields(
+      baseInput({ county: "Washington" }),
+      { isStaff: false },
+    ).find((r) => r.label === "County");
+    expect(county?.to).toBeUndefined();
+    expect(county?.tags).toBeUndefined();
+  });
+
+  it("collapses the County row when the marking's town has no county", () => {
+    const county = buildMarkingFields(baseInput(), { isStaff: false })
+      .find((r) => r.label === "County");
+    expect(county).toBeDefined();
+    expect(county?.value).toBe("");
+    expect(county?.alwaysShow).toBe(false);
+  });
+});

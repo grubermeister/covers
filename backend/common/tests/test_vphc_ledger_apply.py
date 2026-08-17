@@ -9,6 +9,8 @@ import json
 import os
 import tempfile
 
+from PIL import Image as PILImage
+
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -123,8 +125,13 @@ class ApplyVphcLedgerTests(TestCase):
         self.assertEqual(data["town"], "Abingdon")
         self.assertEqual(data["type"], "TOWNMARK")
         self.assertTrue(data["no_marking_image"])
-        # colour is single-valued on Marking, so the rest must not vanish
-        self.assertIn("Colours recorded: BLACK, RED", data["desc"])
+        # RED is not in this fixture's Color vocabulary, so it cannot become a
+        # marking of its own the way a recognised colour now does (issue #103).
+        # It must still be named -- the color_unrecognised flag says a colour
+        # was dropped but not which one.
+        self.assertIn(
+            "Colours recorded but not in the catalog vocabulary: RED", data["desc"],
+        )
         self.assertIn("[VPHC: century inferred]", data["desc"])
 
         marking = apply_contribution_to_catalog(contribution)
@@ -241,3 +248,159 @@ class ApplyVphcLedgerTests(TestCase):
                 subject_type="MARKING", subject_id=self.doomed.pk
             ).values_list("reference_work__code", flat=True)),
             {"VPHC1", "ASCC6"})
+
+    # ------------------------------------------- the colour grain (issue #103)
+
+    def _recognise(self, *names):
+        for name in names:
+            Color.objects.get_or_create(
+                name=name,
+                defaults={"created_by": self.user, "modified_by": self.user},
+            )
+
+    def test_a_multi_colour_create_becomes_one_marking_per_colour(self):
+        # Production's grain is one Marking row per type x colour (settled
+        # 2026-08-15). The ingest used to keep colours[0] and write the rest
+        # into the description as prose -- the book's grain, not the site's.
+        self._recognise("RED", "BLUE")
+        self.rows[0]["sheet_colors"] = "BLACK;RED;BLUE"
+        self.write()
+        self.run_apply()
+
+        contributions = list(Contribution.objects.all())
+        self.assertEqual(len(contributions), 3)
+        self.assertEqual(
+            sorted(c.submitted_data["color"] for c in contributions),
+            ["BLACK", "BLUE", "RED"],
+        )
+        # The colours are rows now, so repeating them as prose would say the
+        # same thing twice and re-assert the collapsed grain.
+        for contribution in contributions:
+            self.assertNotIn("Colours recorded", contribution.submitted_data["desc"])
+        # Everything else about the listing is shared, not re-derived.
+        for contribution in contributions:
+            self.assertEqual(contribution.submitted_data["town"], "Abingdon")
+            self.assertEqual(contribution.submitted_data["vphc"]["cancel_no"], "6")
+
+    def test_the_scan_attaches_to_exactly_one_colour_variant(self):
+        # E5: one scan is evidence for one physical device. Copying it onto
+        # every colour variant would assert the same photograph proves three
+        # separate records.
+        self._recognise("RED", "BLUE")
+        self.rows[0]["sheet_colors"] = "BLACK;RED;BLUE"
+        self.rows[0]["sheet_image_files"] = "vphc-va-abingdon-6-r9.png"
+        PILImage.new("RGB", (40, 40), color=(10, 10, 10)).save(
+            os.path.join(self.dir, "extract", "media", "vphc-va-abingdon-6-r9.png")
+        )
+        self.write()
+        self.run_apply()
+
+        with_images = [c for c in Contribution.objects.all()
+                       if c.submitted_data.get("marking_image_metas")]
+        self.assertEqual(len(with_images), 1)
+        self.assertEqual(Contribution.objects.count(), 3)
+        without = [c for c in Contribution.objects.all()
+                   if not c.submitted_data.get("marking_image_metas")]
+        # _sync_images refuses a marking that neither has an image nor says it
+        # has none deliberately.
+        self.assertTrue(all(c.submitted_data["no_marking_image"] for c in without))
+
+    def test_a_multi_colour_edit_stays_exactly_one_contribution(self):
+        # Rule I3 already paired edits one-per-colour against live rows, so an
+        # edit targets one existing marking and must not fan out. Its
+        # description must also stay byte-identical -- the 310 edits are
+        # already queued on woco.dev and must not need re-emitting.
+        self._recognise("RED", "BLUE")
+        self.rows.append(cw_row(
+            vphc_key="ABINGDON#7", vphc_code="VPHC-VA-ABINGDON-7", src="T1:r10",
+            state="VA", county="Washington", town="ABINGDON",
+            town_key="ABINGDON", cancel_no="7", sheet_type="TOWNMARK",
+            sheet_insc="ABINGDON/VA.", sheet_colors="BLACK;RED;BLUE",
+            prod_code="ASCC6-VA-M9999", landing="update", verdict="resolved"))
+        self.lines.append({
+            "run": "test", "mode": "dryrun", "applied": False, "src": "T1:r10",
+            "town": "ABINGDON", "county": "Washington", "cancel": "7",
+            "action": "update", "target": "marking",
+            "target_code": "ASCC6-VA-M9999", "marking_id": self.doomed.pk,
+            "rule": "I3", "rule_version": 2, "confidence": 1.0,
+            "fields": ["color"], "before": {}, "after": {}, "rejected": {},
+            "why_unmatched": "", "editor_comment": "",
+        })
+        self.write()
+        self.run_apply(only="update")
+
+        contribution = Contribution.objects.get()
+        self.assertEqual(contribution.submitted_data["color"], "BLACK")
+        self.assertIn(
+            "Colours recorded: BLACK, RED, BLUE",
+            contribution.submitted_data["desc"],
+        )
+
+    def test_the_ledger_records_one_line_per_decision_not_per_row(self):
+        # LEDGER.jsonl is the replayable record of what the ledger decided. A
+        # colour fan-out is one decision that produced three rows.
+        self._recognise("RED", "BLUE")
+        self.rows[0]["sheet_colors"] = "BLACK;RED;BLUE"
+        self.write()
+        self.run_apply()
+
+        with open(os.path.join(self.dir, "LEDGER.jsonl"), encoding="utf-8") as fh:
+            written = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual(len(written), 1)
+        self.assertEqual(Contribution.objects.count(), 3)
+
+    def test_a_single_colour_create_is_unchanged(self):
+        self.rows[0]["sheet_colors"] = "BLACK"
+        self.write()
+        self.run_apply()
+
+        contribution = Contribution.objects.get()
+        self.assertEqual(contribution.submitted_data["color"], "BLACK")
+        self.assertNotIn("Colours recorded", contribution.submitted_data["desc"])
+
+    def test_a_create_with_no_colour_at_all_still_emits_one_row(self):
+        self.rows[0]["sheet_colors"] = ""
+        self.write()
+        self.run_apply()
+
+        contribution = Contribution.objects.get()
+        self.assertNotIn("color", contribution.submitted_data)
+
+    def test_an_edit_whose_first_colour_is_unknown_keeps_the_marking_s_own(self):
+        """The fan-out must not repaint a live marking.
+
+        `recognised[0]` reads like a harmless tightening of `colours[0]`. It is
+        not: where the sheet's FIRST colour is one the vocabulary rejects, the
+        payload must carry no colour so the edit branch backfills the marking's
+        existing one. Picking the first *recognised* sheet colour instead sends
+        a different colour, which merges on approval. Measured over the real
+        crosswalk this changed 3 of the 310 queued edits, one RED -> BLACK.
+        """
+        self._recognise("BLACK")
+        self.doomed.color = Color.objects.create(
+            name="RED", created_by=self.user, modified_by=self.user)
+        self.doomed.save(update_fields=["color"])
+
+        self.rows.append(cw_row(
+            vphc_key="ABINGDON#7", vphc_code="VPHC-VA-ABINGDON-7", src="T1:r10",
+            state="VA", county="Washington", town="ABINGDON",
+            town_key="ABINGDON", cancel_no="7", sheet_type="TOWNMARK",
+            sheet_insc="ABINGDON/VA.",
+            # PUCE is not in the vocabulary and it is first.
+            sheet_colors="PUCE;BLACK",
+            prod_code="ASCC6-VA-M9999", landing="update", verdict="resolved"))
+        self.lines.append({
+            "run": "test", "mode": "dryrun", "applied": False, "src": "T1:r10",
+            "town": "ABINGDON", "county": "Washington", "cancel": "7",
+            "action": "update", "target": "marking",
+            "target_code": "ASCC6-VA-M9999", "marking_id": self.doomed.pk,
+            "rule": "I3", "rule_version": 2, "confidence": 1.0,
+            "fields": ["color"], "before": {}, "after": {}, "rejected": {},
+            "why_unmatched": "", "editor_comment": "",
+        })
+        self.write()
+        self.run_apply(only="update")
+
+        data = Contribution.objects.get().submitted_data
+        self.assertEqual(data["color"], "RED")
+        self.assertIn("color_unrecognised", data["vphc"]["flags"])

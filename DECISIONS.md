@@ -1,5 +1,43 @@
 # Decisions
 
+## 2026-08-17 — Marking list ordering is an annotation contract, not a relation path (issue #103)
+
+**What was decided.** `MarkingViewSet` no longer exposes or defaults to
+`post_office__post_office_regions__region__name` as an ordering key. The list queryset carries
+`primary_region_name` / `primary_region_abbrev` — correlated `Subquery` annotations resolving the
+town's most-recent active non-`SUBREGION_TIERS` region — and those are the ordering keys.
+
+**Why a rewrite and not an allowlist entry.** DRF matches an explicit `ordering_fields` list
+**verbatim** (`rest_framework/filters.py:264-291`), so leaving the junction spelling in the list
+would hand it straight to `order_by()` and restore the fan-out. Bookmarked search URLs still carry
+it, and rejecting it outright would silently change the sort under the user. So
+`AliasedOrderingFilter` (`common/filters.py`) rewrites retired keys from a `ordering_aliases` map on
+the view. **If you add an ordering key that crosses a to-many relation, it belongs in that map, not
+in `ordering_fields`.**
+
+**The invariant worth keeping.** `_primary_region_subquery` mirrors `PostOffice.region`'s tie-break
+exactly — `defunct_date DESC NULLS FIRST, established_date DESC NULLS LAST`, minus subregion tiers —
+so the sort key and the displayed `state` cannot disagree. Change one and change both.
+`PostOffice.region` gained the same tier guard: it resolved to the state before only because VA/WV
+carry an `established_date` and counties do not, so one dated county row would have flipped it.
+
+**`PostOffice.regions` (plural) deliberately still returns county links** — the marking detail page
+needs them for its County field. Consumers meaning "state/territory" filter on `region_tier`, which
+the serializer ships on every entry.
+
+**A trap, measured.** `PostOffice.objects.exclude(post_office_regions__region__region_tier__in=...)`
+looks like the obvious way to drop county links and is wrong: excluding across a to-many relation
+compiles to `NOT EXISTS`, so it drops every town that has *any* county link — **593 of 2,162 post
+offices survived** it locally. `town_options` iterates the junction instead, where the same
+predicate is a forward FK.
+
+**Sources.** [Django `order_by`](https://docs.djangoproject.com/en/5.2/ref/models/querysets/#order-by)
+· [`distinct`](https://docs.djangoproject.com/en/5.2/ref/models/querysets/#distinct)
+· [Subquery](https://docs.djangoproject.com/en/5.2/ref/models/expressions/#subquery-expressions)
+· [DRF #6886](https://github.com/encode/django-rest-framework/issues/6886)
+· [django-filter usage](https://django-filter.readthedocs.io/en/stable/guide/usage.html) (the
+`filterset_fields` dict form behind `region_tier__in`).
+
 ## 2026-08-07 — Image validation combines #76's wrong-kind warning with #94's no-image opt-out
 
 **What was decided.** On `Contribute.tsx` and `CoverEdit.tsx`, submission validation now

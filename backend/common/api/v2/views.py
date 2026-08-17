@@ -17,7 +17,7 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import F, Min, Max, Q
+from django.db.models import F, Min, Max, OuterRef, Q, Subquery
 from django.db.models.functions import ExtractYear
 from django.http import Http404
 from django.utils import timezone
@@ -72,6 +72,7 @@ from common.audit import (
     restore_marking_from_snapshot,
 )
 from common.filters import (
+    AliasedOrderingFilter,
     CitationAwareMarkingSearchFilter,
     CoverMarkingFilter,
     MarkingListFilter,
@@ -96,6 +97,7 @@ from common.models import (
     MarkingRecycleBin,
     MarkingVersion,
     PostOffice,
+    PostOfficeRegion,
     Postmaster,
     PostmasterTenure,
     ReferenceWork,
@@ -188,16 +190,64 @@ class IsResponsibleForRegion(BasePermission):
         return _user_is_responsible_for_marking(request.user, marking)
 
 
+def _primary_region_subquery(field):
+    """A marking's primary-jurisdiction Region `field`, as a scalar subquery.
+
+    Deliberately a correlated subquery and NOT a join. Ordering across the
+    post_office_regions junction multiplies rows -- Django's own order_by()
+    docs warn that a multi-valued field "could return more items than you were
+    working on to begin with" -- and since the VPHC ingest gave every VA/WV
+    town a county link alongside its state, that is exactly what happened:
+    502 markings emitted twice and 502 different ones pushed off the end by
+    LIMIT/OFFSET, while count() stayed correct because Django strips ordering
+    when it counts (issue #103, LEFT_OFF.md B2).
+
+    .distinct() does not fix it. Ordering by a related field puts that field in
+    the SELECT list, so the Virginia row and the Accomack row of the same
+    marking are not duplicates to DISTINCT -- measured live on woco.dev, where
+    ?state=VA already had .distinct() and still returned 2,309 rows for 1,947
+    markings. It is also the slow path: the issue #59 load test measured 723 of
+    11,493 temp tables spilling to disk at 4,000 rows.
+
+    The ordering mirrors PostOffice.region's tie-break exactly so the sort key
+    and the displayed state can never disagree.
+
+    Cost, measured (EXPLAIN + timings, 3,155 local markings / 1,569 county
+    links): the subquery is `ref` on the unique post_office_region index plus
+    an `eq_ref` PK lookup -- two bounded index lookups per candidate row, so
+    O(1) per row, not a scan. A deep-offset page costs ~17.5 ms against
+    ~15.0 ms for the old (wrong) junction sort. Paying ~2.5 ms for pages that
+    are actually complete. The planned denormalized state_region_id column
+    removes even that; this is its no-migration precursor.
+    """
+    return Subquery(
+        PostOfficeRegion.objects
+        .filter(post_office_id=OuterRef("post_office_id"))
+        .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+        .order_by(
+            F("region__defunct_date").desc(nulls_first=True),
+            F("region__established_date").desc(nulls_last=True),
+        )
+        .values(f"region__{field}")[:1]
+    )
+
+
 def _marking_list_queryset():
     """Optimized queryset for Marking list-style endpoints.
 
     earliest_seen / latest_seen are real columns maintained by
     common.date_range (issue #59), so no annotation is needed here.
+
+    primary_region_name / primary_region_abbrev exist to be ordered by -- see
+    _primary_region_subquery for why they are not a join.
     """
     return Marking.objects.select_related(
         "post_office", "shape", "lettering", "color"
     ).prefetch_related(
         "post_office__post_office_regions__region"
+    ).annotate(
+        primary_region_name=_primary_region_subquery("name"),
+        primary_region_abbrev=_primary_region_subquery("abbrev"),
     )
 
 
@@ -252,7 +302,11 @@ class RegionViewSet(viewsets.ModelViewSet):
     serializer_class = RegionSerializer
     permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["region_tier", "parent_region"]
+    # `in` as well as exact so a caller can ask for the set of tiers that are
+    # real answers to "which state?" in one request. The Search and Contribute
+    # State/Territory dropdowns do exactly that: without it they page every
+    # Region and offer all 141 VPHC counties as states (issue #103).
+    filterset_fields = {"region_tier": ["exact", "in"], "parent_region": ["exact"]}
     search_fields = ["name", "abbrev"]
     ordering_fields = ["name", "abbrev", "established_date", "defunct_date", "created_date"]
     ordering = ["name"]
@@ -305,19 +359,59 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="town-options")
     def town_options(self, request):
-        """Lightweight {town, state} payload for autocomplete controls."""
-        rows = (
-            PostOffice.objects.prefetch_related("post_office_regions__region")
-            .exclude(name__isnull=True)
-            .exclude(name__exact="")
-            .values_list("name", "post_office_regions__region__name")
-            .order_by("name", "post_office_regions__region__name")
+        """Lightweight {town, state} payload for autocomplete controls.
+
+        A row is a (town, state) *pair*, so a town linked to its county as
+        well as its state emitted one pair per link and the county one read as
+        a state: 1,553 of 7,305 rows offered a county as the state across 140
+        counties, and ABINGDON came back as Illinois, Maryland, Virginia *and*
+        Washington. .distinct() cannot help -- the pairs genuinely differ.
+        (issue #103)
+
+        Iterate the junction rather than PostOffice. `PostOffice.exclude(
+        post_office_regions__region__region_tier__in=...)` looks like the
+        obvious fix and is a trap: excluding across a to-many relation compiles
+        to NOT EXISTS, so it drops every town that has *any* county link --
+        measured at 593 of 2,162 post offices surviving, i.e. it would have
+        deleted 1,569 towns from the autocomplete. On the junction the same
+        predicate is a forward FK and means what it reads like.
+        """
+        pairs = (
+            PostOfficeRegion.objects
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+            .exclude(post_office__name__isnull=True)
+            .exclude(post_office__name__exact="")
+            .values_list("post_office__name", "region__name")
+            .order_by("post_office__name", "region__name")
             .distinct()
         )
         out = [
             {"town": (town or "").strip(), "state": (state or "").strip()}
-            for town, state in rows
+            for town, state in pairs
         ]
+
+        # A town whose only links are county links (the quarantined towns whose
+        # state could not be resolved -- 3 locally) would otherwise vanish from
+        # the autocomplete entirely. Offer it with a blank state, which the
+        # form already handles, rather than naming its county as its state.
+        # Left unevaluated on purpose: Django inlines it as a subquery, so
+        # this stays one round trip instead of pulling ~5,700 ids into Python.
+        towns_with_a_state = (
+            PostOfficeRegion.objects
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+            .values("post_office_id")
+        )
+        stateless = (
+            PostOffice.objects
+            .exclude(pk__in=towns_with_a_state)
+            .exclude(name__isnull=True)
+            .exclude(name__exact="")
+            .order_by("name")
+            .values_list("name", flat=True)
+            .distinct()
+        )
+        out.extend({"town": name.strip(), "state": ""} for name in stateless)
+        out.sort(key=lambda row: (row["town"], row["state"]))
         return Response(out, status=status.HTTP_200_OK)
 
 
@@ -1379,7 +1473,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
     pagination_class = MarkingListPagination
     queryset = Marking.objects.all()
     permission_classes = [IsEditorOrAdminWrite, IsResponsibleForRegion]
-    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, AliasedOrderingFilter]
     filterset_class = MarkingListFilter
     # No raw DELETE: removing a marking goes through the audited, reversible
     # POST /markings/<pk>/remove/ (recycle bin) action instead. Custom POST
@@ -1401,10 +1495,19 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "lettering__name",
         "color__name",
     ]
+    # Retired `?ordering=` spellings, kept working for bookmarked search URLs.
+    # They must be rewritten rather than merely allowed: DRF matches
+    # ordering_fields verbatim, so leaving the junction path in the list would
+    # order across post_office_regions again and restore the fan-out. (#103)
+    ordering_aliases = {
+        "post_office__post_office_regions__region__name": "primary_region_name",
+        "post_office__post_office_regions__region__abbrev": "primary_region_abbrev",
+    }
     ordering_fields = [
-        # Location / identity
-        "post_office__post_office_regions__region__name",
-        "post_office__post_office_regions__region__abbrev",
+        # Location / identity. Annotations, not junction paths -- see
+        # _primary_region_subquery.
+        "primary_region_name",
+        "primary_region_abbrev",
         "post_office__name",
         "code",
         "type",
@@ -1422,10 +1525,17 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "id",
     ]
     ordering = [
-        "post_office__post_office_regions__region__name",
+        "primary_region_name",
         "is_manuscript",
         "post_office__name",
         "earliest_seen",
+        # A unique final key is not optional under LIMIT/OFFSET. Without it,
+        # rows that tie on everything above can swap places between one page
+        # request and the next, so a marking is served twice and another never
+        # at all -- independent of the fan-out, and the failure reported in
+        # DRF issue #6886. The frontend already appends `id`; every other
+        # client was relying on luck.
+        "id",
     ]
 
     def get_queryset(self):

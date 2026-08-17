@@ -8,7 +8,71 @@ import django_filters
 from django.db.models import Q
 from rest_framework import filters
 
-from .models import Citation, CoverMarking, Marking, MarkingType
+from .models import Citation, CoverMarking, Marking, MarkingType, Region
+
+
+def regions_matching_state_term(value):
+    """Regions a user means when they type `value` into a "state" field.
+
+    Name matches anything -- "Accomack" is a perfectly good thing to look up.
+    An *abbreviation* only ever means a primary jurisdiction: the VPHC ingest
+    gave all 141 county rows their state's abbrev (issue #103), so a bare
+    `?state=VA` matched Virginia AND every Virginia county, put two junction
+    rows behind each VA marking, and returned 2,309 rows for 1,947 markings
+    with 362 of them unreachable -- measured on woco.dev, with .distinct()
+    already applied and unable to help (the ordered region column was in the
+    SELECT list, so the two rows were not duplicates).
+
+    Negation is safe here because these are Region's own columns; the same
+    predicate written across the post_office_regions junction would become a
+    NOT EXISTS and stop meaning "this one region row".
+    """
+    text = str(value or "").strip()
+    if not text:
+        return Region.objects.none()
+    return Region.objects.filter(
+        Q(name__iexact=text)
+        | (Q(abbrev__iexact=text) & ~Q(region_tier__in=Region.SUBREGION_TIERS))
+    )
+
+
+def filter_markings_by_state_term(queryset, value):
+    """Shared body of the `state` filter on both marking FilterSets.
+
+    A blank term is a no-op, not "match nothing" -- django-filter calls the
+    method for an empty `?state=` and the list must stay whole.
+    """
+    if not str(value or "").strip():
+        return queryset
+    return queryset.filter(
+        post_office__post_office_regions__region__in=regions_matching_state_term(value),
+    ).distinct()
+
+
+class AliasedOrderingFilter(filters.OrderingFilter):
+    """OrderingFilter that rewrites retired `?ordering=` keys to live ones.
+
+    Needed because a view's `ordering_fields` list is matched verbatim by
+    DRF (`get_valid_fields`), so simply leaving a retired key in the list
+    hands it straight back to `order_by()`. Issue #103 retired the
+    post_office_regions ordering paths in favour of the primary_region_*
+    annotations; bookmarked search URLs still carry the old spelling, and
+    honouring them literally would reintroduce the fan-out the annotations
+    exist to remove.
+
+    Aliases are declared on the view as `ordering_aliases`.
+    """
+
+    def remove_invalid_fields(self, queryset, fields, view, request):
+        aliases = getattr(view, "ordering_aliases", None) or {}
+        rewritten = [self._rewrite(term, aliases) for term in fields]
+        return super().remove_invalid_fields(queryset, rewritten, view, request)
+
+    @staticmethod
+    def _rewrite(term, aliases):
+        text = str(term or "").strip()
+        prefix, key = ("-", text[1:]) if text.startswith("-") else ("", text)
+        return prefix + aliases.get(key, key)
 
 
 def marking_ids_cited_by_reference_work_query(value):
@@ -155,13 +219,7 @@ class MarkingListFilter(django_filters.FilterSet):
 
     @staticmethod
     def filter_by_state_name(queryset, name, value):
-        if not value or not str(value).strip():
-            return queryset
-        value = str(value).strip()
-        return queryset.filter(
-            Q(post_office__post_office_regions__region__name__iexact=value)
-            | Q(post_office__post_office_regions__region__abbrev__iexact=value)
-        ).distinct()
+        return filter_markings_by_state_term(queryset, value)
 
     @staticmethod
     def filter_has_images(queryset, name, value):
@@ -225,13 +283,7 @@ class MarkingFilter(django_filters.FilterSet):
         )
 
     def filter_by_state(self, queryset, name, value):
-        if not value:
-            return queryset
-        value = str(value).strip()
-        return queryset.filter(
-            Q(post_office__post_office_regions__region__name__iexact=value)
-            | Q(post_office__post_office_regions__region__abbrev__iexact=value)
-        ).distinct()
+        return filter_markings_by_state_term(queryset, value)
 
     def filter_has_images(self, queryset, name, value):
         if value is None:

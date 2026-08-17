@@ -38,6 +38,14 @@ export interface MarkingFieldInput {
   // record.regions); ContributionDetail omits them and the comma-joined
   // `state` string renders instead. (issue #28)
   regionTags?: MarkingFieldTag[];
+  // County is its own labelled field, not a chip alongside the state. It is
+  // sourced by filtering `regions` to region_tier='COUNTY' -- county is
+  // already a distinct Region row at a distinct tier, so no schema change was
+  // needed. Deliberately plain text rather than a link: the search `state`
+  // param matches on region *name*, and three VPHC county names collide with
+  // real states (Ohio, Washington, Wyoming), so a county chip would run the
+  // wrong search. Optional -- only RecordDetail supplies it. (issue #103)
+  county?: string;
   town: string;
   postOfficeId?: number | null;
   inscriptionTxt: string;
@@ -98,6 +106,7 @@ export function buildMarkingFields(
       alwaysShow: false,
       tags: i.regionTags && i.regionTags.length > 0 ? i.regionTags : undefined,
     },
+    { label: "County", value: i.county ?? "", alwaysShow: false },
     {
       label: "Town",
       value: i.town,

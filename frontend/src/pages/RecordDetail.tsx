@@ -25,11 +25,13 @@ import { formatRateValue } from "@/lib/rateDisplay";
 import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
 import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
 import {
+  countyDisplay,
   getMarkingById,
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
   moveImageSubject,
   normalizeImageUrl,
+  primaryRegions,
   regionsDisplay,
   removeMarking,
   reorderImages,
@@ -716,10 +718,16 @@ const RecordDetail = () => {
       // Each territory/state becomes a chip linking to a region-filtered
       // search. The Search page's `state` param matches on region name, and
       // its filter traverses the post_office_regions M2M. (issue #28)
-      regionTags: record.regions.map((r) => ({
+      //
+      // Counties are filtered out and rendered as their own County row below:
+      // a town's `regions` list carries every link, so since the VPHC ingest
+      // this was showing an "Accomack" chip beside "Virginia" that searched
+      // for a state named Accomack. (issue #103)
+      regionTags: primaryRegions(record).map((r) => ({
         label: r.name,
         to: `/search?state=${encodeURIComponent(r.name)}`,
       })),
+      county: countyDisplay(record),
       town: record.town,
       postOfficeId: record.postOfficeId,
       inscriptionTxt: record.inscriptionTxt,
