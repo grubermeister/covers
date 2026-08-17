@@ -331,6 +331,11 @@ const RecordDetail = () => {
   const [moveMarkingTargetId, setMoveMarkingTargetId] = useState("");
   const [moveMarkingView, setMoveMarkingView] = useState("FULL");
   const [moveMarkingCandidates, setMoveMarkingCandidates] = useState<MarkingRecord[]>([]);
+  // Own busy/error pair rather than sharing the move-to-cover one: they are
+  // two independent dialogs, and shared state lets a failure in one surface
+  // in the other.
+  const [moveMarkingBusy, setMoveMarkingBusy] = useState(false);
+  const [moveMarkingError, setMoveMarkingError] = useState<string | null>(null);
   const [savingReviewed, setSavingReviewed] = useState(false);
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
@@ -413,21 +418,44 @@ const RecordDetail = () => {
     (user.role === "editor" ||
       user.role === "administrator" ||
       user.is_superuser === true);
+  // Depend on the two primitives, not on `record` itself: the record is a
+  // fresh object on every refresh, and a successful move refreshes it, so
+  // depending on the object refetched the sibling list after every move.
+  const recordId = record?.id ?? null;
+  const recordPostOfficeId = record?.postOfficeId ?? null;
   useEffect(() => {
-    const postOfficeId = record?.postOfficeId;
-    if (!userIsStaff || record == null || postOfficeId == null) {
+    if (!userIsStaff || recordId == null || recordPostOfficeId == null) {
       setMoveMarkingCandidates([]);
       return;
     }
     let cancelled = false;
     void (async () => {
       try {
-        const page = await getMarkingsPage(1, 100, {
-          postOfficeId,
-          deferCount: true,
-        });
-        if (cancelled) return;
-        setMoveMarkingCandidates(moveTargetCandidates(page.results, record));
+        // A post office can hold more than one page of markings (max_page_size
+        // is 100 server-side), and a candidate missing from the list is an
+        // editor who cannot complete the move -- the exact failure this
+        // feature exists to prevent. So page until the API stops offering a
+        // next link. `count` is null under deferCount, so `next` is the only
+        // truncation signal available. The cap is a runaway guard, not a
+        // limit any real office reaches (production averages ~2.6 markings
+        // per office).
+        const MAX_PAGES = 20;
+        const collected: MarkingRecord[] = [];
+        for (let page = 1; page <= MAX_PAGES; page += 1) {
+          const res = await getMarkingsPage(page, 100, {
+            postOfficeId: recordPostOfficeId,
+            deferCount: true,
+          });
+          if (cancelled) return;
+          collected.push(...res.results);
+          if (!res.next) break;
+        }
+        setMoveMarkingCandidates(
+          moveTargetCandidates(collected, {
+            id: recordId,
+            postOfficeId: recordPostOfficeId,
+          }),
+        );
       } catch {
         // A failed lookup just hides the control; the page must still render.
         if (!cancelled) setMoveMarkingCandidates([]);
@@ -436,7 +464,7 @@ const RecordDetail = () => {
     return () => {
       cancelled = true;
     };
-  }, [userIsStaff, record]);
+  }, [userIsStaff, recordId, recordPostOfficeId]);
 
   // Record History (audit trail). Only fires for editor-class users since the
   // backend `markings/{id}/changelog/` endpoint requires
@@ -856,11 +884,11 @@ const RecordDetail = () => {
     if (!moveToMarkingImg?.imageId) return;
     const targetId = parseInt(moveMarkingTargetId, 10);
     if (!Number.isFinite(targetId) || targetId <= 0) {
-      setMoveImageError("Select a target marking.");
+      setMoveMarkingError("Select a target marking.");
       return;
     }
-    setMoveImageBusy(true);
-    setMoveImageError(null);
+    setMoveMarkingBusy(true);
+    setMoveMarkingError(null);
     try {
       const res = await moveImageSubject(
         moveToMarkingImg.imageId,
@@ -869,17 +897,21 @@ const RecordDetail = () => {
         moveMarkingView,
       );
       if (res.ok === false) {
-        setMoveImageError(res.message);
+        setMoveMarkingError(res.message);
         return;
       }
       toast({ title: "Image moved", description: "Image reassigned to the marking." });
+      // Full teardown, so reopening for a different image cannot inherit the
+      // previous target.
       setMoveToMarkingImg(null);
+      setMoveMarkingTargetId("");
+      setMoveMarkingView("FULL");
       if (markingId != null) {
         const refreshed = await getMarkingById(markingId);
         if (refreshed) setRecord(refreshed);
       }
     } finally {
-      setMoveImageBusy(false);
+      setMoveMarkingBusy(false);
     }
   };
 
@@ -1219,7 +1251,7 @@ const RecordDetail = () => {
                                         String(moveMarkingCandidates[0]?.id ?? ""),
                                       );
                                       setMoveMarkingView("FULL");
-                                      setMoveImageError(null);
+                                      setMoveMarkingError(null);
                                     }}
                                   >
                                     <Stamp className="h-3 w-3" />
@@ -1811,7 +1843,7 @@ const RecordDetail = () => {
       <Dialog
         open={moveToMarkingImg != null}
         onOpenChange={(open) => {
-          if (moveImageBusy) return;
+          if (moveMarkingBusy) return;
           if (!open) setMoveToMarkingImg(null);
         }}
       >
@@ -1832,7 +1864,7 @@ const RecordDetail = () => {
                   setMoveMarkingTargetId(v);
                   setMoveImageError(null);
                 }}
-                disabled={moveImageBusy}
+                disabled={moveMarkingBusy}
               >
                 <SelectTrigger id="move-img-marking-id">
                   <SelectValue placeholder="Select a marking…" />
@@ -1853,7 +1885,7 @@ const RecordDetail = () => {
               <Select
                 value={moveMarkingView}
                 onValueChange={(v) => setMoveMarkingView(v)}
-                disabled={moveImageBusy}
+                disabled={moveMarkingBusy}
               >
                 <SelectTrigger id="move-img-marking-view">
                   <SelectValue />
@@ -1864,21 +1896,21 @@ const RecordDetail = () => {
                 </SelectContent>
               </Select>
             </div>
-            {moveImageError && <p className="text-sm text-destructive">{moveImageError}</p>}
+            {moveMarkingError && <p className="text-sm text-destructive">{moveMarkingError}</p>}
           </div>
           <DialogFooter>
             <Button
               variant="outline"
               onClick={() => setMoveToMarkingImg(null)}
-              disabled={moveImageBusy}
+              disabled={moveMarkingBusy}
             >
               Cancel
             </Button>
             <Button
               onClick={() => void handleMoveImageToMarking()}
-              disabled={moveImageBusy || !moveMarkingTargetId}
+              disabled={moveMarkingBusy || !moveMarkingTargetId}
             >
-              {moveImageBusy ? (
+              {moveMarkingBusy ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Moving…
