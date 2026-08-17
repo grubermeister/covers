@@ -116,6 +116,83 @@ class ImageMoveTests(TestCase):
         self.assertEqual(cover_img.subject_type, Image.SUBJECT_MARKING)
         self.assertEqual(cover_img.display_order, 2)
 
+    def test_move_marking_to_marking_direction(self):
+        """Issue #104 / C3 -- the direction the aux-marking fix needs.
+
+        A VPHC scan can hold two devices in one PNG (a PAID handstamp above a
+        10 ratemark). The editor crops the second device out -- which lands a
+        new image on the SAME marking, since crop deliberately never
+        relocates -- and then reassigns the crop to the marking it belongs to.
+        Both markings are at the same post office.
+
+        subject_type does not change here, only subject_id, so this exercises
+        the tuple comparison in ImageSerializer._validate_update and
+        ImageViewSet.perform_update rather than the type switch the other two
+        directions test.
+        """
+        aux_marking = Marking.objects.create(
+            code="ASCC1-VA-M0002",
+            type="AUXMARK",
+            inscription_txt="10",
+            is_manuscript=False,
+            post_office=self.post_office,
+            created_by=self.editor,
+            modified_by=self.editor,
+        )
+        aux_existing = make_image(
+            Image.SUBJECT_MARKING, aux_marking.pk, self.editor, "FULL",
+            order=0, name="rate-full.jpg",
+        )
+        self.client.force_authenticate(self.editor)
+
+        response = self.client.patch(
+            f"/api/v2/images/{self.misfiled.pk}/",
+            {
+                "subject_type": Image.SUBJECT_MARKING,
+                "subject_id": aux_marking.pk,
+                "image_view": "FULL",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200, response.data)
+        self.misfiled.refresh_from_db()
+        self.assertEqual(self.misfiled.subject_type, Image.SUBJECT_MARKING)
+        self.assertEqual(self.misfiled.subject_id, aux_marking.pk)
+        # Lands after the target's existing image rather than displacing it.
+        self.assertEqual(self.misfiled.display_order, 1)
+        aux_existing.refresh_from_db()
+        self.assertEqual(aux_existing.display_order, 0)
+        # The source marking promotes its remaining image to default.
+        self.tracing.refresh_from_db()
+        self.assertEqual(self.tracing.display_order, 0)
+
+    def test_move_marking_to_marking_rejects_a_cover_view(self):
+        """FRONT is a cover view; the target is a marking, so this is a 400."""
+        aux_marking = Marking.objects.create(
+            code="ASCC1-VA-M0003",
+            type="AUXMARK",
+            inscription_txt="5",
+            is_manuscript=False,
+            post_office=self.post_office,
+            created_by=self.editor,
+            modified_by=self.editor,
+        )
+        self.client.force_authenticate(self.editor)
+
+        response = self.client.patch(
+            f"/api/v2/images/{self.misfiled.pk}/",
+            {
+                "subject_type": Image.SUBJECT_MARKING,
+                "subject_id": aux_marking.pk,
+                "image_view": "FRONT",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("image_view", response.data)
+
     def test_move_to_nonexistent_target_is_400(self):
         self.client.force_authenticate(self.editor)
 

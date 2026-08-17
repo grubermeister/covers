@@ -674,6 +674,34 @@ export function countyDisplay(record: Pick<MarkingRecord, "regions">): string {
     .join(", ");
 }
 
+/**
+ * Candidate targets for "move this image to another marking" (issue #104 / C3).
+ *
+ * A VPHC scan can hold two postal devices in one PNG -- a PAID handstamp above
+ * a 10 ratemark. The editor crops the second device out (which lands a new
+ * image on the same marking, because crop deliberately never relocates) and
+ * then reassigns the crop to the marking it actually belongs to. That marking
+ * is always at the same post office, so the picker is scoped to this office.
+ *
+ * `siblings` is expected to come from `getMarkingsPage({ postOfficeId })`, but
+ * the post-office match is re-checked here rather than trusted: a caller that
+ * passed the wrong filter would otherwise offer an unrelated town's markings,
+ * and a mis-targeted move is silent damage to the catalog.
+ *
+ * Exported for unit testing.
+ */
+export function moveTargetCandidates(
+  siblings: MarkingRecord[],
+  current: Pick<MarkingRecord, "id" | "postOfficeId">,
+): MarkingRecord[] {
+  // Without a post office there is no bounded set to offer, so offer nothing
+  // rather than every marking that also happens to lack one.
+  if (current.postOfficeId == null) return [];
+  return siblings.filter(
+    (m) => m.id !== current.id && m.postOfficeId === current.postOfficeId,
+  );
+}
+
 function mapRegionList(raw: unknown): MarkingRegion[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -778,6 +806,12 @@ export async function getMarkingsPage(
     color?: string;
     state?: string;
     town?: string;
+    /**
+     * Exact post office id. Distinct from `town`, which is a name-contains
+     * match server-side and so cannot be used to enumerate one office's
+     * markings ("Richmond" also matches "New Richmond"). Issue #104 / C3.
+     */
+    postOfficeId?: number;
     beginYear?: string;
     endYear?: string;
     height?: string;
@@ -802,6 +836,9 @@ export async function getMarkingsPage(
   if (opt.color != null && opt.color !== "" && opt.color !== "all") params.color = opt.color;
   if (opt.state != null && opt.state !== "" && opt.state !== "all") params.state = opt.state.trim();
   if (opt.town?.trim()) params.town = opt.town.trim();
+  if (opt.postOfficeId != null && Number.isFinite(opt.postOfficeId)) {
+    params.post_office = String(opt.postOfficeId);
+  }
   if (opt.beginYear?.trim()) params.earliest_use_year_min = opt.beginYear.trim();
   if (opt.endYear?.trim()) params.latest_use_year_max = opt.endYear.trim();
   if (opt.height?.trim()) params.height = opt.height.trim();
