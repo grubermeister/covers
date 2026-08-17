@@ -136,6 +136,17 @@ class MarkingListFilter(django_filters.FilterSet):
         lookup_expr='icontains',
         label='Town (post office name contains)',
     )
+    # Exact office, not a name match. `town` is icontains and would pull in
+    # every office whose name contains the search text ("Richmond" also matches
+    # "New Richmond"), which is wrong for callers that already know the office
+    # and need its markings exhaustively -- the marking detail page's
+    # "move image to another marking" picker, where a missing candidate means
+    # the editor cannot complete the move (issue #104 / C3).
+    post_office = django_filters.NumberFilter(
+        field_name='post_office_id',
+        lookup_expr='exact',
+        label='Post office id (exact)',
+    )
     shape = django_filters.NumberFilter(
         field_name='shape',
         lookup_expr='exact',

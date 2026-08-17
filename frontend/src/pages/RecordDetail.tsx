@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import { ArrowDown, ArrowLeft, ArrowUp, Crop, History, Info, Loader2, MessageSquare, Pencil, Plus, Recycle, Replace, Star, Trash2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ArrowUp, Crop, History, Info, Loader2, MessageSquare, Pencil, Plus, Recycle, Replace, Star, Stamp, Trash2 } from "lucide-react";
 import { Navigation } from "@/components/Navigation";
 import { Footer } from "@/components/Footer";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,8 @@ import { MarkingFieldsDisplay } from "@/components/MarkingFieldsDisplay";
 import {
   countyDisplay,
   getMarkingById,
+  getMarkingsPage,
+  moveTargetCandidates,
   getMarkingChangelog,
   loadAssociatedCoversForMarking,
   moveImageSubject,
@@ -323,6 +325,17 @@ const RecordDetail = () => {
   const [moveImageView, setMoveImageView] = useState("FRONT");
   const [moveImageBusy, setMoveImageBusy] = useState(false);
   const [moveImageError, setMoveImageError] = useState<string | null>(null);
+  // Move an image to another marking at the same town (#104 / C3): the second
+  // half of the crop -> reattach workflow for scans that hold two devices.
+  const [moveToMarkingImg, setMoveToMarkingImg] = useState<MarkingImage | null>(null);
+  const [moveMarkingTargetId, setMoveMarkingTargetId] = useState("");
+  const [moveMarkingView, setMoveMarkingView] = useState("FULL");
+  const [moveMarkingCandidates, setMoveMarkingCandidates] = useState<MarkingRecord[]>([]);
+  // Own busy/error pair rather than sharing the move-to-cover one: they are
+  // two independent dialogs, and shared state lets a failure in one surface
+  // in the other.
+  const [moveMarkingBusy, setMoveMarkingBusy] = useState(false);
+  const [moveMarkingError, setMoveMarkingError] = useState<string | null>(null);
   const [savingReviewed, setSavingReviewed] = useState(false);
   const [deletingImageId, setDeletingImageId] = useState<number | null>(null);
 
@@ -390,6 +403,68 @@ const RecordDetail = () => {
       cancelled = true;
     };
   }, [markingId, user?.id, location.pathname, location.search]);
+
+  // Sibling markings at this post office -- the target list for "move image to
+  // another marking" (#104 / C3). Editor-only, matching the control's own
+  // gate; skipping it for everyone else keeps a public page view at its
+  // current request count. `post_office` is an exact-id filter -- `town` is
+  // name-contains server-side and would pull in other towns.
+  //
+  // The staff test is inlined rather than reusing the `isStaff` const below,
+  // which is declared after this component's early returns: a hook placed
+  // there would run conditionally.
+  const userIsStaff =
+    !!user &&
+    (user.role === "editor" ||
+      user.role === "administrator" ||
+      user.is_superuser === true);
+  // Depend on the two primitives, not on `record` itself: the record is a
+  // fresh object on every refresh, and a successful move refreshes it, so
+  // depending on the object refetched the sibling list after every move.
+  const recordId = record?.id ?? null;
+  const recordPostOfficeId = record?.postOfficeId ?? null;
+  useEffect(() => {
+    if (!userIsStaff || recordId == null || recordPostOfficeId == null) {
+      setMoveMarkingCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        // A post office can hold more than one page of markings (max_page_size
+        // is 100 server-side), and a candidate missing from the list is an
+        // editor who cannot complete the move -- the exact failure this
+        // feature exists to prevent. So page until the API stops offering a
+        // next link. `count` is null under deferCount, so `next` is the only
+        // truncation signal available. The cap is a runaway guard, not a
+        // limit any real office reaches (production averages ~2.6 markings
+        // per office).
+        const MAX_PAGES = 20;
+        const collected: MarkingRecord[] = [];
+        for (let page = 1; page <= MAX_PAGES; page += 1) {
+          const res = await getMarkingsPage(page, 100, {
+            postOfficeId: recordPostOfficeId,
+            deferCount: true,
+          });
+          if (cancelled) return;
+          collected.push(...res.results);
+          if (!res.next) break;
+        }
+        setMoveMarkingCandidates(
+          moveTargetCandidates(collected, {
+            id: recordId,
+            postOfficeId: recordPostOfficeId,
+          }),
+        );
+      } catch {
+        // A failed lookup just hides the control; the page must still render.
+        if (!cancelled) setMoveMarkingCandidates([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [userIsStaff, recordId, recordPostOfficeId]);
 
   // Record History (audit trail). Only fires for editor-class users since the
   // backend `markings/{id}/changelog/` endpoint requires
@@ -687,11 +762,10 @@ const RecordDetail = () => {
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression
       : "";
-  const isStaff =
-    !!user &&
-    (user.role === "editor" ||
-      user.role === "administrator" ||
-      user.is_superuser === true);
+  // Same test as `userIsStaff` above, which had to be hoisted for the sibling
+  // -markings hook; aliased rather than recomputed so the two cannot drift.
+  const isStaff = userIsStaff;
+
 
   // Record History display rule: collapsed by default we show the three most
   // recent events; when expanded we cap at the 10 newest events. Backend
@@ -798,6 +872,46 @@ const RecordDetail = () => {
       }
     } finally {
       setMoveImageBusy(false);
+    }
+  };
+
+  // Reassign an image to another marking at the same post office (#104 / C3).
+  // This is the second half of the crop -> reattach workflow: crop saves the
+  // cut-out onto the SAME marking (it deliberately never relocates), and this
+  // sends it to the marking it actually belongs to. Scoped to one town so an
+  // image cannot be filed under an unrelated record from here.
+  const handleMoveImageToMarking = async () => {
+    if (!moveToMarkingImg?.imageId) return;
+    const targetId = parseInt(moveMarkingTargetId, 10);
+    if (!Number.isFinite(targetId) || targetId <= 0) {
+      setMoveMarkingError("Select a target marking.");
+      return;
+    }
+    setMoveMarkingBusy(true);
+    setMoveMarkingError(null);
+    try {
+      const res = await moveImageSubject(
+        moveToMarkingImg.imageId,
+        "MARKING",
+        targetId,
+        moveMarkingView,
+      );
+      if (res.ok === false) {
+        setMoveMarkingError(res.message);
+        return;
+      }
+      toast({ title: "Image moved", description: "Image reassigned to the marking." });
+      // Full teardown, so reopening for a different image cannot inherit the
+      // previous target.
+      setMoveToMarkingImg(null);
+      setMoveMarkingTargetId("");
+      setMoveMarkingView("FULL");
+      if (markingId != null) {
+        const refreshed = await getMarkingById(markingId);
+        if (refreshed) setRecord(refreshed);
+      }
+    } finally {
+      setMoveMarkingBusy(false);
     }
   };
 
@@ -994,6 +1108,12 @@ const RecordDetail = () => {
                           canManageImage &&
                           record.images[idx]?.subjectType === "MARKING" &&
                           associatedCovers.some((c) => c.coverDetails?.id != null);
+                        // Hidden at a one-marking town rather than opening an
+                        // empty dropdown (#104 / C3).
+                        const canMoveToMarking =
+                          canManageImage &&
+                          record.images[idx]?.subjectType === "MARKING" &&
+                          moveMarkingCandidates.length > 0;
                         return (
                           <div
                             key={`${img.imageId ?? img.originalFilename ?? "img"}-${idx}`}
@@ -1112,6 +1232,29 @@ const RecordDetail = () => {
                                     }}
                                   >
                                     <Replace className="h-3 w-3" />
+                                  </Button>
+                                )}
+                                {canMoveToMarking && (
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-6 w-6"
+                                    aria-label="Move image to another marking"
+                                    title="Move to another marking"
+                                    disabled={reorderingImages}
+                                    onClick={() => {
+                                      const rawImg = record.images[idx];
+                                      if (!rawImg) return;
+                                      setMoveToMarkingImg(rawImg);
+                                      setMoveMarkingTargetId(
+                                        String(moveMarkingCandidates[0]?.id ?? ""),
+                                      );
+                                      setMoveMarkingView("FULL");
+                                      setMoveMarkingError(null);
+                                    }}
+                                  >
+                                    <Stamp className="h-3 w-3" />
                                   </Button>
                                 )}
                                 <Button
@@ -1685,6 +1828,89 @@ const RecordDetail = () => {
               disabled={moveImageBusy || !moveImageTargetCoverId}
             >
               {moveImageBusy ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Moving…
+                </>
+              ) : (
+                "Move Image"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={moveToMarkingImg != null}
+        onOpenChange={(open) => {
+          if (moveMarkingBusy) return;
+          if (!open) setMoveToMarkingImg(null);
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Move Image to Marking</DialogTitle>
+            <DialogDescription>
+              Reassign this image to another marking at the same town. Use this after
+              cropping a second device out of a scan that shows more than one.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-id">Target marking</Label>
+              <Select
+                value={moveMarkingTargetId}
+                onValueChange={(v) => {
+                  setMoveMarkingTargetId(v);
+                  setMoveImageError(null);
+                }}
+                disabled={moveMarkingBusy}
+              >
+                <SelectTrigger id="move-img-marking-id">
+                  <SelectValue placeholder="Select a marking…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {moveMarkingCandidates.map((m) => (
+                    <SelectItem key={m.id} value={String(m.id)}>
+                      {m.code || `Marking #${m.id}`}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="move-img-marking-view">Image view</Label>
+              {/* Marking subjects accept FULL/DETAIL only; the cover views
+                  (Front/Back/Interior) are rejected by the serializer. */}
+              <Select
+                value={moveMarkingView}
+                onValueChange={(v) => setMoveMarkingView(v)}
+                disabled={moveMarkingBusy}
+              >
+                <SelectTrigger id="move-img-marking-view">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="FULL">Full</SelectItem>
+                  <SelectItem value="DETAIL">Detail</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            {moveMarkingError && <p className="text-sm text-destructive">{moveMarkingError}</p>}
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setMoveToMarkingImg(null)}
+              disabled={moveMarkingBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void handleMoveImageToMarking()}
+              disabled={moveMarkingBusy || !moveMarkingTargetId}
+            >
+              {moveMarkingBusy ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                   Moving…
