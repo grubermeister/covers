@@ -17,8 +17,9 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import F, Min, Max, OuterRef, Q, Subquery
-from django.db.models.functions import ExtractYear
+from django.db.models import F, Min, Max, OuterRef, Q, Subquery, TextField, Value
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import ExtractYear, NullIf
 from django.http import Http404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -74,6 +75,7 @@ from common.audit import (
 from common.filters import (
     AliasedOrderingFilter,
     CitationAwareMarkingSearchFilter,
+    ContributionListFilter,
     CoverMarkingFilter,
     MarkingListFilter,
 )
@@ -1968,6 +1970,40 @@ def _get_editor_contribution_queryset(user):
     return base.filter(collection_id__in=assigned_ids).distinct()
 
 
+def _annotate_contribution_sort_keys(queryset):
+    """Lift the JSON sort columns out of submitted_data (issue #109).
+
+    Town, state, shape and colour have no columns of their own -- they live in
+    the submitted_data blob -- so `?ordering=town` needs them as real SELECT
+    expressions. Django emits `submitted_data ->> '$.town'` on MySQL and
+    `JSON_UNQUOTE(JSON_EXTRACT(...))` on MariaDB (it branches on
+    mysql_is_mariadb; MDEV-13594), so this is valid on both deploy targets.
+    Either way it is a full scan, which is fine at queue size -- see
+    ContributionListFilter for the measurements.
+
+    NULLIF is not decoration. An ABSENT key gives SQL NULL, but a key that is
+    present and set to JSON null gives the four-character string 'null', which
+    then sorts in among the words beginning with N. NULLIF folds the two cases
+    together so "no value" is one group however the row was written.
+
+    The sd_ prefix keeps these clear of Contribution's own field names, which
+    also keeps ordering_aliases unambiguous.
+    """
+    def key(name):
+        return NullIf(
+            KeyTextTransform(name, "submitted_data"),
+            Value("null"),
+            output_field=TextField(),
+        )
+
+    return queryset.annotate(
+        sd_town=key("town"),
+        sd_state=key("state"),
+        sd_shape=key("shape"),
+        sd_color=key("color"),
+    )
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ContributionViewSet(
     mixins.CreateModelMixin,
@@ -1986,9 +2022,45 @@ class ContributionViewSet(
     """
     permission_classes = [IsAuthenticated, CanReviewContribution]
     serializer_class = ContributionDetailSerializer
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ["status"]
-    ordering = ["-created_date"]
+    # Issue #109: the queue's search, filters and sort all have to run here.
+    # They used to run in the browser over the page it had already fetched,
+    # which at 2,440 rows meant an editor could not find a submission at all.
+    filter_backends = [DjangoFilterBackend, AliasedOrderingFilter]
+    filterset_class = ContributionListFilter
+    # The wire vocabulary -> real columns. `created_at` is what the serializer
+    # emits for created_date, and the dashboard's sort keys are the display
+    # names, so both spellings have to land somewhere real. The sd_* keys are
+    # the annotations from _annotate_contribution_sort_keys and stay private.
+    ordering_aliases = {
+        "created_at": "created_date",
+        "updated_at": "modified_date",
+        "submitted": "created_date",
+        "town": "sd_town",
+        "state": "sd_state",
+        "shape": "sd_shape",
+        "color": "sd_color",
+        "contributor_username": "contributor__username",
+    }
+    ordering_fields = [
+        "status",
+        "created_date",
+        "modified_date",
+        "sd_town",
+        "sd_state",
+        "sd_shape",
+        "sd_color",
+        "contributor__username",
+        "id",
+    ]
+    ordering = [
+        "-created_date",
+        # A unique final key is not optional under LIMIT/OFFSET -- the same
+        # requirement documented on MarkingViewSet (DRF #6886). It matters more
+        # here than there: 2,062 of these rows were written by a single batch
+        # import, so ties on created_date are the normal case, not the corner
+        # case, and page boundaries have been unstable ever since that import.
+        "id",
+    ]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
@@ -2088,10 +2160,22 @@ class ContributionViewSet(
             # deliberately NOT filtered, so its author keeps seeing it along with
             # whatever feedback the editor left.
             qs = qs.filter(recycle_bin_entry__isnull=(mode == "editor"))
-            if mode == "archived":
-                # Every row will render who archived it and why; without this the
-                # serializer's reverse-OneToOne lookups are one query per row.
-                qs = qs.select_related("recycle_bin_entry", "recycle_bin_entry__archived_by")
+            # Every row renders whether it was archived, and by whom; without
+            # this the serializer's reverse-OneToOne lookup is one query per
+            # row. It used to be applied only to ?mode=archived, which left the
+            # review queue paying it 100 times on a full page.
+            qs = qs.select_related("recycle_bin_entry", "recycle_bin_entry__archived_by")
+            # Issue #109: drafts belong to the contributor's own My Submissions
+            # tab. The dashboard used to drop them AFTER the fetch, so `count`
+            # and the pager described a different set of rows than the ones on
+            # screen. Excluding them here makes the banner honest. The "mine"
+            # branch below is deliberately untouched -- an author keeps seeing
+            # their own drafts.
+            qs = qs.exclude(status=Contribution.STATUS_DRAFT)
+            # `state` stays here rather than moving into ContributionListFilter:
+            # it also matches across the collection's Region relation, and it is
+            # scoped to these two lenses on purpose. DjangoFilterBackend runs
+            # after get_queryset, so it composes with the filterset.
             state = (self.request.query_params.get("state") or "").strip()
             if state:
                 qs = qs.filter(
@@ -2099,8 +2183,8 @@ class ContributionViewSet(
                     | Q(collection__region__abbrev__iexact=state)
                     | Q(submitted_data__state__iexact=state)
                 )
-            return qs
-        return base_qs.filter(contributor=user).distinct()
+            return _annotate_contribution_sort_keys(qs)
+        return _annotate_contribution_sort_keys(base_qs.filter(contributor=user).distinct())
 
     def get_serializer_class(self):
         if self.action == "list":

@@ -129,6 +129,19 @@ export interface ContributionListParams {
   mode?: "editor" | "archived";
   status?: string;
   state?: string;
+  /**
+   * Free text (#109). Matches town, state, type, inscription, the VPHC
+   * reference code and the contributor's username, plus the entry number when
+   * the text is all digits.
+   */
+  q?: string;
+  town?: string;
+  /** Shape NAME as stored in submitted_data ("C - Circle"), not the Shape id. */
+  shape?: string;
+  color?: string;
+  /** ISO yyyy-mm-dd. Both ends inclusive; anything else is a 400. */
+  submittedFrom?: string;
+  submittedTo?: string;
   page?: number;
   pageSize?: number;
   ordering?: string;
@@ -150,6 +163,15 @@ export async function listContributions(
   if (params?.mode) query.mode = params.mode;
   if (params?.status) query.status = params.status;
   if (params?.state) query.state = params.state;
+  // Issue #109: these have to reach the API. They used to be applied in the
+  // browser to the page it had already fetched, so at 2,440 rows a search
+  // silently returned "nothing" unless the target was on the current page.
+  if (params?.q?.trim()) query.q = params.q.trim();
+  if (params?.town?.trim()) query.town = params.town.trim();
+  if (params?.shape && params.shape !== "all") query.shape = params.shape;
+  if (params?.color && params.color !== "all") query.color = params.color;
+  if (params?.submittedFrom) query.submitted_from = params.submittedFrom;
+  if (params?.submittedTo) query.submitted_to = params.submittedTo;
   if (params?.page != null) query.page = params.page;
   if (params?.pageSize != null) query.page_size = params.pageSize;
   if (params?.ordering) query.ordering = params.ordering;

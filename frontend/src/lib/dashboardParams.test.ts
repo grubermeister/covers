@@ -12,9 +12,12 @@ import {
   dashboardHref,
   dashboardHrefForTab,
   defaultTabParams,
+  editorOrderingParam,
   parseDashboardParams,
+  parseSort,
   rememberDashboardLocation,
   type DashboardParams,
+  type DashboardSortField,
 } from "./dashboardParams";
 
 function defaults(): DashboardParams {
@@ -69,6 +72,39 @@ describe("dashboard URL params", () => {
     expect(parsed.submissions.page).toBe(1);
     expect(parsed.submissions.pageSize).toBe(DEFAULT_PAGE_SIZE);
     expect(parsed.submissions.sort).toEqual([{ field: "submitted", dir: "desc" }]);
+  });
+});
+
+describe("editor queue ?ordering= (issue #109)", () => {
+  it("always appends id as the final key", () => {
+    // Without a unique final key, rows tying on the sorted column swap places
+    // between page requests and one is served twice while another is
+    // unreachable. 2,062 of the queued rows share one batch-import timestamp.
+    expect(editorOrderingParam([{ field: "town", dir: "asc" }])).toBe("town,id");
+  });
+
+  it("prefixes a minus for descending", () => {
+    expect(editorOrderingParam([{ field: "submitted", dir: "desc" }])).toBe("-created_at,id");
+  });
+
+  it("maps submitted to the wire name the serializer emits", () => {
+    expect(editorOrderingParam([{ field: "submitted", dir: "asc" }])).toBe("created_at,id");
+  });
+
+  it("returns undefined for the 'none' sentinel so the server default applies", () => {
+    expect(editorOrderingParam(parseSort("none"))).toBeUndefined();
+  });
+
+  it("maps every sort field the dashboard can produce", () => {
+    // Fails loudly if a new sort field is added without an ordering key --
+    // otherwise it would silently fall back to the default order.
+    const fields: DashboardSortField[] = ["status", "state", "town", "shape", "color", "submitted"];
+    for (const field of fields) {
+      const param = editorOrderingParam([{ field, dir: "asc" }]);
+      expect(param).toBeDefined();
+      expect(param).not.toContain("undefined");
+      expect(param!.endsWith(",id")).toBe(true);
+    }
   });
 });
 

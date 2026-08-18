@@ -94,6 +94,36 @@ export function serializeSort(entries: SortEntry[]): string {
   return entries.map((e) => `${e.field}_${e.dir}`).join(",");
 }
 
+/**
+ * Sort field -> the API's public `?ordering=` key. The wire spelling is not
+ * always the display one: the serializer emits `created_at`, not `submitted`.
+ * See ContributionViewSet.ordering_aliases, which is the other half of this.
+ */
+const EDITOR_ORDERING_KEY: Record<DashboardSortField, string> = {
+  status: "status",
+  state: "state",
+  town: "town",
+  shape: "shape",
+  color: "color",
+  submitted: "created_at",
+};
+
+/**
+ * The `?ordering=` value for the editor queue, or undefined for "server's
+ * choice" -- which is what the empty-list sentinel means (see serializeSort).
+ *
+ * `id` is appended as a final key. Without a unique one, rows that tie on the
+ * chosen column swap places between page requests under LIMIT/OFFSET, so one
+ * submission is served twice and another is unreachable (DRF #6886). The
+ * backend appends it too, for clients that forget; sending it keeps the intent
+ * visible in the request.
+ */
+export function editorOrderingParam(entries: SortEntry[]): string | undefined {
+  if (entries.length === 0) return undefined;
+  const keys = entries.map((e) => `${e.dir === "desc" ? "-" : ""}${EDITOR_ORDERING_KEY[e.field]}`);
+  return [...keys, "id"].join(",");
+}
+
 export function parseSort(raw: string | null): SortEntry[] {
   if (raw === null) return [...DEFAULT_DASHBOARD_SORT];
   if (raw === "none" || raw === "") return [];

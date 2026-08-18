@@ -54,12 +54,19 @@ import { useFilterOptions } from "@/hooks/useFilterOptions";
 import {
   buildDashboardParams,
   dashboardHref,
+  editorOrderingParam,
   parseDashboardParams,
   rememberDashboardLocation,
   type DashboardParams,
 } from "@/lib/dashboardParams";
+import { useDebounce } from "@/hooks/useDebounce";
 
 const noImageClassName = "w-full h-full min-w-0 min-h-0 object-cover bg-muted";
+
+/** Matches Catalog Search's DEBOUNCE_MS -- one round trip per pause, not per key. */
+const EDITOR_DEBOUNCE_MS = 800;
+/** Only a well-formed date goes to the API; see the editorFrom/editorTo note. */
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
 
 function resolveSubmissionImageUrl(
   c: Record<string, unknown>,
@@ -511,7 +518,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   // Recycle-bin covers shown alongside removedMarkings when the filter is
   // "removed". Loaded once (first page) and navigate to /covers/:id to restore.
   const [removedCovers, setRemovedCovers] = useState<RecycleBinCover[]>([]);
-  const [editorHistoryLoading, setEditorHistoryLoading] = useState(false);
+  const [editorHistoryFetching, setEditorHistoryFetching] = useState(false);
   const [editorHistoryError, setEditorHistoryError] = useState<string | null>(null);
   // Issue #89: archiving a reviewed entry off the queue. `archiveTarget` doubles
   // as the dialog's open flag; `archivingId` disables the row being acted on.
@@ -552,6 +559,26 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     initialParams.editor.pageSize,
   );
 
+  // Issue #109: the two free-text boxes are debounced, the selects are not --
+  // a select is a single deliberate commit, so delaying it only adds latency.
+  const debouncedEditorSearch = useDebounce(editorSearchQuery, EDITOR_DEBOUNCE_MS);
+  const debouncedEditorTown = useDebounce(editorTownFilter, EDITOR_DEBOUNCE_MS);
+  // The date boxes render as type="text" until focused, so free text reaches
+  // this point. It used to be harmless -- `new Date("abc")` is Invalid Date and
+  // every comparison against it is false, so a junk date silently filtered
+  // nothing. Sent to the API's DateFilter it is an HTTP 400 and an error
+  // banner over the whole queue, so only well-formed dates go on the wire.
+  const editorFrom = ISO_DATE.test(editorDateFrom) ? editorDateFrom : "";
+  const editorTo = ISO_DATE.test(editorDateTo) ? editorDateTo : "";
+  // Guards against an older response landing after a newer one. Without it a
+  // slow "farm" can overwrite the rows a later "farmville" already painted.
+  const editorFetchSeq = useRef(0);
+  // Loading vs refreshing, as Catalog Search does it. Every filter control is
+  // disabled while loading; if that flag flipped on each debounced keystroke,
+  // the search box would disable mid-word and drop focus.
+  const editorHistoryLoading = editorHistoryFetching && editorHistoryItems.length === 0;
+  const editorHistoryRefreshing = editorHistoryFetching && !editorHistoryLoading;
+
   // Assigned-collections header: clip to one line by default, expandable on
   // click. Overflow is measured against the truncated span so the "Show more"
   // toggle only appears when the text actually doesn't fit.
@@ -586,7 +613,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
 
   // Shared filter options (states, types, colors) - only states assigned to user
   const { colorOptions, shapeOptions, stateOptions, isLoading: isLoadingFilters, error: filterError } =
-    useFilterOptions({ assignedStatesOnly: true });
+    useFilterOptions({ assignedStatesOnly: true, shapeValues: "name" });
 
   // Disable filters while submissions or filter options are loading
   const filtersDisabled = loading || isLoadingFilters;
@@ -735,7 +762,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
   useEffect(() => {
     if (!isEditor || activeTab !== "editor") return;
     setEditorHistoryError(null);
-    setEditorHistoryLoading(true);
+    setEditorHistoryFetching(true);
     // "Removed" swaps the data source to the recycle bin (markings), not the
     // contribution list. The endpoint is region-scoped server side, so the
     // state filter is not sent here.
@@ -759,7 +786,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
           setRemovedMarkings([]);
           setEditorHistoryTotal(null);
         })
-        .finally(() => setEditorHistoryLoading(false));
+        .finally(() => setEditorHistoryFetching(false));
       return;
     }
     setRemovedCovers([]);
@@ -772,18 +799,30 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     // lens, so it reuses this whole mapping path rather than a parallel branch
     // the way "removed" (markings) has to.
     const isArchivedView = editorHistoryStatusFilter === "archived";
+    const seq = ++editorFetchSeq.current;
     listContributions({
       mode: isArchivedView ? "archived" : "editor",
       status: historyStatus,
       state: editorStateFilter !== "all" ? editorStateFilter : undefined,
+      // Issue #109: every one of these used to be applied to the fetched page
+      // instead of being sent, so a search across 2,440 rows only ever looked
+      // at the ~100 in front of it.
+      q: debouncedEditorSearch.trim() || undefined,
+      town: debouncedEditorTown.trim() || undefined,
+      shape: editorShapeFilter !== "all" ? editorShapeFilter : undefined,
+      color: editorColorFilter !== "all" ? editorColorFilter : undefined,
+      submittedFrom: editorFrom || undefined,
+      submittedTo: editorTo || undefined,
+      ordering: editorOrderingParam(submissionQueueSort),
       page: editorHistoryPage,
       pageSize: editorHistoryPageSize,
     })
       .then(({ rawItems, count }) => {
+        if (seq !== editorFetchSeq.current) return;
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const list = rawItems as any[];
         setEditorHistoryTotal(count);
-        let mapped = list.map((c) => {
+        const mapped = list.map((c) => {
           const submittedData = (c as { submitted_data?: Record<string, unknown>; submittedData?: Record<string, unknown> }).submitted_data
             ?? (c as { submittedData?: Record<string, unknown> }).submittedData
             ?? {};
@@ -830,47 +869,47 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
             ),
           };
         });
-        // Filter out drafts from the editor history lists; drafts are only
-        // shown on the contributor-facing My Submissions tab.
-        mapped = mapped.filter((i) => i.status !== "draft");
-        // Backward compatibility / defensive filtering (in case an older backend ignores status=needs_revision)
-        if (editorHistoryStatusFilter === "needs_revision") {
-          mapped = mapped.filter((i) => i.status === "needs_revision");
-        }
-        // Collapse multiple contributions that target the same record (same
-        // marking_id + cover_id pair) into a single row, keeping the most
-        // recent by created_at. Contributions without a resolved target
-        // (either id null) stay individual so unrouted submissions are not
-        // hidden. Per-page dedupe only: contributions for the same record
-        // that fall on a later pagination page are not merged here -- that
-        // would require backend grouping. At current row counts that is not
-        // a real issue.
-        const latestByTarget = new Map<string, typeof mapped[number]>();
-        const collapsed: typeof mapped = [];
-        for (const item of mapped) {
-          if (item.marking_id == null || item.cover_id == null) {
-            collapsed.push(item);
-            continue;
-          }
-          const key = `${item.marking_id}:${item.cover_id}`;
-          const existing = latestByTarget.get(key);
-          if (!existing || String(item.created_at) > String(existing.created_at)) {
-            latestByTarget.set(key, item);
-          }
-        }
-        for (const item of latestByTarget.values()) {
-          collapsed.push(item);
-        }
-        collapsed.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
-        setEditorHistoryItems(collapsed);
+        // Render exactly what the server returned. Three post-fetch mutations
+        // used to live here and all three broke the page contract (#109):
+        //   - a draft filter, now `exclude(status=draft)` in get_queryset, so
+        //     `count` and the rows finally describe the same set;
+        //   - a defensive re-filter for needs_revision, guarding against "an
+        //     older backend" that is this one, and silently hiding rows if it
+        //     ever fired;
+        //   - a per-page dedupe by marking_id:cover_id ending in a re-sort by
+        //     created_at. The dedupe never engaged (a Contribution only gets a
+        //     marking on approval, so a queued row has none) and the re-sort
+        //     silently overrode whatever ?ordering= asked for -- the same
+        //     regression Catalog Search records having already fixed once.
+        setEditorHistoryItems(mapped);
       })
       .catch((err) => {
+        if (seq !== editorFetchSeq.current) return;
         setEditorHistoryError(err instanceof Error ? err.message : "Could not load history.");
         setEditorHistoryItems([]);
         setEditorHistoryTotal(null);
       })
-      .finally(() => setEditorHistoryLoading(false));
-  }, [isEditor, activeTab, editorHistoryStatusFilter, editorHistoryPage, editorHistoryPageSize, submissionsRefetchKey, editorStateFilter]);
+      .finally(() => {
+        if (seq === editorFetchSeq.current) setEditorHistoryFetching(false);
+      });
+  }, [
+    isEditor,
+    activeTab,
+    editorHistoryStatusFilter,
+    editorStateFilter,
+    // Issue #109: the omission of everything below this line WAS the defect --
+    // these filters lived only in a useMemo over the page already fetched.
+    debouncedEditorSearch,
+    debouncedEditorTown,
+    editorShapeFilter,
+    editorColorFilter,
+    editorFrom,
+    editorTo,
+    submissionQueueSort,
+    editorHistoryPage,
+    editorHistoryPageSize,
+    submissionsRefetchKey,
+  ]);
 
   // Reset editor pagination when changing history status filter or tab. Skipped
   // on the first run so a page restored from the URL survives mount (#87).
@@ -887,11 +926,18 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     activeTab,
     editorHistoryStatusFilter,
     editorStateFilter,
-    editorSearchQuery,
-    editorTownFilter,
+    // The debounced/validated values, not the raw ones: otherwise the reset
+    // fires on the keystroke and the fetch 800 ms later, so page 1 is
+    // requested twice per search instead of once.
+    debouncedEditorSearch,
+    debouncedEditorTown,
     editorShapeFilter,
-    editorDateFrom,
-    editorDateTo,
+    // editorColorFilter was missing here. Harmless while filtering was
+    // page-local; once it narrows the whole queue, changing colour on page 12
+    // of a 1-page result set shows an empty list (#109).
+    editorColorFilter,
+    editorFrom,
+    editorTo,
     submissionQueueSort,
     editorHistoryPageSize,
   ]);
@@ -1163,82 +1209,13 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       ? 0
       : Math.min((editorHistoryPage - 1) * editorHistoryPageSize + editorHistoryRowsOnPage, editorHistoryTotalCount);
 
-  const filteredAndSortedEditorHistoryItems = useMemo(() => {
-    const filtered = editorHistoryItems.filter((item) => {
-      if (editorSearchQuery.trim()) {
-        const q = editorSearchQuery.trim().toLowerCase();
-        const haystack = [
-          item.display_name,
-          item.town_display,
-          item.state_display,
-          item.shape_display,
-          item.contributor_username,
-        ]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(q)) return false;
-      }
-
-      if (editorTownFilter.trim()) {
-        const tq = editorTownFilter.trim().toLowerCase();
-        if (!item.town_display || !item.town_display.toLowerCase().includes(tq)) return false;
-      }
-
-      if (editorShapeFilter !== "all") {
-        const shape = String(item.shape_display || "").trim().toLowerCase();
-        if (shape !== editorShapeFilter.toLowerCase()) return false;
-      }
-
-      if (editorColorFilter !== "all") {
-        const color = String(item.color_display || "").trim().toLowerCase();
-        if (color !== editorColorFilter.toLowerCase()) return false;
-      }
-
-      const createdAt = new Date(item.created_at);
-      if (editorDateFrom && createdAt < new Date(editorDateFrom)) return false;
-      if (editorDateTo && createdAt > new Date(editorDateTo)) return false;
-
-      return true;
-    });
-
-    const sorted = [...filtered];
-    const valueFor = (item: EditorHistoryItem, field: EditorHistorySortField): string | number => {
-      switch (field) {
-        case "status":
-          return String(item.status || "").toLowerCase();
-        case "state":
-          return String(item.state_display || "").toLowerCase();
-        case "town":
-          return String(item.town_display || "").toLowerCase();
-        case "shape":
-          return String(item.shape_display || "").toLowerCase();
-        case "color":
-          return String(item.color_display || "").toLowerCase();
-        case "submitted":
-          return new Date(item.created_at).getTime();
-      }
-    };
-    sorted.sort((a, b) => {
-      for (const entry of submissionQueueSort) {
-        const av = valueFor(a, entry.field);
-        const bv = valueFor(b, entry.field);
-        if (av < bv) return entry.dir === "asc" ? -1 : 1;
-        if (av > bv) return entry.dir === "asc" ? 1 : -1;
-      }
-      return 0;
-    });
-    return sorted;
-  }, [
-    editorHistoryItems,
-    editorSearchQuery,
-    editorTownFilter,
-    editorShapeFilter,
-    editorColorFilter,
-    editorDateFrom,
-    editorDateTo,
-    submissionQueueSort,
-  ]);
+  // The client-side filter/sort memo that used to sit here is gone (#109).
+  // It filtered `editorHistoryItems`, which holds ONE server page, so at 2,440
+  // queued rows an editor searching "farm" got nothing on page 1 of 25 while
+  // Farmville sat on page 16 -- and the count banner went on reporting the
+  // server's unfiltered total, so the numbers disagreed with the rows. Every
+  // one of those filters, and the sort, is now a query param. Render what the
+  // server sent.
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -2152,6 +2129,14 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                             {editorHistoryTotalCount.toLocaleString()}
                           </span>{" "}
                           result{editorHistoryTotalCount !== 1 ? "s" : ""} in history
+                          {editorHistoryRefreshing && (
+                            // Filtering now costs a round trip, so say so --
+                            // without this the rows just sit there looking stale.
+                            <Loader2
+                              className="inline-block h-3 w-3 ml-2 animate-spin align-[-1px]"
+                              aria-label="Updating results"
+                            />
+                          )}
                         </>
                       )}
                     </p>
@@ -2302,7 +2287,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       )}
                     </div>
                   </div>
-                ) : filteredAndSortedEditorHistoryItems.length === 0 ? (
+                ) : editorHistoryItems.length === 0 ? (
                   <Card className="flex-1 flex items-center justify-center min-h-[200px]">
                     <CardContent className="text-center">
                       <p className="text-muted-foreground mb-1">
@@ -2319,7 +2304,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                   </Card>
                 ) : (
                   <ul className="space-y-3">
-                    {filteredAndSortedEditorHistoryItems.map((item) => {
+                    {editorHistoryItems.map((item) => {
                       const title = [item.town_display, item.state_display].filter(Boolean).join(", ");
                       const shapeStr = (item.shape_display || "").trim();
                       const fallbackName =
