@@ -8,7 +8,7 @@ import django_filters
 from django.db.models import Q
 from rest_framework import filters
 
-from .models import Citation, CoverMarking, Marking, MarkingType, Region
+from .models import Citation, Contribution, CoverMarking, Marking, MarkingType, Region, Shape
 
 
 def regions_matching_state_term(value):
@@ -61,12 +61,29 @@ class AliasedOrderingFilter(filters.OrderingFilter):
     exist to remove.
 
     Aliases are declared on the view as `ordering_aliases`.
+
+    It also guarantees a unique final sort key. A view's `ordering` default can
+    end in `id`, but DRF REPLACES that default wholesale when the request
+    carries `?ordering=`, so the tiebreak silently vanishes exactly when a user
+    sorts by something non-unique -- and then LIMIT/OFFSET serves one row twice
+    and another never (DRF #6886). Caught by the issue #109 page walk:
+    `?ordering=town` over rows sharing a town repeated rows between pages.
+    Appending it here fixes it for every client rather than trusting each one
+    to remember.
     """
 
     def remove_invalid_fields(self, queryset, fields, view, request):
         aliases = getattr(view, "ordering_aliases", None) or {}
         rewritten = [self._rewrite(term, aliases) for term in fields]
         return super().remove_invalid_fields(queryset, rewritten, view, request)
+
+    def get_ordering(self, request, queryset, view):
+        ordering = super().get_ordering(request, queryset, view)
+        if not ordering:
+            return ordering
+        if any(str(term).lstrip("-") == "id" for term in ordering):
+            return list(ordering)
+        return [*ordering, "id"]
 
     @staticmethod
     def _rewrite(term, aliases):
@@ -328,6 +345,127 @@ class CoverMarkingFilter(django_filters.FilterSet):
     class Meta:
         model = CoverMarking
         fields = ["cover", "marking", "is_backstamp", "placement", "review_status"]
+
+
+class ContributionListFilter(django_filters.FilterSet):
+    """List filters for the editor review queue (issue #109).
+
+    These exist because the dashboard used to filter the page it had already
+    fetched. Pagination is server side, so at 2,440 queued contributions the
+    search box was looking at one page in twenty-five: searching "farm" on
+    woco.dev returned nothing on page 1 and Farmville turned up on page 16. A
+    lookup that finds nothing does not read as a broken filter, it reads as
+    "the record isn't there", which is why this ranked above the cosmetic queue
+    issues before the 2026-08-29 VPHS review session.
+
+    Town, shape and colour live only inside `submitted_data`, so every one of
+    these is a JSON key transform. That is already the shipped pattern for
+    `state` (ContributionViewSet.get_queryset). No index is possible -- MariaDB
+    10.11 has no functional indexes -- so each of these is a full scan of the
+    Contributions table. Measured on the dev copy at 2,062 rows: 13 ms to
+    count, 21 ms to serve a 100-row page. Revisit around 100k rows, where the
+    answer is denormalised columns rather than a cleverer query.
+
+    `state` is deliberately NOT here: it also matches across the collection's
+    Region relation and only applies to the editor/archived lenses. It stays in
+    get_queryset. DjangoFilterBackend runs after get_queryset, so the two
+    compose.
+    """
+
+    q = django_filters.CharFilter(method="filter_q", label="Search")
+    town = django_filters.CharFilter(method="filter_by_town", label="Town (contains)")
+    shape = django_filters.CharFilter(method="filter_by_shape", label="Shape (name)")
+    color = django_filters.CharFilter(method="filter_by_color", label="Color (name)")
+    submitted_from = django_filters.DateFilter(
+        field_name="created_date",
+        lookup_expr="date__gte",
+        label="Submitted on or after",
+    )
+    submitted_to = django_filters.DateFilter(
+        field_name="created_date",
+        lookup_expr="date__lte",
+        label="Submitted on or before",
+    )
+
+    class Meta:
+        model = Contribution
+        # Preserves the viewset's previous `filterset_fields = ["status"]`
+        # exactly -- an auto-built ChoiceFilter validated against STATUS_CHOICES.
+        fields = ["status"]
+
+    @staticmethod
+    def filter_q(queryset, name, value):
+        """Free text across the fields an editor would actually type.
+
+        The VPHC code and a bare entry number are in here because they are what
+        gets said out loud in a review session -- "pull up the Lynchburg one",
+        "look at 8640". Neither worked before: the old client-side haystack was
+        display name, town, state, shape and contributor username, one page deep.
+
+        Django escapes % and _ in icontains patterns, so wildcards in user text
+        are literal. On MySQL icontains compiles to LOWER(x) LIKE LOWER(%s), so
+        the match is case-insensitive regardless of column collation. An absent
+        JSON key yields SQL NULL, so LIKE yields NULL and the row simply does
+        not match -- no error, no special case.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return queryset
+        predicate = (
+            Q(submitted_data__town__icontains=text)
+            | Q(submitted_data__state__icontains=text)
+            | Q(submitted_data__type__icontains=text)
+            | Q(submitted_data__inscription_txt__icontains=text)
+            | Q(submitted_data__vphc__vphc_code__icontains=text)
+            | Q(contributor__username__icontains=text)
+        )
+        # An all-digit query is also an entry number. Bounded so a 40-digit
+        # string cannot reach the INT column comparison and raise.
+        if text.isdigit() and len(text) <= 9:
+            predicate |= Q(pk=int(text))
+        return queryset.filter(predicate)
+
+    @staticmethod
+    def filter_by_town(queryset, name, value):
+        # Contains, not exact: the queue's town box is a search field, and
+        # contribution towns are free text that has not been resolved to a
+        # PostOffice yet (that happens at approval).
+        text = str(value or "").strip()
+        if not text:
+            return queryset
+        return queryset.filter(submitted_data__town__icontains=text)
+
+    @staticmethod
+    def filter_by_shape(queryset, name, value):
+        """Shape by NAME, because that is what submitted_data holds.
+
+        Censused over the queued rows: `submitted_data.shape` is the full
+        Shape.name verbatim ("C - Circle"), never an id. A bare integer is
+        accepted anyway and resolved through Shape.name, so a dashboard URL
+        bookmarked while the filter emitted ids (?e_shape=68) still works.
+
+        Note ~60% of queued rows carry no `shape` key at all -- the VPHC applier
+        writes it conditionally -- and those correctly drop out of any shape
+        filter rather than matching a blank.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return queryset
+        if text.isdigit():
+            text = Shape.objects.filter(pk=int(text)).values_list(
+                "name", flat=True,
+            ).first() or text
+        return queryset.filter(submitted_data__shape__iexact=text)
+
+    @staticmethod
+    def filter_by_color(queryset, name, value):
+        # By name, mirroring MarkingListFilter.filter_by_color -- the submission
+        # form and the VPHC applier both store the colour name, and color_id is
+        # only present when the typed name happened to match a Color row.
+        text = str(value or "").strip()
+        if not text:
+            return queryset
+        return queryset.filter(submitted_data__color__iexact=text)
 
 
 ###################################################################################################
