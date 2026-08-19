@@ -386,6 +386,15 @@ class ContributionListFilter(django_filters.FilterSet):
         lookup_expr="date__lte",
         label="Submitted on or before",
     )
+    source = django_filters.ChoiceFilter(
+        method="filter_by_source",
+        label="Submission source",
+        choices=(
+            ("vphc", "VPHC ingest"),
+            ("human", "Submitted by a person"),
+            ("all", "All"),
+        ),
+    )
 
     class Meta:
         model = Contribution
@@ -424,6 +433,30 @@ class ContributionListFilter(django_filters.FilterSet):
         if text.isdigit() and len(text) <= 9:
             predicate |= Q(pk=int(text))
         return queryset.filter(predicate)
+
+    @staticmethod
+    def filter_by_source(queryset, name, value):
+        """Ingest rows vs rows a person submitted (issue #101).
+
+        Bulk approve defaults to `vphc`, and this is what makes that default
+        mean something. The queue is LIVE: on 2026-08-16 it held 312 pending
+        edits where every plan assumed 310, and the two extra were real human
+        submissions that a "delete all pending" would have destroyed. A later
+        census found eight pending human rows, not two. The standing rule that
+        came out of that (LEFT_OFF section B1) is to select on the `vphc` key,
+        never on status -- so that is what this does, rather than inferring a
+        source from the contributor or the date.
+
+        `has_key` compiles to JSON_CONTAINS_PATH on MySQL, so an ingest row is
+        identified by the key EXISTING, not by its contents. A row whose blob
+        is empty or malformed is still an ingest row.
+        """
+        choice = str(value or "").strip().lower()
+        if choice == "vphc":
+            return queryset.filter(submitted_data__has_key="vphc")
+        if choice == "human":
+            return queryset.exclude(submitted_data__has_key="vphc")
+        return queryset
 
     @staticmethod
     def filter_by_town(queryset, name, value):
