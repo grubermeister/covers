@@ -49,6 +49,8 @@ import {
   listContributions,
   restoreContribution,
 } from "@/services/contributions";
+import { BulkReviewBar } from "@/components/BulkReviewBar";
+import { Checkbox } from "@/components/ui/checkbox";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useFilterOptions } from "@/hooks/useFilterOptions";
 import {
@@ -531,6 +533,12 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     initialParams.editor.status,
   );
   const [editorStateFilter, setEditorStateFilter] = useState(initialParams.editor.state);
+  // Issue #101. Bulk review defaults to the ingest rows. The queue is live: on
+  // 2026-08-16 a "delete all pending" would have destroyed two real human
+  // submissions, and a later census found eight. Keeping them out of the
+  // default match set makes that a control rather than a habit.
+  const [editorSourceFilter, setEditorSourceFilter] = useState<"vphc" | "human" | "all">("vphc");
+  const [selectedContributionIds, setSelectedContributionIds] = useState<number[]>([]);
   const [editorSearchQuery, setEditorSearchQuery] = useState(initialParams.editor.q);
   const [editorTownFilter, setEditorTownFilter] = useState(initialParams.editor.town);
   const [editorShapeFilter, setEditorShapeFilter] = useState(initialParams.editor.shape);
@@ -813,6 +821,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       color: editorColorFilter !== "all" ? editorColorFilter : undefined,
       submittedFrom: editorFrom || undefined,
       submittedTo: editorTo || undefined,
+      source: editorSourceFilter,
       ordering: editorOrderingParam(submissionQueueSort),
       page: editorHistoryPage,
       pageSize: editorHistoryPageSize,
@@ -905,6 +914,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     editorColorFilter,
     editorFrom,
     editorTo,
+    editorSourceFilter,
     submissionQueueSort,
     editorHistoryPage,
     editorHistoryPageSize,
@@ -938,6 +948,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     editorColorFilter,
     editorFrom,
     editorTo,
+    // Same reason as editorColorFilter above: narrowing to the ingest rows on
+    // page 12 of an all-rows result would otherwise show an empty list (#101).
+    editorSourceFilter,
     submissionQueueSort,
     editorHistoryPageSize,
   ]);
@@ -1997,6 +2010,33 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                         disabled={editorHistoryLoading || isLoadingFilters}
                       />
                     </div>
+                    {/* Issue #101. Separating the ingest from real people is
+                        what makes "select all matching" safe to offer at all:
+                        the eight human submissions in this queue need reading,
+                        not a batch. Defaults to the ingest. */}
+                    <div className="space-y-2">
+                      <label
+                        htmlFor="editor-source-filter"
+                        className="text-sm font-medium text-foreground"
+                      >
+                        Source
+                      </label>
+                      <SearchableSelect
+                        id="editor-source-filter"
+                        value={editorSourceFilter}
+                        onValueChange={(v) =>
+                          setEditorSourceFilter(v as "vphc" | "human" | "all")
+                        }
+                        placeholder="VPHC ingest"
+                        options={[
+                          { value: "vphc", label: "VPHC ingest" },
+                          { value: "human", label: "Submitted by a person" },
+                          { value: "all", label: "All sources" },
+                        ]}
+                        aria-label="Filter editor history by submission source"
+                        disabled={editorHistoryLoading}
+                      />
+                    </div>
                     <div className="grid grid-cols-1 gap-4">
                       <div className="space-y-2">
                         <SortableLabel
@@ -2303,6 +2343,57 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                     </CardContent>
                   </Card>
                 ) : (
+                  <>
+                    {isEditor && !isArchivedView && (
+                      <>
+                        <BulkReviewBar
+                          filters={{
+                            mode: "editor",
+                            status:
+                              editorHistoryStatusFilter !== "all" &&
+                              ["pending", "approved", "rejected", "needs_revision"].includes(
+                                editorHistoryStatusFilter,
+                              )
+                                ? editorHistoryStatusFilter
+                                : undefined,
+                            state: editorStateFilter !== "all" ? editorStateFilter : undefined,
+                            q: debouncedEditorSearch.trim() || undefined,
+                            town: debouncedEditorTown.trim() || undefined,
+                            shape: editorShapeFilter !== "all" ? editorShapeFilter : undefined,
+                            color: editorColorFilter !== "all" ? editorColorFilter : undefined,
+                            submittedFrom: editorFrom || undefined,
+                            submittedTo: editorTo || undefined,
+                            source: editorSourceFilter,
+                          }}
+                          selectedIds={selectedContributionIds}
+                          onSelectionChange={setSelectedContributionIds}
+                          matchCount={editorHistoryTotalCount}
+                          onCompleted={() => setSubmissionsRefetchKey((k) => k + 1)}
+                        />
+                        <div className="flex items-center gap-2 mb-2 px-1">
+                          <Checkbox
+                            id="select-page"
+                            checked={
+                              editorHistoryItems.length > 0 &&
+                              editorHistoryItems.every((i) =>
+                                selectedContributionIds.includes(i.id),
+                              )
+                            }
+                            onCheckedChange={(checked) => {
+                              const pageIds = editorHistoryItems.map((i) => i.id);
+                              setSelectedContributionIds((prev) =>
+                                checked
+                                  ? Array.from(new Set([...prev, ...pageIds]))
+                                  : prev.filter((id) => !pageIds.includes(id)),
+                              );
+                            }}
+                          />
+                          <label htmlFor="select-page" className="text-sm text-muted-foreground">
+                            Select all {editorHistoryItems.length} on this page
+                          </label>
+                        </div>
+                      </>
+                    )}
                   <ul className="space-y-3">
                     {editorHistoryItems.map((item) => {
                       const title = [item.town_display, item.state_display].filter(Boolean).join(", ");
@@ -2326,6 +2417,19 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                           className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-4 bg-card hover:shadow-archival-sm transition-shadow"
                         >
                           <div className="flex items-center gap-4 min-w-0 flex-1">
+                            {isEditor && !isArchivedView && (
+                              <Checkbox
+                                checked={selectedContributionIds.includes(item.id)}
+                                onCheckedChange={(checked) =>
+                                  setSelectedContributionIds((prev) =>
+                                    checked
+                                      ? [...prev, item.id]
+                                      : prev.filter((id) => id !== item.id),
+                                  )
+                                }
+                                aria-label={`Select ${displayLabel}`}
+                              />
+                            )}
                             <button
                               type="button"
                               onClick={() => goOpenDashboardItem(item)}
@@ -2400,6 +2504,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                       );
                     })}
                   </ul>
+                  </>
                 )}
 
                 {!editorHistoryLoading && !editorHistoryError && editorHistoryTotalCount > 0 && (

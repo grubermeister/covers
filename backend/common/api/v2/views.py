@@ -168,6 +168,199 @@ def _user_may_review_contribution(user, contribution) -> bool:
     return contribution.collection_id in user_assigned_collection_ids(user)
 
 
+class _ContributionNotApplied(Exception):
+    """apply_to_catalog returned nothing for a marking submission.
+
+    Distinct from ContributionApplyError, which names a specific bad field and
+    is a 400. This is "the payload produced no marking and we do not know why",
+    which stays a 500 for a single approval and a per-row failure in a batch.
+    """
+
+
+# Issue #101. Extracted from ContributionViewSet.approve so bulk approve runs
+# the SAME path rather than a reimplementation of it. What a second copy would
+# quietly drop, in the order it matters:
+#
+#   * the BEFORE snapshots, which must be read before apply mutates in place
+#   * the cover-vs-marking branch on apply_to_catalog's return TYPE
+#   * consolidate_superseded_contributions, which deletes superseded rows
+#   * the Contribution.marking one-to-one, only claimed if unowned
+#   * log_submission_transaction + create_*_version, the audit trail
+#
+# Callers own the permission and status checks, and own the transaction only in
+# the sense that this opens its own atomic block per contribution -- which is
+# what lets a bulk batch commit the rows that worked and report the ones that
+# did not (#101 AC-4).
+def _approve_contribution(contrib, *, actor, review_notes, requested_catalog_code=None):
+    """Approve one contribution. Returns the response body dict.
+
+    Raises CatalogCodeError / ContributionApplyError for a bad payload, and
+    _ContributionNotApplied when a marking submission yields no marking.
+    """
+    with transaction.atomic():
+        # Capture the BEFORE snapshot for edits (the entity already
+        # exists and apply mutates it in place). build_*_snapshot read
+        # live DB state, so this must run BEFORE apply. CREATE leaves
+        # these empty, so the audit diff for a create stays before={}.
+        sd = contrib.submitted_data or {}
+        edit_marking_id = _parse_int(sd.get("edit_marking_id"))
+        edit_cover_id = _parse_int(sd.get("edit_cover_id"))
+        before_marking_snapshot = {}
+        before_cover_snapshot = {}
+        if edit_cover_id:
+            try:
+                before_cover_snapshot = build_cover_snapshot(
+                    Cover.all_objects.get(pk=edit_cover_id)
+                )
+            except Cover.DoesNotExist:
+                pass
+        elif edit_marking_id:
+            try:
+                before_marking_snapshot = build_marking_snapshot(
+                    Marking.all_objects.get(pk=edit_marking_id)
+                )
+            except Marking.DoesNotExist:
+                pass
+
+        final_code_for_contribution(
+            contrib,
+            requested_code=requested_catalog_code,
+        )
+        result = contrib.apply_to_catalog()
+
+        # apply_to_catalog returns a Marking for marking submissions and
+        # a dict {"kind": "cover", ...} for cover submissions. Branch on
+        # the return type so each path does its own post-processing.
+        if isinstance(result, dict) and result.get("kind") == "cover":
+            cover = result["cover"]
+            cover_marking = result["cover_marking"]
+            parent_marking = result["parent_marking"]
+
+            # apply set review_status=APPROVED and reviewed_at; backfill
+            # the approving editor's identity and notes on the link here
+            # (apply has no access to the actor).
+            cover_marking.reviewer = actor
+            cover_marking.review_notes = review_notes
+            cover_marking.modified_by = actor
+            # Stamp reviewed_at here for BOTH create and edit: the edit
+            # apply path deliberately leaves the link's review fields
+            # alone, so the approve path owns reviewed_at in both cases.
+            cover_marking.reviewed_at = timezone.now()
+            cover_marking.save(
+                update_fields=["reviewer", "review_notes", "modified_by", "reviewed_at"]
+            )
+
+            contrib.status = Contribution.STATUS_APPROVED
+            contrib.reviewer = actor
+            contrib.review_notes = review_notes
+            contrib.modified_by = actor
+            # Delete older cover contributions before checking the
+            # optional parent marking link. An older approved cover
+            # contribution may own that one-to-one link.
+            consolidate_superseded_contributions(
+                current=contrib,
+                target=ContributionTarget("cover", cover.pk),
+                actor=actor,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            )
+            update_fields = [
+                "status",
+                "reviewer",
+                "review_notes",
+                "submitted_data",
+                "modified_date",
+                "modified_by",
+            ]
+            if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
+                contrib.marking = parent_marking
+                update_fields.append("marking")
+            # Stamp traceability so the frontend mapper treats this
+            # contribution as materialized (no longer a pending draft).
+            sd = dict(contrib.submitted_data or {})
+            sd["cover_id"] = cover.pk
+            sd["cover_marking_id"] = cover_marking.pk
+            sd["materialized_cover_marking_id"] = cover_marking.pk
+            contrib.submitted_data = sd
+            contrib.save(update_fields=update_fields)
+            after_snapshot = build_cover_snapshot(cover)
+            txn = log_submission_transaction(
+                action=SubmissionTransaction.ACTION_APPROVE,
+                actor=actor,
+                contribution=contrib,
+                marking=parent_marking,
+                cover=cover,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload=before_cover_snapshot,
+                after_payload=after_snapshot,
+                extra_payload={
+                    "review_notes": review_notes,
+                    "cover_marking_id": cover_marking.pk,
+                },
+            )
+            create_cover_version(cover, txn, actor)
+            return {"detail": "Contribution approved.", "coverId": cover.pk}
+
+        marking = result
+        if not marking:
+            raise _ContributionNotApplied(
+                "Could not apply contribution. Check submitted_data."
+            )
+        contrib.status = Contribution.STATUS_APPROVED
+        contrib.reviewer = actor
+        contrib.review_notes = review_notes
+        contrib.modified_by = actor
+        # Delete older marking contributions before assigning the
+        # one-to-one Contribution.marking link to the latest row.
+        consolidate_superseded_contributions(
+            current=contrib,
+            target=ContributionTarget("marking", marking.pk),
+            actor=actor,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+        )
+        update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
+        if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
+            contrib.marking = marking
+            update_fields.append("marking")
+        contrib.save(update_fields=update_fields)
+        after_snapshot = build_marking_snapshot(marking)
+        txn = log_submission_transaction(
+            action=SubmissionTransaction.ACTION_APPROVE,
+            actor=actor,
+            contribution=contrib,
+            marking=marking,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            before_payload=before_marking_snapshot,
+            after_payload=after_snapshot,
+            extra_payload={"review_notes": review_notes},
+        )
+        create_marking_version(marking, txn, actor)
+        return {"detail": "Contribution approved.", "markingId": marking.pk}
+
+
+def _reject_contribution(contrib, *, actor, review_notes):
+    """Reject one contribution. Extracted alongside _approve_contribution so
+    bulk reject shares the audit-trail write rather than repeating it."""
+    with transaction.atomic():
+        before_submission = dict(contrib.submitted_data or {})
+        contrib.status = Contribution.STATUS_REJECTED
+        contrib.reviewer = actor
+        contrib.review_notes = review_notes
+        contrib.modified_by = actor
+        contrib.save(update_fields=[
+            "status", "reviewer", "review_notes", "modified_date", "modified_by"])
+        log_submission_transaction(
+            action=SubmissionTransaction.ACTION_REJECT,
+            actor=actor,
+            contribution=contrib,
+            marking=contrib.marking,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            before_payload=before_submission,
+            after_payload=before_submission,
+            extra_payload={"review_notes": review_notes},
+        )
+    return {"detail": "Contribution rejected."}
+
+
 class IsResponsibleForRegion(BasePermission):
     """
     Object-level write check for Marking-bound resources.
@@ -2209,154 +2402,181 @@ class ContributionViewSet(
         review_notes = serializer.validated_data.get("review_notes", "")
         requested_catalog_code = serializer.validated_data.get("catalog_code", None)
         try:
-            with transaction.atomic():
-                # Capture the BEFORE snapshot for edits (the entity already
-                # exists and apply mutates it in place). build_*_snapshot read
-                # live DB state, so this must run BEFORE apply. CREATE leaves
-                # these empty, so the audit diff for a create stays before={}.
-                sd = contrib.submitted_data or {}
-                edit_marking_id = _parse_int(sd.get("edit_marking_id"))
-                edit_cover_id = _parse_int(sd.get("edit_cover_id"))
-                before_marking_snapshot = {}
-                before_cover_snapshot = {}
-                if edit_cover_id:
-                    try:
-                        before_cover_snapshot = build_cover_snapshot(
-                            Cover.all_objects.get(pk=edit_cover_id)
-                        )
-                    except Cover.DoesNotExist:
-                        pass
-                elif edit_marking_id:
-                    try:
-                        before_marking_snapshot = build_marking_snapshot(
-                            Marking.all_objects.get(pk=edit_marking_id)
-                        )
-                    except Marking.DoesNotExist:
-                        pass
-
-                final_code_for_contribution(
-                    contrib,
-                    requested_code=requested_catalog_code,
-                )
-                result = contrib.apply_to_catalog()
-
-                # apply_to_catalog returns a Marking for marking submissions and
-                # a dict {"kind": "cover", ...} for cover submissions. Branch on
-                # the return type so each path does its own post-processing.
-                if isinstance(result, dict) and result.get("kind") == "cover":
-                    cover = result["cover"]
-                    cover_marking = result["cover_marking"]
-                    parent_marking = result["parent_marking"]
-
-                    # apply set review_status=APPROVED and reviewed_at; backfill
-                    # the approving editor's identity and notes on the link here
-                    # (apply has no access to request.user).
-                    cover_marking.reviewer = request.user
-                    cover_marking.review_notes = review_notes
-                    cover_marking.modified_by = request.user
-                    # Stamp reviewed_at here for BOTH create and edit: the edit
-                    # apply path deliberately leaves the link's review fields
-                    # alone, so the approve view owns reviewed_at in both cases.
-                    cover_marking.reviewed_at = timezone.now()
-                    cover_marking.save(
-                        update_fields=["reviewer", "review_notes", "modified_by", "reviewed_at"]
-                    )
-
-                    contrib.status = Contribution.STATUS_APPROVED
-                    contrib.reviewer = request.user
-                    contrib.review_notes = review_notes
-                    contrib.modified_by = request.user
-                    # Delete older cover contributions before checking the
-                    # optional parent marking link. An older approved cover
-                    # contribution may own that one-to-one link.
-                    consolidate_superseded_contributions(
-                        current=contrib,
-                        target=ContributionTarget("cover", cover.pk),
-                        actor=request.user,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                    )
-                    update_fields = [
-                        "status",
-                        "reviewer",
-                        "review_notes",
-                        "submitted_data",
-                        "modified_date",
-                        "modified_by",
-                    ]
-                    if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
-                        contrib.marking = parent_marking
-                        update_fields.append("marking")
-                    # Stamp traceability so the frontend mapper treats this
-                    # contribution as materialized (no longer a pending draft).
-                    sd = dict(contrib.submitted_data or {})
-                    sd["cover_id"] = cover.pk
-                    sd["cover_marking_id"] = cover_marking.pk
-                    sd["materialized_cover_marking_id"] = cover_marking.pk
-                    contrib.submitted_data = sd
-                    contrib.save(update_fields=update_fields)
-                    after_snapshot = build_cover_snapshot(cover)
-                    txn = log_submission_transaction(
-                        action=SubmissionTransaction.ACTION_APPROVE,
-                        actor=request.user,
-                        contribution=contrib,
-                        marking=parent_marking,
-                        cover=cover,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload=before_cover_snapshot,
-                        after_payload=after_snapshot,
-                        extra_payload={
-                            "review_notes": review_notes,
-                            "cover_marking_id": cover_marking.pk,
-                        },
-                    )
-                    create_cover_version(cover, txn, request.user)
-                    approved_response = {"detail": "Contribution approved.", "coverId": cover.pk}
-                else:
-                    marking = result
-                    if not marking:
-                        return Response(
-                            {"detail": "Could not apply contribution. Check submitted_data."},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        )
-                    contrib.status = Contribution.STATUS_APPROVED
-                    contrib.reviewer = request.user
-                    contrib.review_notes = review_notes
-                    contrib.modified_by = request.user
-                    # Delete older marking contributions before assigning the
-                    # one-to-one Contribution.marking link to the latest row.
-                    consolidate_superseded_contributions(
-                        current=contrib,
-                        target=ContributionTarget("marking", marking.pk),
-                        actor=request.user,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                    )
-                    update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
-                    if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
-                        contrib.marking = marking
-                        update_fields.append("marking")
-                    contrib.save(update_fields=update_fields)
-                    after_snapshot = build_marking_snapshot(marking)
-                    txn = log_submission_transaction(
-                        action=SubmissionTransaction.ACTION_APPROVE,
-                        actor=request.user,
-                        contribution=contrib,
-                        marking=marking,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload=before_marking_snapshot,
-                        after_payload=after_snapshot,
-                        extra_payload={"review_notes": review_notes},
-                    )
-                    create_marking_version(marking, txn, request.user)
-                    approved_response = {
-                        "detail": "Contribution approved.",
-                        "markingId": marking.pk,
-                    }
+            approved_response = _approve_contribution(
+                contrib,
+                actor=request.user,
+                review_notes=review_notes,
+                requested_catalog_code=requested_catalog_code,
+            )
         except (CatalogCodeError, ContributionApplyError) as exc:
             return Response(
                 {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except _ContributionNotApplied as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         return Response(approved_response, status=status.HTTP_200_OK)
+
+    # Issue #101. The queue holds 2,443 pending rows; one-at-a-time review is
+    # not a tedious option, it is not an option. Measured cost of one approval
+    # against a full queue is ~174 ms mean / 274 ms worst, so a 25-row batch is
+    # ~4.4 s and the whole queue is ~7 minutes -- chunked from the browser,
+    # because there is no task queue in this project and a single request
+    # cannot span that.
+    #
+    # BULK_ACTION_MAX is a server-side backstop, not the client's batch size.
+    # The dashboard sends 25; this stops a hand-rolled request from re-creating
+    # the timeout the chunking exists to avoid. At the measured worst case, 109
+    # rows would fill a 30 s request, so 50 keeps better than 2x headroom.
+    BULK_ACTION_MAX = 50
+
+    def _bulk_review(self, request, *, apply_row, verb):
+        """Shared body for bulk-approve and bulk-reject.
+
+        ⛔ SECURITY: this is the first detail=False WRITE action in the API, and
+        that changes the permission story. Every other write is detail=True, so
+        get_object() runs check_object_permissions and
+        CanReviewContribution.has_object_permission enforces
+        `obj.collection_id in user_assigned_collection_ids(user)`. A
+        detail=False action never calls get_object(), so NONE of that fires.
+        Without the explicit per-row _user_may_review_contribution below, an
+        editor assigned to Virginia could approve West Virginia submissions 50
+        at a time. Do not remove it, and do not assume the class-level
+        permission covers it -- has_permission() returns True for any
+        authenticated user by design, because contributors list their own rows.
+
+        Each row commits in its own transaction (the helpers open one), so a
+        failure reports that row and leaves the successes standing (#101 AC-4).
+        """
+        raw_ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
+            return Response(
+                {"detail": "ids must be a non-empty list of contribution ids."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(raw_ids) > self.BULK_ACTION_MAX:
+            return Response(
+                {"detail": "Too many ids: {} sent, limit is {} per request.".format(
+                    len(raw_ids), self.BULK_ACTION_MAX)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ids = []
+        for raw in raw_ids:
+            parsed = _parse_int(raw)
+            if parsed is None:
+                return Response(
+                    {"detail": "ids must all be integers; got {!r}.".format(raw)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            ids.append(parsed)
+
+        serializer = ContributionApproveRejectSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        review_notes = serializer.validated_data.get("review_notes", "")
+
+        found = {c.pk: c for c in Contribution.objects.filter(pk__in=ids)}
+        succeeded, failed = [], []
+        # Iterate the caller's order, not the queryset's, so the client can pair
+        # results with what it sent. Duplicate ids are processed once; the
+        # second occurrence fails the status check and is reported.
+        for pk in ids:
+            contrib = found.get(pk)
+            if contrib is None:
+                failed.append({"id": pk, "reason": "Contribution not found."})
+                continue
+            if not _user_may_review_contribution(request.user, contrib):
+                failed.append({
+                    "id": pk,
+                    "reason": "You do not have permission to review this contribution.",
+                })
+                continue
+            contrib.refresh_from_db()
+            if contrib.status != Contribution.STATUS_PENDING:
+                failed.append({
+                    "id": pk,
+                    "reason": "Contribution is not pending (status: {}).".format(
+                        contrib.status),
+                })
+                continue
+            try:
+                apply_row(contrib, request.user, review_notes)
+            except (CatalogCodeError, ContributionApplyError,
+                    _ContributionNotApplied, IntegrityError) as exc:
+                failed.append({"id": pk, "reason": str(exc)})
+                continue
+            succeeded.append(pk)
+
+        return Response(
+            {verb: succeeded, "failed": failed,
+             "requested": len(ids), "succeeded": len(succeeded)},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path="bulk-approve")
+    def bulk_approve(self, request):
+        def apply_row(contrib, actor, review_notes):
+            # Retry the catalog-code race here rather than in catalog_codes
+            # (#116 deferred it deliberately). _next_serial reads the max, then
+            # the save writes it -- two approvals racing on one prefix compute
+            # the same serial. Marking.code is unique=True so the loser gets an
+            # IntegrityError rather than a duplicate: a failure, not corruption.
+            # Sequential same-prefix approvals make it far likelier than the
+            # one-at-a-time flow ever did.
+            #
+            # The retry must wrap the WHOLE atomic block. Django marks a
+            # transaction broken after an IntegrityError, so retrying inside it
+            # raises TransactionManagementError instead of working -- which is
+            # why this could not live in _next_serial.
+            attempts = 3
+            for attempt in range(attempts):
+                try:
+                    return _approve_contribution(
+                        contrib, actor=actor, review_notes=review_notes)
+                except IntegrityError:
+                    if attempt == attempts - 1:
+                        raise
+                    # Drop the payload's stale code so the next attempt mints a
+                    # fresh serial instead of re-proposing the taken one.
+                    contrib.refresh_from_db()
+                    payload = dict(contrib.submitted_data or {})
+                    for key in ("catalog_code", "catalogCode", "code"):
+                        payload.pop(key, None)
+                    contrib.submitted_data = payload
+
+        return self._bulk_review(request, apply_row=apply_row, verb="approved")
+
+    @action(detail=False, methods=["post"], url_path="bulk-reject")
+    def bulk_reject(self, request):
+        def apply_row(contrib, actor, review_notes):
+            return _reject_contribution(
+                contrib, actor=actor, review_notes=review_notes)
+
+        return self._bulk_review(request, apply_row=apply_row, verb="rejected")
+
+    @action(detail=False, methods=["get"], url_path="ids")
+    def ids(self, request):
+        """Every id matching the current queue filters (#101 AC-2).
+
+        "Select all matching" has to mean the same set the count banner reports,
+        so this runs filter_queryset(get_queryset()) -- the exact path the list
+        endpoint uses, including ContributionListFilter and the mode=editor
+        visibility rules, and #109's server-side draft exclusion. Deriving the
+        set any other way is how "select all" and "the number on screen" drift
+        apart.
+
+        This criterion was unimplementable before #115: filtering ran in the
+        browser over one fetched page, so there was no server-side notion of a
+        match set for "matching" to refer to.
+
+        Values-only and unpaginated on purpose -- 2,443 integers is ~30 KB,
+        where 2,443 serialized contributions is megabytes.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        ids = list(queryset.values_list("pk", flat=True))
+        return Response({"ids": ids, "count": len(ids)}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="catalog-code-suggestion")
     def catalog_code_suggestion(self, request, pk=None):
@@ -2497,23 +2717,10 @@ class ContributionViewSet(
         serializer = ContributionApproveRejectSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         review_notes = serializer.validated_data.get("review_notes", "")
-        before_submission = dict(contrib.submitted_data or {})
-        contrib.status = Contribution.STATUS_REJECTED
-        contrib.reviewer = request.user
-        contrib.review_notes = review_notes
-        contrib.modified_by = request.user
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
-        log_submission_transaction(
-            action=SubmissionTransaction.ACTION_REJECT,
-            actor=request.user,
-            contribution=contrib,
-            marking=contrib.marking,
-            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-            before_payload=before_submission,
-            after_payload=before_submission,
-            extra_payload={"review_notes": review_notes},
+        return Response(
+            _reject_contribution(contrib, actor=request.user, review_notes=review_notes),
+            status=status.HTTP_200_OK,
         )
-        return Response({"detail": "Contribution rejected."}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
