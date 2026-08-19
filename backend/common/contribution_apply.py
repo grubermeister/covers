@@ -792,42 +792,60 @@ def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id
     return _payload_mentions(payload, id_key, name_key, *fallback_id_keys)
 
 
-# Issue #110. The VPHC ingest appends bracketed markers to `desc` so the doubt
-# survives approval -- e.g. "Wytheville #2 (T1:r6495). [VPHC: ambiguous]". But
+# Issue #110. apply_vphc_ledger._description builds a description that carries
+# two kinds of ingest-internal notation into `desc`:
+#
+#   Virginia Postal History Catalog Wytheville #2 (T1:r6495). [VPHC: ambiguous]
+#                                                 ^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+#                                                 sheet cell  flag marker
+#
 # `desc` is served by the AllowAny markings API and rendered on the public
-# record page, so approving published the internal flag vocabulary and the
-# sheet-cell references as public catalog text on ~1,500 entries. Ian's call,
-# 2026-08-19: keep the doubt, make it editor-only.
+# record page, so approving published both as public catalog text on ~1,500
+# entries. Ian's call, 2026-08-19: keep the doubt, make it editor-only. Both
+# are named in #110's problem statement, and neither means anything to a
+# philatelist reading the catalog -- same objection #111 raises about rule
+# codes leaking into editor-facing prose.
 #
 # Stripped here, at the point of approval, rather than by re-emitting the
-# queue: the marker is baked into submitted_data on ~2,084 contributions and
+# queue: this text is baked into submitted_data on ~2,084 contributions and
 # apply_vphc_ledger is not idempotent, so a re-emit means a delete-and-rebuild
 # with eight human submissions to protect. The contribution keeps the original
 # text either way, and MarkingDetailSerializer.vphc_provenance is what shows it
-# to editors afterwards.
+# to editors afterwards -- including the sheet cell, which the provenance blob
+# carries as `src`.
 #
-# Non-greedy, and every occurrence rather than the last: 118 of the 2,062
-# contributions measured carried TWO markers -- the crossexam one plus the
-# type_defaulted one that apply_vphc_ledger appends separately
-# (apply_vphc_ledger.py:452 and :454). Verified across 1,730 crosswalk markers
-# and 1,576 emitted ones that none contains an inner "]", so .*? cannot
-# truncate one mid-marker.
+# MARKER: non-greedy, and every occurrence rather than the last. 118 of the
+# 2,062 contributions measured carry TWO markers -- the crossexam one plus the
+# type_defaulted one apply_vphc_ledger appends separately (:452 and :454), so a
+# trailing-only strip leaves one behind. Verified across 1,730 crosswalk and
+# 1,576 emitted markers that none contains an inner "]", so .*? cannot truncate
+# one mid-marker.
+#
+# SHEET CELL: spelled out rather than a loose \(.*?\), which would eat any
+# parenthetical an editor later writes. Every one of the 2,317 crosswalk rows
+# matches T<digits>:r<digits>, joined by ";" for markings assembled from several
+# sheet rows -- up to 13 of them (e.g. "(T1:r6305;T1:r6306)").
 _VPHC_DESC_MARKER_RE = re.compile(r"\s*\[VPHC:.*?\]")
+_VPHC_SHEET_CELL_RE = re.compile(r"\s*\(T\d+:r\d+(?:;T\d+:r\d+)*\)")
+
+_VPHC_NOTATION_PATTERNS = (_VPHC_DESC_MARKER_RE, _VPHC_SHEET_CELL_RE)
 
 
-def _strip_vphc_markers(text: str, payload: dict) -> str:
-    """Remove the ingest's bracketed markers from a description.
+def _strip_vphc_notation(text: str, payload: dict) -> str:
+    """Remove the ingest's internal notation from a public description.
 
     Gated on the `vphc` key rather than on status or on the text itself, which
     is the standing rule for anything touching this queue (LEFT_OFF section B1):
     the queue is live and carries real human submissions. Measured on the 2,062
     ingested rows -- every one carries the key, and no marker-bearing row lacks
-    it -- so a contributor who happens to type "[VPHC: ...]" into a description
-    keeps their text.
+    it -- so a contributor who happens to type "[VPHC: ...]" or cite a sheet
+    cell in a description keeps their text.
     """
     if "vphc" not in payload:
         return text
-    return _VPHC_DESC_MARKER_RE.sub("", text).strip()
+    for pattern in _VPHC_NOTATION_PATTERNS:
+        text = pattern.sub("", text)
+    return text.strip()
 
 
 def _normalized_desc(payload: dict) -> str:
@@ -837,12 +855,12 @@ def _normalized_desc(payload: dict) -> str:
 
 
 def _desc_from_payload(payload: dict) -> str:
-    """The submitted description, normalised and with VPHC markers removed.
+    """The submitted description, normalised and with ingest notation removed.
 
     Shared by the create and edit paths so the two cannot drift; they already
     normalised identically before this existed.
     """
-    return _strip_vphc_markers(_normalized_desc(payload), payload)
+    return _strip_vphc_notation(_normalized_desc(payload), payload)
 
 
 def _resolve_lettering(payload: dict) -> Lettering | None:

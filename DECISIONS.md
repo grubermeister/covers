@@ -1,5 +1,61 @@
 # Decisions
 
+## 2026-08-19 — VPHC ingest notation is stripped from `desc` on approval, and that includes the sheet cell (issue #110)
+
+**What was decided.** Approving a VPHC contribution no longer copies the ingest's internal notation
+into `Marking.desc`. Two things are removed, not one: the bracketed flag markers
+(`[VPHC: ambiguous]`) **and the sheet-cell reference** (`(T1:r6495)`). The original text is
+untouched on the contribution, and `MarkingDetailSerializer.vphc_provenance` returns the provenance
+blob to editors and the contributor only.
+
+**Why.** `desc` is served by the `AllowAny` markings API and rendered on the public record page, so
+approving published the internal flag vocabulary and the spreadsheet cell as public catalog text on
+~1,500 entries. **Ian's call, 2026-08-19: keep the doubt, make it editor-only.**
+
+**Why the sheet cell too, which is a widening of how #110 was written.** #110's acceptance criteria
+say "the marker is stripped", but its problem statement names three things that become public: *"the
+marker, the internal flag vocabulary **and the sheet-cell reference (`T1:r6495`)**."* The first
+implementation removed only the brackets, and an over-HTTP check of the anonymous response showed
+`(T1:r6495)` still sitting in the public description — it lives in the lead sentence
+`apply_vphc_ledger._description` builds, outside the brackets, so no marker pattern touches it.
+It is spreadsheet notation with no meaning to a philatelist, the same objection #111 raises about
+rule codes in editor-facing prose. Editors lose nothing: the provenance blob carries it as `src`.
+
+`Virginia Postal History Catalog Wytheville #2 (T1:r6495). [VPHC: ambiguous]`
+→ `Virginia Postal History Catalog Wytheville #2.`
+
+**Why at approval rather than by re-emitting the queue.** The text is baked into `submitted_data` on
+~2,084 contributions and `apply_vphc_ledger` is not idempotent, so a re-emit is a delete-and-rebuild
+with eight human submissions to protect. #110 asks for this explicitly: *"stripped or hidden at the
+point of approval, not by a later sweep."*
+
+**The two patterns, and why neither is loose.** The marker match is non-greedy and global — 118 of
+2,062 rows carry **two** markers, the crossexam one plus the `type_defaulted` one
+`apply_vphc_ledger` appends separately (`:452` and `:454`), so a trailing-only strip leaves one
+behind. The sheet-cell match spells the format out (`T\d+:r\d+`, `;`-joined) rather than using
+`\(.*?\)`, **which would eat any parenthetical an editor later writes into a VPHC record.**
+
+**The edit path needed more than the same one-liner.** An edit merges (B1/RFC 7396), so an
+explicitly empty value clears the column — and a marker-only description strips to `""`, which would
+silently null a good description the submission never spoke to. The guard keys on *why* the value is
+empty: an empty submission still clears; one emptied by stripping leaves the stored value alone.
+**Keying on "is this a VPHC payload" instead breaks `test_an_explicitly_empty_value_still_clears`**,
+since VPHC payloads can carry a legitimate explicit `""`. That was the first cut, and B1's tests
+caught it.
+
+**Gated on the `vphc` key, never on the text or the status** — the standing rule for this queue. A
+contributor who types `[VPHC: ...]` or cites a sheet cell keeps their words.
+
+**Evidence.** Dry-run across all 2,062 ingested contributions: 2,062 changed, **0 leftover markers,
+0 leftover cells, 0 descriptions emptied**. Verified over real HTTP against a running server, not
+just `APIClient` — anonymous and unrelated logged-in users get `vphc_provenance: null` and a body
+with no `[VPHC:` and no `T1:r`; an editor gets the blob.
+
+⚠️ **Not swept: markings already approved with notation in `desc`.** Four exist in the local
+snapshot. This change only prevents new ones; the existing rows need a separate decision.
+
+---
+
 ## 2026-08-17 — Marking list ordering is an annotation contract, not a relation path (issue #103)
 
 **What was decided.** `MarkingViewSet` no longer exposes or defaults to

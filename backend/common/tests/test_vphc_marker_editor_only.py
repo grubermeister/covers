@@ -32,6 +32,8 @@ from common.models import (
 User = get_user_model()
 
 LEAD = "Virginia Postal History Catalog Wytheville #2 (T1:r6495)."
+# What LEAD should look like once the sheet cell is gone.
+LEAD_PUBLIC = "Virginia Postal History Catalog Wytheville #2."
 MARKER = "[VPHC: ambiguous]"
 # apply_vphc_ledger appends this one separately from the crossexam marker
 # (apply_vphc_ledger.py:454), so 118 of the 2,062 measured rows carry both.
@@ -86,7 +88,7 @@ class VphcMarkerStripTests(TestCase):
 
         marking = apply_contribution_to_catalog(contrib)
 
-        self.assertEqual(marking.desc, LEAD)
+        self.assertEqual(marking.desc, LEAD_PUBLIC)
         self.assertNotIn("[VPHC:", marking.desc)
 
     def test_contribution_keeps_the_original_text(self):
@@ -130,6 +132,52 @@ class VphcMarkerStripTests(TestCase):
 
         self.assertIn(MARKER, marking.desc)
 
+    def test_strips_the_sheet_cell_reference(self):
+        """`(T1:r6495)` is the spreadsheet cell the row came from.
+
+        #110 names it alongside the marker: it is internal notation with no
+        meaning to a philatelist reading the catalog. It survives on the
+        contribution, and the provenance blob carries it as `src`.
+        """
+        contrib = self._contribution(desc=LEAD)
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertEqual(marking.desc, LEAD_PUBLIC)
+        self.assertNotIn("T1:r", marking.desc)
+
+    def test_strips_a_multi_cell_reference(self):
+        """A marking assembled from several sheet rows cites all of them.
+
+        463 of the 2,317 crosswalk rows carry two cells and one carries 13, so
+        matching a single cell would leave the rest behind.
+        """
+        contrib = self._contribution(
+            desc="Virginia Postal History Catalog Woodstock #4 "
+                 "(T1:r6451;T1:r6452). Colours recorded: RED, BLACK.")
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertEqual(
+            marking.desc,
+            "Virginia Postal History Catalog Woodstock #4. "
+            "Colours recorded: RED, BLACK.")
+
+    def test_leaves_ordinary_parentheses_alone(self):
+        """The risk the sheet-cell pattern introduces.
+
+        A loose \\(.*?\\) would eat any parenthetical an editor later writes
+        into a VPHC record, so the pattern spells the cell format out.
+        """
+        contrib = self._contribution(
+            desc="Struck upside down (see Simpson, p. 44) on a folded letter.")
+
+        marking = apply_contribution_to_catalog(contrib)
+
+        self.assertEqual(
+            marking.desc,
+            "Struck upside down (see Simpson, p. 44) on a folded letter.")
+
     def test_edit_strips_the_marker_and_keeps_the_rest(self):
         marking = self._marking("Original description.")
         contrib = self._contribution(
@@ -138,7 +186,7 @@ class VphcMarkerStripTests(TestCase):
         apply_contribution_to_catalog(contrib)
 
         marking.refresh_from_db()
-        self.assertEqual(marking.desc, LEAD)
+        self.assertEqual(marking.desc, LEAD_PUBLIC)
 
     def test_marker_only_edit_does_not_clear_the_description(self):
         """The one shape where stripping could destroy data.
