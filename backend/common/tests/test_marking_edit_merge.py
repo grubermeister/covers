@@ -203,8 +203,13 @@ class MarkingEditMergeTests(TestCase):
         self._approve(marking, payload)
 
         self.assertEqual(marking.color.name, payload["color"])
-        self.assertEqual(marking.desc, payload["desc"])
         self.assertEqual(marking.type, payload["type"])
+        # The submitted description still lands -- that is what this test is
+        # about -- but issue #110 removes the ingest's internal notation from it
+        # on the way in, because `desc` is public. So the sheet still wins; it
+        # just does not carry "(T1:r8)" or "[VPHC: ...]" into the catalog.
+        self.assertIn("(T1:r", payload["desc"])
+        self.assertEqual(marking.desc, "Virginia Postal History Catalog Abingdon #5.")
 
     def test_an_explicitly_empty_value_still_clears(self):
         """The submit form states emptiness as "", not as an omitted key, so a

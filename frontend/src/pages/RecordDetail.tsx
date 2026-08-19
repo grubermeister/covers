@@ -76,6 +76,8 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { createCoverMarking, getCoverById } from "@/services/covers";
 import { parseCoverIdInput } from "@/lib/recordLinking";
+import { readVphcProvenance } from "@/lib/vphcProvenance";
+import { VphcProvenanceCard } from "@/components/VphcProvenanceCard";
 
 type GalleryImage = {
   imageUrl: string | null;
@@ -628,6 +630,17 @@ const RecordDetail = () => {
   // contributor or an editor, so a non-empty string is already authorized to show.
   const commentForEditor = record.commentForEditor?.trim() ?? "";
   const editorFeedback = record.editorFeedback?.trim() ?? "";
+  // Issue #110. The ingest's "[VPHC: ...]" markers used to ride along in `desc`
+  // and render publicly; they are now stripped on approval, so this card is the
+  // only place the doubt is visible on a catalog record. Same gating as the two
+  // above -- the backend returns null unless the viewer is an editor or the
+  // contributor, so a non-null value is already authorised to show.
+  // readVphcProvenance reads `.vphc` off a whole submitted_data blob; the
+  // serializer hands back just that inner object, so re-wrap it rather than
+  // duplicating the reader.
+  const vphcProvenance = record.vphcProvenance
+    ? readVphcProvenance({ vphc: record.vphcProvenance })
+    : null;
   const submitterName = record.submitterName?.trim() ?? "";
   const galleryImages = buildGalleryImages(record);
   const typeLabel = markingTypeLabel(record.type) || "Townmark";
@@ -1541,6 +1554,8 @@ const RecordDetail = () => {
                   </CardContent>
                 </Card>
               )}
+
+              {vphcProvenance && <VphcProvenanceCard provenance={vphcProvenance} />}
 
               {commentForEditor && (
                 <Card className="shadow-archival-md">

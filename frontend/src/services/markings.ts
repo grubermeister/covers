@@ -443,6 +443,11 @@ export interface MarkingRecord {
   // who is not that contributor or an editor, so a non-empty value is safe to show.
   commentForEditor: string;
   editorFeedback: string;
+  // Issue #110. The ingest's "[VPHC: ...]" markers are stripped out of `desc`
+  // on approval because `desc` is public; this is the doubt they carried,
+  // returned only to editors and the contributor. Null for everyone else, so a
+  // non-null value is already authorised to render.
+  vphcProvenance: Record<string, unknown> | null;
 }
 
 export interface MarkingChangelogEvent {
@@ -791,6 +796,11 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
         : null,
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
+    vphcProvenance:
+      o.vphc_provenance && typeof o.vphc_provenance === "object"
+        && !Array.isArray(o.vphc_provenance)
+        ? (o.vphc_provenance as Record<string, unknown>)
+        : null,
   };
 }
 

@@ -138,8 +138,18 @@ class ApplyVphcLedgerTests(TestCase):
         self.assertEqual(marking.post_office.name, "Abingdon")
         self.assertEqual(marking.color.name, "BLACK")
         self.assertEqual(float(marking.width), 30.5)
-        # the doubt survives approval, not just the queue
-        self.assertIn("[VPHC: century inferred]", marking.desc)
+        # The doubt still survives approval -- but on the contribution, not in
+        # the catalog record. `desc` is served by the AllowAny markings API, so
+        # this assertion used to read "[VPHC: century inferred]" IS in
+        # marking.desc, which is precisely what issue #110 changed: the marker
+        # is stripped on approval and MarkingDetailSerializer.vphc_provenance
+        # shows it to editors instead. The prose around it is untouched.
+        self.assertNotIn("[VPHC:", marking.desc)
+        self.assertIn(
+            "Colours recorded but not in the catalog vocabulary: RED", marking.desc,
+        )
+        contribution.refresh_from_db()
+        self.assertIn("[VPHC: century inferred]", contribution.submitted_data["desc"])
 
     def test_the_society_is_credited(self):
         self.run_apply()
