@@ -924,6 +924,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     comment_for_editor = serializers.SerializerMethodField()
     editor_feedback = serializers.SerializerMethodField()
     submitter_name = serializers.SerializerMethodField()
+    vphc_provenance = serializers.SerializerMethodField()
 
     class Meta:
         model = Marking
@@ -975,6 +976,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "editor_feedback",
             "display_submitter_name",
             "submitter_name",
+            "vphc_provenance",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
 
@@ -1023,6 +1025,26 @@ class MarkingSerializer(serializers.ModelSerializer):
         if not _viewer_may_see_contribution_notes(user, contribution):
             return ""
         return _comment_for_editor_from(contribution.submitted_data)
+
+    def get_vphc_provenance(self, obj):
+        # Issue #110. contribution_apply strips the ingest's [VPHC: ...] markers
+        # out of `desc` on approval, because `desc` is public. The doubt is not
+        # discarded -- it stays on the contribution -- but nothing linked an
+        # approved marking back to it, so an editor looking at a flagged record
+        # had no way to see why. This is that path.
+        #
+        # SECURITY: this endpoint is AllowAny. Returning the blob ungated would
+        # republish exactly what the strip just removed, in a richer form, so
+        # the gate below is load-bearing rather than defensive. It is the same
+        # one comment_for_editor and editor_feedback use: any editor/admin, or
+        # the contributor; never anonymous.
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        contribution = getattr(obj, "contribution", None)
+        if not _viewer_may_see_contribution_notes(user, contribution):
+            return None
+        blob = (contribution.submitted_data or {}).get("vphc")
+        return blob if isinstance(blob, dict) else None
 
     def get_state(self, obj):
         return _marking_state_name(obj)

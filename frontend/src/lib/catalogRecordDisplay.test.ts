@@ -48,6 +48,7 @@ function markingRecord(overrides: Partial<MarkingRecord> = {}): MarkingRecord {
     isReviewed: false,
     commentForEditor: "",
     editorFeedback: "",
+    vphcProvenance: null,
     ...overrides,
   };
 }
