@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any
 
-from django.db.models import Model
+from django.db.models import BigIntegerField, Max, Model, TextField, Value
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import Cast, Coalesce, NullIf, Substr, Trim
 
 from common.models import Citation, Contribution, Cover, Marking, ReferenceWork, Region
 
@@ -17,7 +18,11 @@ CATALOG_CODE_KEYS = {
     "suggested_catalog_code",
     "suggestedCatalogCode",
 }
-_CODE_NUMBER_RE = re.compile(r"^(\d{4,})$")
+# A catalog serial is the whole suffix after the prefix: four or more digits and
+# nothing else. Written as an explicit character class rather than `\d` because
+# this is handed to the database's regex engine, where `\d` may also match
+# non-ASCII digits.
+_SERIAL_PATTERN = r"^[0-9]{4,}$"
 
 
 class CatalogCodeError(ValueError):
@@ -226,16 +231,10 @@ def _next_serial(
     exclude_contribution_id: int | None = None,
 ) -> int:
     model = _model_for_subject(subject_type)
-    max_seen = 0
-    qs = model.all_objects.filter(code__startswith=prefix).only("id", "code")
+    qs = model.all_objects.filter(code__startswith=prefix)
     if exclude_id is not None:
         qs = qs.exclude(pk=exclude_id)
-    for row in qs:
-        suffix = (row.code or "")[len(prefix):]
-        match = _CODE_NUMBER_RE.match(suffix)
-        if match is None:
-            continue
-        max_seen = max(max_seen, int(match.group(1)))
+    max_seen = _max_serial(qs, code_expr="code", prefix=prefix)
 
     # Also check codes already suggested for other pending/draft contributions
     # that have not yet been approved into the Marking/Cover table.
@@ -245,20 +244,63 @@ def _next_serial(
             Contribution.STATUS_PENDING,
             Contribution.STATUS_NEEDS_REVISION,
         ),
-    ).only("id", "submitted_data")
+    )
     if exclude_contribution_id is not None:
         pending_qs = pending_qs.exclude(pk=exclude_contribution_id)
-    for contrib_row in pending_qs:
-        code = code_value_from_payload(dict(contrib_row.submitted_data or {}))
-        if not code or not code.startswith(prefix):
-            continue
-        suffix = code[len(prefix):]
-        match = _CODE_NUMBER_RE.match(suffix)
-        if match is None:
-            continue
-        max_seen = max(max_seen, int(match.group(1)))
+    pending_qs = pending_qs.annotate(_payload_code=_payload_code_expr())
+    pending_qs = pending_qs.filter(_payload_code__startswith=prefix)
+    max_seen = max(max_seen, _max_serial(pending_qs, code_expr="_payload_code", prefix=prefix))
 
     return max_seen + 1
+
+
+def _payload_code_expr():
+    """SQL equivalent of code_value_from_payload: first non-blank of three keys.
+
+    The key order and the blank handling both matter -- normalize_catalog_code
+    strips whitespace before deciding a value is empty, so a key holding "   "
+    must fall through to the next one exactly as it does in Python.
+    """
+    return Coalesce(
+        *[
+            NullIf(Trim(KeyTextTransform(key, "submitted_data")), Value(""))
+            for key in ("catalog_code", "catalogCode", "code")
+        ],
+        Value(""),
+        output_field=TextField(),
+    )
+
+
+def _max_serial(queryset, *, code_expr, prefix) -> int:
+    """Largest numeric suffix in `queryset`, computed by the database.
+
+    This used to be a Python loop over every prefixed row plus a json.loads of
+    every pending contribution -- so a single approval cost one JSON parse per
+    queued row, and approving a queue of N rows was O(N^2). At the VPHC ingest's
+    2,443 pending rows that is ~6M parses to drain the queue. Both halves are
+    now one aggregate each.
+
+    Two things worth not re-deriving:
+
+    * **Cast to an integer; do not compare the text.** Serials are zero-padded
+      to four digits ("{:04d}"), so lexical order matches numeric order only
+      below 9,999 -- "10000" sorts before "9999" as text. Sorting lexically
+      would silently start re-issuing serials once a prefix crossed 10k.
+    * _SERIAL_PATTERN requires the suffix to be *entirely* digits, at least four
+      of them. A code with a trailing letter is skipped here exactly as the
+      Python version skipped it.
+
+    `__startswith` is case-insensitive under MariaDB's default collation while
+    Python's str.startswith is not, so this can match a lowercase-prefixed code
+    the old loop ignored. That direction is safe: an extra match can only raise
+    the maximum, which skips a serial rather than colliding on one.
+    """
+    row = (
+        queryset.annotate(_serial_text=Substr(code_expr, len(prefix) + 1))
+        .filter(_serial_text__regex=_SERIAL_PATTERN)
+        .aggregate(_max=Max(Cast("_serial_text", BigIntegerField())))
+    )
+    return row["_max"] or 0
 
 
 def _suggestion_from_existing(
