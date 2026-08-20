@@ -2884,9 +2884,12 @@ def _resolve_collection_for_submission(
     effective_state = state_value
 
     if state_value:
-        region = Region.objects.filter(
-            Q(name__iexact=state_value) | Q(abbrev__iexact=state_value)
-        ).first()
+        # The third site with the unscoped-abbrev trap (#103). This one routes a
+        # submission to a Collection, and NO collection sits on a COUNTY-tier
+        # region -- so "VA" resolving to Accomack meant `collection` stayed None
+        # and the submission fell through to the draft fallback instead of
+        # landing in the Virginia editors' queue.
+        region = Region.primary_for_state_term(state_value)
         if region:
             collection = Collection.objects.filter(region=region, is_active=True).first()
 

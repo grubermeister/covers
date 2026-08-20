@@ -26,14 +26,14 @@ def regions_matching_state_term(value):
     Negation is safe here because these are Region's own columns; the same
     predicate written across the post_office_regions junction would become a
     NOT EXISTS and stop meaning "this one region row".
+
+    Now a thin wrapper over Region.matching_state_term. The predicate moved onto
+    the model when the WRITE paths turned out to need it too: they had their own
+    unscoped copy, which resolved "VA" to Accomack County and created duplicate
+    post offices on approval. One definition, so the read and write paths cannot
+    drift apart again.
     """
-    text = str(value or "").strip()
-    if not text:
-        return Region.objects.none()
-    return Region.objects.filter(
-        Q(name__iexact=text)
-        | (Q(abbrev__iexact=text) & ~Q(region_tier__in=Region.SUBREGION_TIERS))
-    )
+    return Region.matching_state_term(value)
 
 
 def filter_markings_by_state_term(queryset, value):
