@@ -48,6 +48,7 @@ import {
   deleteOwnContribution,
   getContribution,
   getContributionCatalogCodeSuggestion,
+  getDirectCatalogCodeSuggestion,
 } from "@/services/contributions";
 import { getMarkingById, type MarkingRecord } from "@/services/markings";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
@@ -381,12 +382,18 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   const contributionId = contribution?.id;
   const contributionStatus = contribution?.status;
 
+  // Preview only -- see the note in ContributionDetail.tsx. Firing the
+  // contribution-scoped endpoint from an effect PERSISTS the minted code into
+  // submitted_data, so opening a pending row wrote to the database (issue #118).
+  // The cover queue was not implicated in the 27 VPHC rows, but it is the same
+  // defect. The direct endpoint computes the same code and saves nothing.
   useEffect(() => {
     if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
+    if (parentMarkingId == null) return;
     let cancelled = false;
     setCatalogCodeLoading(true);
     setCatalogCodeError(null);
-    getContributionCatalogCodeSuggestion(contributionId)
+    getDirectCatalogCodeSuggestion({ subjectType: "COVER", markingId: parentMarkingId })
       .then((suggestion) => {
         if (!cancelled) setCatalogCode(suggestion.catalogCode);
       })
@@ -401,7 +408,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
     return () => {
       cancelled = true;
     };
-  }, [contributionId, contributionStatus, isStateEditor, user]);
+  }, [contributionId, contributionStatus, isStateEditor, user, parentMarkingId]);
 
   const ensureCatalogCode = async (): Promise<string> => {
     if (!contribution) return "";

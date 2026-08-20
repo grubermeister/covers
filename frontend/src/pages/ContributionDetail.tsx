@@ -47,6 +47,7 @@ import {
   decideContribution,
   deleteOwnContribution,
   getContributionCatalogCodeSuggestion,
+  getDirectCatalogCodeSuggestion,
 } from "@/services/contributions";
 
 
@@ -187,13 +188,34 @@ const ContributionDetail = () => {
   const contributionStatus = contribution?.status;
   const contributionSubmittedData = contribution?.submittedData;
 
+  // Preview the code WITHOUT writing it. `getContributionCatalogCodeSuggestion`
+  // persists its answer into submitted_data (catalog_codes.suggest_for_contribution),
+  // so firing it from an effect meant merely OPENING a pending row wrote to the
+  // database -- no click, no intent, outside any transaction, and with no audit
+  // row. That is issue #118: 27 VPHC rows in the review queue were carrying a
+  // minted VPHC1-VA-M#### code purely because someone had looked at them, and
+  // approving one would have made that the permanent Marking.code.
+  //
+  // The direct endpoint computes the same code from the same payload via the
+  // same helpers (_region_from_payload, _reference_code_from_selected_payload)
+  // but takes no contribution and saves nothing. Minting stays where it belongs:
+  // ensureCatalogCode() below, at approve time, deliberately.
   useEffect(() => {
     if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
     if (isCoverContributionData(contributionSubmittedData)) return;
+    const sd = (contributionSubmittedData ?? {}) as Record<string, unknown>;
+    const referenceWorkIds = Array.isArray(sd.reference_work_ids)
+      ? (sd.reference_work_ids as number[])
+      : undefined;
     let cancelled = false;
     setCatalogCodeLoading(true);
     setCatalogCodeError(null);
-    getContributionCatalogCodeSuggestion(contributionId)
+    getDirectCatalogCodeSuggestion({
+      subjectType: "MARKING",
+      state: typeof sd.state === "string" ? sd.state : undefined,
+      markingId: typeof sd.edit_marking_id === "number" ? sd.edit_marking_id : null,
+      referenceWorkIds,
+    })
       .then((suggestion) => {
         if (!cancelled) setCatalogCode(suggestion.catalogCode);
       })
