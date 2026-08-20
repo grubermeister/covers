@@ -145,6 +145,11 @@ class Command(BaseCommand):
         self.scanned = set()
         totals = Counter()
         applied = []
+        # A skipped row used to bump a stdout counter and vanish. Four listings
+        # left the ledger and never reached the queue that way, and nothing on
+        # disk recorded which four -- the discrepancy was only found by counting
+        # the ledger against the queue a week later. Issue #115.
+        self.skipped = []
 
         if dry:
             self.stdout.write(self.style.NOTICE("DRY RUN: nothing will be committed."))
@@ -167,8 +172,47 @@ class Command(BaseCommand):
         if not dry and applied:
             self._write_ledger(vphc, applied)
             self.stdout.write(f"  appended {len(applied)} lines to LEDGER.jsonl")
+        if self.skipped:
+            path = self._write_skipped(vphc)
+            self.stdout.write(self.style.WARNING(
+                f"  {len(self.skipped)} listing(s) skipped -- written to {path}"))
         self.stdout.write(self.style.SUCCESS(
             ("[DRY RUN] " if dry else "") + "VPHC ledger applied."))
+
+    # ---------------------------------------------------------------- skips
+
+    def _skip(self, line, row, reason):
+        """Record a listing the applier declined to emit.
+
+        Rule C1 says nothing from the sheet is ever dropped. When a row cannot
+        be emitted that is still true in spirit -- it is a refusal, not a loss --
+        but only if the refusal leaves a trace a human can find.
+        """
+        row = row or {}
+        self.skipped.append({
+            "src": line.get("src", ""),
+            "action": line.get("action", ""),
+            "target_code": line.get("target_code") or "",
+            "reason": reason,
+            "town": row.get("town", ""),
+            "town_key": row.get("town_key", ""),
+            "county": row.get("county", ""),
+            "state": row.get("state", ""),
+            "cancel_no": row.get("cancel_no", ""),
+            "landing": row.get("landing", ""),
+            "verdict": row.get("verdict", ""),
+        })
+
+    def _write_skipped(self, vphc):
+        path = os.path.join(vphc, "crossexam", "skipped.csv")
+        fields = ["src", "action", "target_code", "reason", "town", "town_key",
+                  "county", "state", "cancel_no", "landing", "verdict"]
+        with open(path, "w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fields, lineterminator="\n")
+            writer.writeheader()
+            for entry in self.skipped:
+                writer.writerow(entry)
+        return path
 
     # ------------------------------------------------------------- payloads
 
@@ -187,6 +231,7 @@ class Command(BaseCommand):
                             if not r["prod_code"]), None)
                 if row is None:
                     totals["creates skipped (no crosswalk row)"] += 1
+                    self._skip(line, None, "no crosswalk row")
                     continue
                 self._contribution(row, line, None, actor, totals, applied, dry)
             elif action == "update" and "update" in steps:
@@ -197,6 +242,7 @@ class Command(BaseCommand):
                             if r["prod_code"] == line["target_code"]), None)
                 if row is None:
                     totals["updates skipped (no crosswalk row)"] += 1
+                    self._skip(line, None, "no crosswalk row")
                     continue
                 self._contribution(row, line, line["target_code"], actor,
                                    totals, applied, dry)
@@ -211,6 +257,7 @@ class Command(BaseCommand):
             state = self._state_from_catalog(row["town_key"])
             if state is None:
                 totals["skipped (state cannot be determined)"] += 1
+                self._skip(line, row, "state cannot be determined")
                 return
             totals["state recovered from an existing post office"] += 1
 
@@ -222,6 +269,7 @@ class Command(BaseCommand):
         inscription = first(row["sheet_insc"]) or row["town"].strip()
         if not inscription:
             totals["skipped (no inscription and no town)"] += 1
+            self._skip(line, row, "no inscription and no town")
             return
 
         colours = [c for c in row["sheet_colors"].split(";") if c]
@@ -250,26 +298,42 @@ class Command(BaseCommand):
         # (town, cancel #) grain, not the site's: 277 of 1,798 create listings
         # with 347 colour observations stranded in prose.
         #
-        # EDITS ARE DELIBERATELY UNTOUCHED, and "untouched" is stricter than it
-        # looks. Rule I3 already paired them one-per-colour against live rows,
-        # so an edit targets exactly one existing marking and stays exactly one
-        # contribution -- but it must also keep the *same* colour it had.
-        # `recognised[0]` is not the same as the old `colours[0] if recognised`:
-        # where the sheet's FIRST colour is one the vocabulary rejects, the old
-        # code sent no colour at all and the edit branch below backfilled the
-        # marking's own, whereas picking the first recognised colour instead
-        # sends a different one and repaints a live marking on approval.
-        # Measured over the real crosswalk: 3 of the 310 edits changed, one of
-        # them RED -> BLACK. All 310 are already queued and verified on
-        # woco.dev; they must come out of this byte-identical so they do not
-        # need re-emitting a second time.
+        # AN EDIT NEVER WRITES A COLOUR. Rule E6: colour is doing identity work
+        # on this path -- I3 paired the edit to exactly one live row *by* colour
+        # -- so writing it back could only restate what production already
+        # holds, and the v2 invariant forbids a field both establishing identity
+        # for a pair and being written for that same pair.
+        #
+        # This used to send `colours[0]`, the sheet's FIRST colour, which is a
+        # different thing from the colour I3 matched on (`match_color`). For a
+        # multi-colour listing they diverge: an edit targeting the BLUE row of a
+        # RED;BLUE listing went out carrying RED, and approval repainted it.
+        # Measured on woco.dev 2026-08-20 -- 58 of the 310, and it closed both
+        # ways: on 58 of 58 the live colour equalled `match_color`, and on 58 of
+        # 58 the payload colour equalled `sheet_colors[0]`. Issue #117.
+        #
+        # ⚠ The old comment here recorded "3 of the 310 edits changed, one of
+        # them RED -> BLACK." That was the delta between two *candidate
+        # implementations* (`colours[0]` vs `recognised[0]`), never a claim that
+        # only 3 differed from the live marking -- but it was read as
+        # reassurance for four days. The absolute question was 58.
+        #
+        # Emitting no colour is stronger than emitting `match_color`: it is
+        # E6-clean, and it sources the value from the live row rather than a CSV
+        # column. `_emit` then skips the `color` key, and the edit-only backfill
+        # writes `marking.color.name` -- the marking's own value, a true no-op.
+        # Where the marking has no colour the key is absent entirely and
+        # `_payload_mentions_fk` leaves the field alone. Both branches are safe.
+        #
+        # `sheet_colour` is still computed because it is the sole producer of
+        # the `color_unrecognised` flag, which is queried and asserted on. Only
+        # its use as a payload value is removed.
         if edit_code:
             sheet_colour = colours[0] if colours else None
             if sheet_colour and sheet_colour.upper() not in known:
                 flags.append("color_unrecognised")
                 totals["colours not in the catalog vocabulary"] += 1
-                sheet_colour = None
-            colour_variants = [sheet_colour]
+            colour_variants = [None]
         else:
             if unrecognised:
                 # A colour the catalog has never heard of is dropped silently

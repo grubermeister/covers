@@ -11,12 +11,24 @@ from common.models import Citation, Contribution, Cover, Marking, ReferenceWork,
 
 
 DEFAULT_REFERENCE_CODE = "APMC"
+# Every key a minted suggestion writes, so that stripping one strips all of them.
+# The three sidecars used to be omitted here, which meant each strip site removed
+# `catalog_code` and left `catalog_code_reference_code` behind -- so a viewer
+# without catalog-code permission still saw the reference code the strip existed
+# to hide, and a cleanup that removed the code left orphans. Found while tracing
+# issue #118.
 CATALOG_CODE_KEYS = {
     "code",
     "catalog_code",
     "catalogCode",
     "suggested_catalog_code",
     "suggestedCatalogCode",
+    "catalog_code_source",
+    "catalogCodeSource",
+    "catalog_code_reference_code",
+    "catalogCodeReferenceCode",
+    "catalog_code_region_abbrev",
+    "catalogCodeRegionAbbrev",
 }
 # A catalog serial is the whole suffix after the prefix: four or more digits and
 # nothing else. Written as an explicit character class rather than `\d` because
