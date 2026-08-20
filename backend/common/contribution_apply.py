@@ -912,10 +912,13 @@ def _resolve_post_office(state_name: str, town_name: str, actor) -> PostOffice:
     town if it does not yet exist in that state. Regions are NOT
     auto-created; an unknown state is a hard error.
     """
-    region = (
-        Region.objects.filter(name__iexact=state_name).first()
-        or Region.objects.filter(abbrev__iexact=state_name).first()
-    )
+    # Region.primary_for_state_term, not a bare abbrev lookup: the VPHC ingest
+    # gave all 141 county rows their state's abbrev (#103), so "VA" matched 98
+    # regions and Meta.ordering made this resolve to Accomack County every
+    # time. It then found no Lynchburg linked to Accomack and CREATED a
+    # duplicate post office with no state. Ten of those reached woco.dev on
+    # 2026-08-19 before the queue was restored.
+    region = Region.primary_for_state_term(state_name)
     if region is None:
         raise ContributionApplyError("Unknown state: {}".format(state_name))
 

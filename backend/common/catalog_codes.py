@@ -414,10 +414,12 @@ def _region_from_payload(payload: dict[str, Any]) -> Region:
             return region
     state = normalize_catalog_code(payload.get("state") or payload.get("region"))
     if state:
-        region = (
-            Region.objects.filter(name__iexact=state).first()
-            or Region.objects.filter(abbrev__iexact=state).first()
-        )
+        # Same trap as _resolve_post_office: a bare abbrev matched counties too.
+        # Benign here only by accident -- counties carry their state's abbrev,
+        # so the minted prefix came out identical -- which is exactly the kind
+        # of luck that stops holding the moment #103's county rows are cleaned
+        # up. Resolve it correctly rather than rely on the coincidence.
+        region = Region.primary_for_state_term(state)
         if region is not None:
             return region
     marking_id = _parse_positive_int(payload.get("edit_marking_id") or payload.get("marking_id"))

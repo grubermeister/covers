@@ -773,6 +773,64 @@ class Region(TimestampedModel):
     def __str__(self):
         return self.name
 
+    @classmethod
+    def matching_state_term(cls, value):
+        """Regions a user or a payload means by `value` in a "state" field.
+
+        A NAME matches anything, including a county -- "Accomack" is a
+        perfectly good thing to look up. An ABBREVIATION only ever means a
+        primary jurisdiction, because the VPHC ingest gave all 141 county rows
+        their state's abbrev (issue #103), so a bare "VA" otherwise matches
+        Virginia AND every Virginia county.
+
+        Negation is safe here because these are Region's own columns; the same
+        predicate across the post_office_regions junction would become a
+        NOT EXISTS and stop meaning "this one region row".
+        """
+        text = str(value or "").strip()
+        if not text:
+            return cls.objects.none()
+        return cls.objects.filter(
+            Q(name__iexact=text)
+            | (Q(abbrev__iexact=text)
+               & ~Q(region_tier__in=cls.SUBREGION_TIERS))
+        )
+
+    @classmethod
+    def primary_for_state_term(cls, value):
+        """The single region a "state" value resolves to, or None.
+
+        Every WRITE path that turns a submitted state into a Region must go
+        through this. On 2026-08-19, approving ten VPHC submissions created ten
+        DUPLICATE post offices attached to Accomack County, because
+        _resolve_post_office resolved the payload's "VA" with
+
+            Region.objects.filter(name__iexact=v).first()
+            or Region.objects.filter(abbrev__iexact=v).first()
+
+        and the second arm matched 98 rows. Meta.ordering is ['name'], so that
+        was not even flaky -- it deterministically returned the alphabetically
+        first county, every time, and would have done so for all 2,443 queued
+        rows. Issue #103 fixed this class of bug across the READ paths and left
+        the write paths alone; they were simply never exercised until bulk
+        approve ran.
+
+        A name match beats an abbreviation match: "Virginia" must win outright
+        even though nothing else could match it, and a full county name must
+        still resolve to that county. The explicit ordering is belt and braces
+        -- Meta.ordering already sorts by name, but a resolver whose answer
+        depends on a Meta option two hundred lines away is a trap for whoever
+        edits that option next.
+        """
+        matches = cls.matching_state_term(value)
+        text = str(value or "").strip()
+        if not text:
+            return None
+        by_name = matches.filter(name__iexact=text).order_by("pk").first()
+        if by_name is not None:
+            return by_name
+        return matches.order_by("pk").first()
+
 class PostOffice(TimestampedModel):
     """
     A postal facility identified as a fixed geographic place. Its political
