@@ -72,6 +72,7 @@ import { listCitationsForSubject } from "@/services/citations";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import { SUBMISSION_LABELS } from "@/labels/submission";
 import { dashboardHrefForTab } from "@/lib/dashboardParams";
+import { catalogHref } from "@/lib/catalogParams";
 
 const EMPTY = "-";
 
@@ -315,7 +316,7 @@ const CoverDetailPage = () => {
       navigate(`/record/${associatedMarkingId}`);
       return;
     }
-    navigate("/search");
+    navigate(catalogHref());
   };
 
   useEffect(() => {

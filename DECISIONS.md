@@ -1,5 +1,43 @@
 # Decisions
 
+## 2026-08-23 — Catalog return path reuses the Issue #87 sessionStorage mirror, not router state
+
+**What was decided.** Returning to the catalog from a marking detail restores the filters, sort and
+page the user had set. The mechanism is a new `frontend/src/lib/catalogParams.ts` —
+`rememberCatalogLocation()` / `catalogHref()` — mirroring the catalog's serialized query string into
+`sessionStorage` under `worldcovers.catalog.lastView`, exactly as `dashboardParams.ts` does for the
+dashboard under key `worldcovers.dashboard.lastView`.
+
+**Why.** Catalog Search already put every filter in the URL and read it back on mount, so the bug was
+never in the filter state — it was in the return path. `RecordDetail.handleBack` did
+`navigate("/search")`: a *forward* navigation with no query string, so the catalog re-mounted with
+empty params and cleared everything. Same for `CoverDetail`'s last-resort fallback and Contribute's
+`fromSearch` return. Only the browser's own Back button worked, because the URL write-back uses
+`{ replace: true }`.
+
+**Why not react-router location state, which `Search.tsx` already passes as `{ fromSearch: true }`.**
+Router state does not survive a page reload or a multi-hop redirect, and detail screens are reachable
+several navigations deep (record → cover → edit). The sessionStorage mirror recovers the view without
+the caller knowing what it was — the same reasoning recorded for #87.
+
+**Why not `navigate(-1)`.** A history pop restores the filtered URL, but only when the detail page was
+actually reached from the catalog; entering by deep link or after a redirect would send the user off
+the site or backwards through an unrelated page. The explicit href is deterministic.
+
+**One latent bug had to go with it.** `prevHeightFilterRef` / `prevWidthFilterRef` were hardcoded to
+`""` while every sibling ref seeds from the restored state, and `useDebounce` seeds its state from
+`value` on first render — so the "reset page to 1 when a filter changes" effect fired *on mount* for
+any view carrying a height or width filter and discarded the restored `?page=N`. Both refs now seed
+through a module-level `normalizeDimensionInput`, which also replaces the two duplicate copies of
+that rule (one in-component, one inlined in the effect to dodge the TDZ).
+
+**Scope.** Only params already URL-backed are restored. `viewMode` (list/gallery) and
+`valuationFilter` remain non-persistent — Reese's call, out of scope for this fix.
+
+**Evidence.** `frontend/src/pages/Search.tsx` persist effect (write-back with `{ replace: true }`);
+`frontend/src/pages/RecordDetail.tsx` `handleBack`; `frontend/src/lib/dashboardParams.ts:227-253`
+(the #87 pattern being mirrored). Full frontend suite green under Node 22: 33 suites, 184 tests.
+
 ## 2026-08-19 — VPHC ingest notation is stripped from `desc` on approval, and that includes the sheet cell (issue #110)
 
 **What was decided.** Approving a VPHC contribution no longer copies the ingest's internal notation
