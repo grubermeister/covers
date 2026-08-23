@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { cn } from "@/lib/utils";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
+import { catalogHref, rememberCatalogLocation } from "@/lib/catalogParams";
 
 const DEBOUNCE_MS = 800;
 
@@ -136,6 +137,19 @@ function validateYearString(raw: string, minYear: number, maxYear: number): stri
 function getSearchParam(params: URLSearchParams, key: string, defaultValue: string): string {
   const v = params.get(key);
   return v ?? defaultValue;
+}
+
+/**
+ * Dimensions count as an active filter only when the input parses to a positive
+ * number. Module scope so the mount-time "did this filter change?" refs can seed
+ * from the same rule the render path uses -- see prevHeightFilterRef.
+ */
+function normalizeDimensionInput(raw: string): string {
+  const t = raw.trim();
+  if (!t) return "";
+  const n = Number(t);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  return t;
 }
 
 const noImageClassName = "w-full h-full min-w-0 min-h-0 object-cover bg-muted";
@@ -352,8 +366,11 @@ const Search = () => {
   const prevReferenceWorkFilterRef = useRef(referenceWorkFilter);
   const prevBeginYearRef = useRef(debouncedBeginYear.trim().length === 4 ? debouncedBeginYear.trim() : "");
   const prevEndYearRef = useRef(debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : "");
-  const prevHeightFilterRef = useRef("");
-  const prevWidthFilterRef = useRef("");
+  // Seeded from the restored value, like every other prev*Ref here. Hardcoding
+  // "" made the reset-to-page-1 effect fire on mount for any view carrying a
+  // height/width filter, which threw away a restored ?page=N.
+  const prevHeightFilterRef = useRef(normalizeDimensionInput(heightFilter));
+  const prevWidthFilterRef = useRef(normalizeDimensionInput(widthFilter));
   const prevImagesOnlyRef = useRef(imagesOnly);
   const prevInstitutionalOnlyRef = useRef(institutionalOnly);
   const prevManuscriptFilterRef = useRef(manuscriptFilter);
@@ -419,17 +436,10 @@ const Search = () => {
     const referenceWorkFilterJustChanged = prevReferenceWorkFilterRef.current !== referenceWorkFilter;
     const beginYearJustChanged = prevBeginYearRef.current !== currentNormalizedBegin;
     const endYearJustChanged = prevEndYearRef.current !== currentNormalizedEnd;
-    // Inline normalization to avoid forward-referencing normalizedHeight /
-    // normalizedWidth, which are declared later (TDZ).
-    const normalizeDim = (raw: string): string => {
-      const t = raw.trim();
-      if (!t) return "";
-      const n = Number(t);
-      if (!Number.isFinite(n) || n <= 0) return "";
-      return t;
-    };
-    const currentNormalizedHeight = normalizeDim(debouncedHeightFilter);
-    const currentNormalizedWidth = normalizeDim(debouncedWidthFilter);
+    // normalizedHeight / normalizedWidth are declared later (TDZ), so go
+    // straight to the shared module-level rule.
+    const currentNormalizedHeight = normalizeDimensionInput(debouncedHeightFilter);
+    const currentNormalizedWidth = normalizeDimensionInput(debouncedWidthFilter);
     const heightFilterJustChanged = prevHeightFilterRef.current !== currentNormalizedHeight;
     const widthFilterJustChanged = prevWidthFilterRef.current !== currentNormalizedWidth;
     const imagesOnlyJustChanged = prevImagesOnlyRef.current !== imagesOnly;
@@ -491,14 +501,6 @@ const Search = () => {
       ? ""
       : (debouncedEndYear.trim().length === 4 ? debouncedEndYear.trim() : "");
   }, [debouncedEndYear, minYear, maxYear]);
-  // Dimensions: only treat as active when the input parses to a positive number.
-  const normalizeDimensionInput = (raw: string): string => {
-    const t = raw.trim();
-    if (!t) return "";
-    const n = Number(t);
-    if (!Number.isFinite(n) || n <= 0) return "";
-    return t;
-  };
   const normalizedHeight = useMemo(
     () => normalizeDimensionInput(debouncedHeightFilter),
     [debouncedHeightFilter],
@@ -659,6 +661,9 @@ const Search = () => {
     if (currentPage > 1) params.set("page", String(currentPage));
     const next = params.toString();
     const current = searchParams.toString();
+    // Mirror before the equality check: a deep link arrives with the URL already
+    // correct, and that view still has to be remembered for the trip back.
+    rememberCatalogLocation(next);
     if (next !== current) {
       setSearchParams(next ? params : {}, { replace: true });
     }
@@ -1158,7 +1163,11 @@ const Search = () => {
                   </div>
                   <Button
                     size="sm"
-                    onClick={() => navigate("/contribute", { state: { from: "/search" } })}
+                    onClick={() =>
+                      navigate("/contribute", {
+                        state: { from: catalogHref(searchParams.toString()) },
+                      })
+                    }
                     className="shrink-0 bg-green-800 hover:bg-green-900 text-white"
                   >
                     <Plus className="mr-2 h-4 w-4" />

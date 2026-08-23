@@ -54,6 +54,7 @@ import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
 import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { useToast } from "@/hooks/use-toast";
 import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
+import { catalogHref } from "@/lib/catalogParams";
 import { useAuth } from "@/hooks/useAuth";
 import {
   sanitizeMmInput,
@@ -1951,7 +1952,9 @@ const Contribute = () => {
           // Issue #87: back to the dashboard view they left, filters intact.
           navigate(dashboardHref());
         } else if (fromSearch) {
-          navigate("/search");
+          // Same as the dashboard branch above, for the catalog: restore the
+          // filtered view they were browsing rather than a bare catalog.
+          navigate(catalogHref());
         } else {
           navigate(dashboardHref());
         }

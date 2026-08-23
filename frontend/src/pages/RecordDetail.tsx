@@ -20,6 +20,7 @@ import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
 import { CropImageDialog } from "@/components/CropImageDialog";
 import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
 import { dashboardHrefForTab } from "@/lib/dashboardParams";
+import { catalogHref } from "@/lib/catalogParams";
 import { buildMarkingFields } from "@/lib/markingFields";
 import { formatRateValue } from "@/lib/rateDisplay";
 import { isTrueCircleShapeName } from "@/lib/shapeDisplay";
@@ -597,7 +598,9 @@ const RecordDetail = () => {
   // arrived from the dashboard, go back to the dashboard view they left.
   const handleBack = () => {
     if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
-    else navigate("/search");
+    // Not a plain "/search": this is a forward navigation, not a history pop, so
+    // a bare path would clear the filters, sort and page the browser had set.
+    else navigate(catalogHref());
   };
 
   if (loading) {
