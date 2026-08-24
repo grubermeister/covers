@@ -553,3 +553,93 @@ class ApplyVphcLedgerTests(TestCase):
         self.assertEqual(skipped[0]["county"], "BANK'S DIVISION")
         # the listing the applier DID emit is untouched by any of this
         self.assertEqual(Contribution.objects.count(), 1)
+
+    # ------------------------------------------------------------ issue #120
+    #
+    # The rate comes from the `cancel` vocabulary (rule I2), which reaches the
+    # applier as the sheet's inscription keys. `cancel_no` is the drawing
+    # number -- the marking's sequence within its town, and the key that names
+    # its scan (rule E5) -- so it is a citation locator and never a rate. The
+    # applier used to fall back to it whenever the first inscription key was
+    # not a bare digit, which is every compound rate.
+
+    def _ratemark(self, sheet_insc, cancel_no):
+        """One RATEMARK create, returning its submitted_data."""
+        self.rows[0].update(sheet_type="RATEMARK", sheet_insc=sheet_insc,
+                            cancel_no=cancel_no)
+        self.lines[0]["cancel"] = cancel_no
+        self.write()
+        self.run_apply(only="create")
+        return Contribution.objects.get().submitted_data
+
+    def test_the_rate_comes_from_the_device_not_the_drawing_number(self):
+        """Ian's report, 2026-08-24: contribution 9145 shows 4, should be 3.
+
+        Its sheet row is cancel='DUE 3' at cancel_no=4, which crosswalk.csv
+        carries as the key set "3/DUE;DUE 3;DUE/3". first() takes "3/DUE",
+        which is not .isdigit(), so the old code emitted the drawing number.
+        276 queued rows are affected, 57 of them edits against live markings.
+        """
+        data = self._ratemark("3/DUE;DUE 3;DUE/3", "4")
+        self.assertEqual(data["rate_val"], "3")
+
+    def test_a_bare_numeric_device_is_still_its_own_rate(self):
+        """The one branch that was always right -- keep it that way."""
+        data = self._ratemark("10", "9")
+        self.assertEqual(data["rate_val"], "10")
+
+    def test_a_roman_numeral_device_carries_its_value(self):
+        """V and X are rates the sheet writes in Roman (vphc_crossexam
+        ROMAN_RATE). The applier knew no numerals at all, so all four such
+        listings took the drawing number instead."""
+        self.assertEqual(self._ratemark("X", "6")["rate_val"], "10")
+        Contribution.objects.all().delete()
+        self.assertEqual(self._ratemark("V", "7")["rate_val"], "5")
+
+    def test_an_underivable_rate_omits_the_key_rather_than_inventing_one(self):
+        """Absent is not the same as empty, and neither is the same as a guess.
+
+        _apply_marking_edit merges on key presence (issue #111), so an omitted
+        rate_val leaves a live marking's own rate alone while an empty string
+        would clear it. Inventing one from the drawing number is worse than
+        both: it is wrong and it looks deliberate.
+        """
+        data = self._ratemark("PAID", "8")
+        self.assertNotIn("rate_val", data)
+
+    def test_an_edit_never_writes_a_drawing_number_over_a_live_rate(self):
+        """The 57 update rows are the ones that reach the public catalog.
+
+        Approving an edit merges rate_val onto an existing Marking, and
+        rate_val is a DecimalField, so a drawing number coerces silently and
+        nothing downstream can catch it.
+        """
+        self.doomed.type = "RATEMARK"
+        self.doomed.rate_val = 3
+        self.doomed.save(update_fields=["type", "rate_val"])
+
+        self.rows.append(cw_row(
+            vphc_key="ABINGDON#7", vphc_code="VPHC-VA-ABINGDON-7", src="T1:r10",
+            state="VA", county="Washington", town="ABINGDON",
+            town_key="ABINGDON", cancel_no="7", sheet_type="RATEMARK",
+            sheet_insc="3/PAID;PAID 3;PAID/3", sheet_colors="BLACK",
+            prod_code="ASCC6-VA-M9999", landing="update", verdict="resolved"))
+        self.lines.append({
+            "run": "test", "mode": "dryrun", "applied": False, "src": "T1:r10",
+            "town": "ABINGDON", "county": "Washington", "cancel": "7",
+            "action": "update", "target": "marking",
+            "target_code": "ASCC6-VA-M9999", "marking_id": self.doomed.pk,
+            "rule": "I3", "rule_version": 2, "confidence": 1.0,
+            "fields": ["width"], "before": {}, "after": {}, "rejected": {},
+            "why_unmatched": "", "editor_comment": "",
+        })
+        self.write()
+        self.run_apply(only="update")
+
+        contribution = Contribution.objects.get(
+            submitted_data__edit_marking_id=self.doomed.pk)
+        self.assertEqual(contribution.submitted_data["rate_val"], "3")
+
+        apply_contribution_to_catalog(contribution)
+        self.doomed.refresh_from_db()
+        self.assertEqual(int(self.doomed.rate_val), 3)
