@@ -114,6 +114,34 @@ describe("formatDatesSeenList", () => {
       ]),
     ).toBe("1849, 08/14/1855");
   });
+
+  it("collapses when every date is already shown as Earliest/Latest (issue #122)", () => {
+    // Two dates, both boundaries: the row would only restate the rows above it.
+    expect(
+      formatDatesSeenList(
+        [
+          { date: "1849-01-01", granularity: "YEAR" },
+          { date: "1855-01-01", granularity: "YEAR" },
+        ],
+        ["1849", "1855"],
+      ),
+    ).toBe("");
+  });
+
+  it("still lists when a date falls between the boundaries (issue #122)", () => {
+    // 1852 exists nowhere else on the page -- this is the ~7% of markings the
+    // row is kept for.
+    expect(
+      formatDatesSeenList(
+        [
+          { date: "1849-01-01", granularity: "YEAR" },
+          { date: "1852-01-01", granularity: "YEAR" },
+          { date: "1855-01-01", granularity: "YEAR" },
+        ],
+        ["1849", "1855"],
+      ),
+    ).toBe("1849, 1852, 1855");
+  });
 });
 
 describe("buildCatalogFieldValues dimensions", () => {
