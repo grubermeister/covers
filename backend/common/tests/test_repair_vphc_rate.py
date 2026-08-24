@@ -5,6 +5,7 @@ writes, a human submission that gets swept up, and a stale --expect that is
 trusted anyway.
 """
 import io
+from decimal import Decimal
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -70,6 +71,25 @@ class RepairVphcRateTests(TestCase):
             submitted_data=submitted_data, status=status,
             created_by=self.user, modified_by=self.user)
 
+    def _marking(self, inscription_txt, rate_val, code="ASCC6-VA-M1"):
+        """A published VPHC-cited RATEMARK -- what --audit-live looks for."""
+        office, _ = PostOffice.objects.get_or_create(
+            code="USA-VA1-1", defaults={
+                "name": "Abingdon", "created_by": self.user,
+                "modified_by": self.user})
+        PostOfficeRegion.objects.get_or_create(
+            post_office=office, region=self.va,
+            defaults={"created_by": self.user, "modified_by": self.user})
+        marking = Marking.objects.create(
+            code=code, type="RATEMARK", inscription_txt=inscription_txt,
+            rate_val=Decimal(rate_val), is_manuscript=False, is_irreg=False,
+            post_office=office, created_by=self.user, modified_by=self.user)
+        Citation.objects.create(
+            reference_work=self.reference, subject_type="MARKING",
+            subject_id=marking.pk, citation_detail="p. 4",
+            created_by=self.user, modified_by=self.user)
+        return marking
+
     def run_repair(self, **kw):
         out = io.StringIO()
         call_command("repair_vphc_rate", actor=self.user.pk, stdout=out, **kw)
@@ -118,24 +138,28 @@ class RepairVphcRateTests(TestCase):
         self.assertEqual(row.submitted_data["rate_val"], "4")
         self.assertIn("audit-live", output)
 
+    def test_a_space_separated_device_is_read_the_same_as_a_slashed_one(self):
+        """This call site passes a SINGLE stored inscription, not the
+        crosswalk's semicolon key set -- "DUE 3" rather than "3/DUE;DUE 3".
+        Both spellings reach production, so both must yield 3."""
+        row = self._contribution(payload(inscription_txt="DUE 3", rate_val="4"))
+        self.run_repair(commit=True)
+        row.refresh_from_db()
+        self.assertEqual(row.submitted_data["rate_val"], "3")
+
     # ----------------------------------------------------- the live catalog
 
-    def test_audit_live_finds_and_repairs_an_approved_marking(self):
-        office = PostOffice.objects.create(
-            code="USA-VA1-1", name="Abingdon",
-            created_by=self.user, modified_by=self.user)
-        PostOfficeRegion.objects.create(
-            post_office=office, region=self.va,
-            created_by=self.user, modified_by=self.user)
-        marking = Marking.objects.create(
-            code="ASCC6-VA-M1", type="RATEMARK", inscription_txt="3/DUE",
-            rate_val=4, is_manuscript=False, is_irreg=False, post_office=office,
-            created_by=self.user, modified_by=self.user)
-        Citation.objects.create(
-            reference_work=self.reference, subject_type="MARKING",
-            subject_id=marking.pk, citation_detail="p. 4",
-            created_by=self.user, modified_by=self.user)
+    def test_a_fractional_live_rate_is_not_truncated_into_a_false_match(self):
+        """rate_val is DecimalField(decimal_places=2). Comparing via int()
+        read a stored 2.50 as 2, matched a stated "2", and skipped a marking
+        that needed repairing."""
+        marking = self._marking(inscription_txt="2/PAID", rate_val="2.50")
+        self.run_repair(commit=True, audit_live=True)
+        marking.refresh_from_db()
+        self.assertEqual(marking.rate_val, Decimal("2.00"))
 
+    def test_audit_live_finds_and_repairs_an_approved_marking(self):
+        marking = self._marking(inscription_txt="3/DUE", rate_val="4")
         self.run_repair(commit=True, audit_live=True)
         marking.refresh_from_db()
         self.assertEqual(int(marking.rate_val), 3)

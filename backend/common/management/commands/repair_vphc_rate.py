@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import csv
 import os
+from decimal import Decimal, InvalidOperation
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
@@ -42,6 +43,14 @@ from common.models import Citation, Contribution, Marking, ReferenceWork
 from .apply_vphc_ledger import VPHC_REFERENCE_CODE, rate_from_inscription
 
 RATEMARK = "RATEMARK"
+
+
+def _same_rate(stored, stated):
+    """Numeric equality for a DecimalField against the string a device states."""
+    try:
+        return Decimal(stored) == Decimal(stated)
+    except (InvalidOperation, TypeError, ValueError):
+        return str(stored) == str(stated)
 
 
 def repaired_rate(submitted_data):
@@ -80,7 +89,9 @@ class Command(BaseCommand):
                  "must never be the one that errors.")
         parser.add_argument(
             "--expect", type=int, default=None,
-            help="Abort unless exactly this many rows need repair.")
+            help="Abort unless exactly this many CONTRIBUTION rows need "
+                 "repair. It does not cover --audit-live, whose catalog "
+                 "markings are counted and reported separately.")
         parser.add_argument(
             "--report", default="",
             help="Write the full before/after list to this CSV path.")
@@ -104,6 +115,13 @@ class Command(BaseCommand):
             actor = get_user_model().objects.get(pk=opts["actor"])
         except get_user_model().DoesNotExist:
             raise CommandError(f"no user with id {opts['actor']}")
+        if opts["actor"] == 1:
+            # 1 is the documented ingest actor, same as apply_vphc_ledger's
+            # default -- but every row this touches will be attributed to it,
+            # so the run log should say so rather than leave it implied.
+            self.stdout.write(self.style.WARNING(
+                f"actor defaulted to id 1 ({actor.get_username()}); "
+                f"every write will be attributed to them."))
 
         rows = list(Contribution.objects.all().order_by("id"))
         ours, protected = [], []
@@ -232,8 +250,12 @@ class Command(BaseCommand):
             stated = rate_from_inscription(marking.inscription_txt or "")
             if not stated:
                 continue
+            # Compare as Decimal, not via int(). rate_val is
+            # DecimalField(decimal_places=2), so int() truncates: a stored 2.50
+            # would read as 2, match a stated "2", and suppress a repair that
+            # should have fired.
             if marking.rate_val is not None and \
-                    str(int(marking.rate_val)) == stated:
+                    _same_rate(marking.rate_val, stated):
                 continue
             suspects.append((marking, stated))
 
