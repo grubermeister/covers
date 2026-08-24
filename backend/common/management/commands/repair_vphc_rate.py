@@ -251,6 +251,12 @@ class Command(BaseCommand):
                 f"{VPHC_REFERENCE_CODE} reference work), so it vouches for "
                 f"nothing.")
         if live_wrong:
+            # Raises on a dry run too, which is deliberate and matches --expect
+            # one guard above: these say "this invocation's assumptions are
+            # wrong", and that is as true when nothing is being written as when
+            # something is. Note the --commit path rarely reaches here at all --
+            # _audit_live(commit=True) repairs the markings and returns 0, so
+            # the single `sync` invocation works on a dirty catalog too.
             raise CommandError(
                 f"--sync-approved refused: --audit-live still reports "
                 f"{live_wrong} marking(s) carrying a wrong rate. Repair the "
@@ -365,4 +371,7 @@ class Command(BaseCommand):
                                             "modified_date"])
         self.stdout.write(self.style.SUCCESS(
             f"--audit-live: repaired {len(suspects)} marking(s)."))
+        # 0, not len(suspects): the block above is atomic, so reaching this
+        # line means every one of them committed. A failure would have
+        # propagated instead of returning a count that undercounts the damage.
         return 0

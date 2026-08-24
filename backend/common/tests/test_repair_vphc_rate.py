@@ -176,10 +176,16 @@ class RepairVphcRateTests(TestCase):
 
     def test_an_approved_payload_syncs_once_the_catalog_is_clean(self):
         row = self._approved()
-        self._marking(inscription_txt="1/PAID", rate_val="1")   # already right
+        marking = self._marking(inscription_txt="1/PAID", rate_val="1")
         self.run_repair(commit=True, audit_live=True, sync_approved=True)
         row.refresh_from_db()
         self.assertEqual(row.submitted_data["rate_val"], "1")
+        # The two repair paths must stay on their own side of the line: the
+        # payload sync writes Contributions, --audit-live writes Markings, and
+        # a correct marking is not touched by either.
+        marking.refresh_from_db()
+        self.assertEqual(marking.rate_val, Decimal("1.00"))
+        self.assertEqual(marking.modified_by, self.user)
 
     def test_it_refuses_while_any_marking_still_carries_a_wrong_rate(self):
         """The safety property. Syncing payloads while the catalog is wrong
