@@ -162,16 +162,17 @@ function associatedCoverDatesDisplay(
 function AssociatedCoverPreviewFields({ cover }: { cover: AssociatedCover }) {
   const c = cover.coverDetails;
   const typeText = coverTypeLabel(c?.type ?? null) || EMPTY;
-  const dateText = associatedCoverDatesDisplay(c) || EMPTY;
+  // The cover's own date is the per-cover evidence the marking's range is built
+  // from, so it gets its own line at the foot of the card rather than a cell in
+  // the grid -- see the "Dates seen" footer below.
+  const dateText = associatedCoverDatesDisplay(c);
+  const hasDate = Boolean(dateText) && dateText !== EMPTY;
   return (
+    <>
     <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
       <div className="min-w-0">
         <span className="text-muted-foreground">Type:</span>{" "}
         <span className="text-foreground break-words">{typeText}</span>
-      </div>
-      <div className="min-w-0">
-        <span className="text-muted-foreground">Date:</span>{" "}
-        <span className="text-foreground break-words">{dateText}</span>
       </div>
       {cover.isBackstamp && (
         <div className="min-w-0">
@@ -186,6 +187,12 @@ function AssociatedCoverPreviewFields({ cover }: { cover: AssociatedCover }) {
         </div>
       )}
     </dl>
+    {hasDate && (
+      <p className="mt-3 pt-2 border-t border-border/60 text-xs text-muted-foreground break-words">
+        Dates seen: {dateText}
+      </p>
+    )}
+    </>
   );
 }
 
