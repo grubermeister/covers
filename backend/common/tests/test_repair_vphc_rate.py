@@ -6,6 +6,7 @@ trusted anyway.
 """
 import io
 from decimal import Decimal
+from unittest import mock
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
@@ -143,7 +144,9 @@ class RepairVphcRateTests(TestCase):
         operator's scratch directory belongs to `reese`, so --report raised
         PermissionError and aborted the run *before* any repair. The report
         documents the work; it does not get to cancel it."""
-        output = self.run_repair(commit=True, report="/proc/nope/census.csv")
+        with mock.patch("builtins.open",
+                        side_effect=PermissionError(13, "Permission denied")):
+            output = self.run_repair(commit=True, report="/anywhere/census.csv")
         self.wrong.refresh_from_db()
         self.assertEqual(self.wrong.submitted_data["rate_val"], "3")
         self.assertIn("could not write the report", output)
