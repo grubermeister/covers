@@ -48,6 +48,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
@@ -906,6 +907,34 @@ def _read_nested_id(value: Any, snake: str, camel: str) -> int | None:
         return None
 
 
+def _town_match_key(name: str) -> str:
+    """Comparison key for a town name: blind to case, spacing and punctuation.
+
+    "ACCOMACK C.H.", "Accomack C. H." and "ACCOMACK CH" are one town; iexact
+    matching treated them as three. Letters and digits only, uppercased.
+    """
+    return re.sub(r"[^A-Z0-9]+", "", name.upper())
+
+
+def _next_post_office_code(region) -> str | None:
+    """Continue the region's code series, e.g. USA-VA1-1005.
+
+    Same rule as import_vphc_reference: next serial = highest existing numeric
+    suffix under the region prefix + 1. A region with no code of its own has no
+    series to continue; return None rather than minting "None-1".
+    """
+    if not region.code:
+        return None
+    used = PostOffice.objects.filter(
+        code__startswith=f"{region.code}-").values_list("code", flat=True)
+    top = 0
+    for code in used:
+        tail = code.rsplit("-", 1)[-1]
+        if tail.isdigit():
+            top = max(top, int(tail))
+    return f"{region.code}-{top + 1}"
+
+
 def _resolve_post_office(state_name: str, town_name: str, actor) -> PostOffice:
     """
     Resolve a PostOffice for (state_name, town_name), auto-creating the
@@ -923,13 +952,46 @@ def _resolve_post_office(state_name: str, town_name: str, actor) -> PostOffice:
         raise ContributionApplyError("Unknown state: {}".format(state_name))
 
     normalized_name = " ".join(town_name.strip().split()).title()
+    # .title() upcases the letter after EVERY apostrophe, so AYLETT'S became
+    # "Aylett'S". A trailing 'S is a possessive, never a name continuation;
+    # O'BRIEN -> "O'Brien" has no word-final 'S and is untouched.
+    normalized_name = re.sub(r"'S\b", "'s", normalized_name)
+
     po = (
         PostOffice.objects
         .filter(name__iexact=normalized_name, post_office_regions__region=region)
         .first()
     )
     if po is None:
+        # Rehearsing the 2,383-row VPHC drain (2026-08-24) showed iexact alone
+        # creating 74 duplicate towns: the book writes "Accomack C. H." where
+        # the catalog holds "ACCOMACK C.H". Fall back to a punctuation-blind
+        # match -- scoped to the region, because Martinsburg VA and
+        # Martinsburg WV are different towns (#94) and must never cross-match.
+        key = _town_match_key(town_name)
+        if key:
+            candidates = PostOffice.objects.filter(
+                post_office_regions__region=region
+            ).annotate(
+                # distinct=True: the junction join fans out, and a plain Count
+                # over a fanned-out join multiplies (ISSUE-2026-08-13-05).
+                marking_count=Count("markings", distinct=True),
+            )
+            matches = [c for c in candidates if _town_match_key(c.name) == key]
+            if matches:
+                # The catalog already holds spelling variants of one town
+                # (69 fragmented VA/WV names, issue #129), so the pick must be
+                # deterministic: a transferable town (has a code) beats an
+                # uncoded one, then the busiest, then the oldest.
+                matches.sort(key=lambda p: (p.code is None, -p.marking_count, p.pk))
+                po = matches[0]
+    if po is None:
         po = PostOffice.objects.create(
+            # An uncoded town cannot travel: export_state_bundle and
+            # drop_ascc_state both key on the USA-XX1- code prefix. The
+            # unique=True column turns a mint race into an IntegrityError,
+            # which the approval path already retries.
+            code=_next_post_office_code(region),
             name=normalized_name,
             created_by=actor,
             modified_by=actor,
