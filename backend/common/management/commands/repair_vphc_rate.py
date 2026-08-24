@@ -206,9 +206,26 @@ class Command(BaseCommand):
     # --------------------------------------------------------------- reports
 
     def _write_report(self, path, planned, blocked):
-        parent = os.path.dirname(path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
+        """Never fatal. The report is a convenience; the repair is the job.
+
+        On woco.dev this command runs as `wocod` while the operator's scratch
+        directory belongs to `reese`, so an unwritable --report path is the
+        normal accident, not an exotic one. Raising there aborted the run
+        *before* any repair -- the report killing the work it documents.
+        """
+        try:
+            parent = os.path.dirname(path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            self._write_report_rows(path, planned, blocked)
+        except OSError as err:
+            self.stdout.write(self.style.WARNING(
+                f"  could not write the report to {path}: {err}. "
+                f"Continuing -- the per-row list above is the same data."))
+            return
+        self.stdout.write(f"  report written to {path}")
+
+    def _write_report_rows(self, path, planned, blocked):
         with open(path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.writer(fh, lineterminator="\n")
             writer.writerow(["contribution_id", "status", "vphc_code",
@@ -224,7 +241,6 @@ class Command(BaseCommand):
                     "skipped (approved)"
                     if row.status == Contribution.STATUS_APPROVED else "repair",
                 ])
-        self.stdout.write(f"  report written to {path}")
 
     # ----------------------------------------------------- the live catalog
 

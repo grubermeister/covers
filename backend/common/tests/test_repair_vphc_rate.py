@@ -138,6 +138,16 @@ class RepairVphcRateTests(TestCase):
         self.assertEqual(row.submitted_data["rate_val"], "4")
         self.assertIn("audit-live", output)
 
+    def test_an_unwritable_report_warns_and_still_repairs(self):
+        """Hit for real on woco.dev: the command runs as `wocod` and the
+        operator's scratch directory belongs to `reese`, so --report raised
+        PermissionError and aborted the run *before* any repair. The report
+        documents the work; it does not get to cancel it."""
+        output = self.run_repair(commit=True, report="/proc/nope/census.csv")
+        self.wrong.refresh_from_db()
+        self.assertEqual(self.wrong.submitted_data["rate_val"], "3")
+        self.assertIn("could not write the report", output)
+
     def test_a_space_separated_device_is_read_the_same_as_a_slashed_one(self):
         """This call site passes a SINGLE stored inscription, not the
         crosswalk's semicolon key set -- "DUE 3" rather than "3/DUE;DUE 3".
