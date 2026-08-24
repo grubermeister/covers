@@ -780,7 +780,12 @@ const RecordDetail = () => {
     record.latestSeenCoverId != null
       ? `/record/${record.id}/cover/${record.latestSeenCoverId}`
       : undefined;
-  const datesSeenValue = formatDatesSeenList(record.datesSeen);
+  // Issue #122: the row is shown only where it still adds something beyond the
+  // Earliest/Latest rows above it, so it collapses on ~93% of markings.
+  const datesSeenValue = formatDatesSeenList(record.datesSeen, [
+    earliestValue,
+    latestValue,
+  ]);
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression
