@@ -140,3 +140,97 @@ class ResolvePostOfficeTests(TestCase):
 
         with self.assertRaises(ContributionApplyError):
             _resolve_post_office("Atlantis", "LYNCHBURG", self.user)
+
+
+class TownNameMatchingTests(TestCase):
+    """The 2026-08-24 drain rehearsal: iexact matching made 74 duplicate towns.
+
+    The book writes "Accomack C. H." where the catalog holds "ACCOMACK C.H",
+    so _resolve_post_office created a second Accomack -- with no code, which
+    also made it invisible to export_state_bundle and drop_ascc_state (both
+    key on the USA-XX1- prefix). 74 duplicates carrying 293 markings, caught
+    in the local rehearsal before the real drain ran.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.user = User.objects.create_user("importer", password="pw")
+        cls.virginia = Region.objects.create(
+            code="USA-VA1", name="Virginia", abbrev="VA", region_tier="STATE",
+            created_by=cls.user, modified_by=cls.user)
+        cls.west_virginia = Region.objects.create(
+            code="USA-WV1", name="West Virginia", abbrev="WV", region_tier="STATE",
+            created_by=cls.user, modified_by=cls.user)
+
+        def town(name, code, region):
+            po = PostOffice.objects.create(
+                name=name, code=code, created_by=cls.user, modified_by=cls.user)
+            PostOfficeRegion.objects.create(
+                post_office=po, region=region,
+                created_by=cls.user, modified_by=cls.user)
+            return po
+
+        cls.accomack = town("ACCOMACK C.H.", "USA-VA1-1004", cls.virginia)
+        # The real fragmented pair from woco.dev (issue #129): both coded,
+        # markings split across them.
+        cls.amelia_bare = town("AMELIA C.H", "USA-VA1-15", cls.virginia)
+        cls.amelia_dotted = town("AMELIA C.H.", "USA-VA1-951", cls.virginia)
+        # ⚠️ Martinsburg exists in BOTH states as different towns (#94). A
+        # fixture without this pair passes even if matching ignores the region.
+        cls.martinsburg_va = town("MARTINSBURG", "USA-VA1-500", cls.virginia)
+        cls.martinsburg_wv = town("MARTINSBURG", "USA-WV1-100", cls.west_virginia)
+
+    def _add_marking(self, po):
+        from common.models import Marking
+        return Marking.objects.create(
+            type="TOWNMARK", catalog_txt="x", inscription_txt="x", desc="",
+            is_manuscript=False, post_office=po,
+            created_by=self.user, modified_by=self.user)
+
+    def test_a_punctuation_variant_resolves_to_the_existing_town(self):
+        """The live failure shape: "Accomack C. H." beside "ACCOMACK C.H."."""
+        before = PostOffice.objects.count()
+
+        po = _resolve_post_office("VA", "Accomack C. H.", self.user)
+
+        self.assertEqual(po, self.accomack)
+        self.assertEqual(PostOffice.objects.count(), before)
+
+    def test_matching_never_crosses_a_state_boundary(self):
+        """Martinsburg WV must not swallow into Martinsburg VA, or back."""
+        self.assertEqual(
+            _resolve_post_office("WV", "Martinsburg", self.user),
+            self.martinsburg_wv)
+        self.assertEqual(
+            _resolve_post_office("VA", "Martinsburg", self.user),
+            self.martinsburg_va)
+
+    def test_among_variants_the_busiest_coded_town_wins(self):
+        """Deterministic pick, so 2,383 approvals land on ONE of the pair."""
+        self._add_marking(self.amelia_dotted)
+        self._add_marking(self.amelia_dotted)
+        self._add_marking(self.amelia_bare)
+
+        po = _resolve_post_office("VA", "Amelia C. H.", self.user)
+
+        self.assertEqual(po, self.amelia_dotted)
+
+    def test_a_genuinely_new_town_gets_the_next_code_in_the_series(self):
+        """An uncoded town cannot travel to prod; every create must mint."""
+        po = _resolve_post_office("VA", "BRAND NEW TOWN", self.user)
+
+        # Highest existing VA serial in this fixture is 1004.
+        self.assertEqual(po.code, "USA-VA1-1005")
+
+    def test_consecutive_creates_continue_the_series(self):
+        first = _resolve_post_office("WV", "FIRST NEW TOWN", self.user)
+        second = _resolve_post_office("WV", "SECOND NEW TOWN", self.user)
+
+        self.assertEqual(first.code, "USA-WV1-101")
+        self.assertEqual(second.code, "USA-WV1-102")
+
+    def test_a_possessive_name_is_not_mangled_by_title_casing(self):
+        """.title() produced "Aylett'S"; six markings landed on it."""
+        po = _resolve_post_office("VA", "AYLETT'S", self.user)
+
+        self.assertEqual(po.name, "Aylett's")

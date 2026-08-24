@@ -1,5 +1,41 @@
 # Decisions
 
+## 2026-08-24 — Town resolution matches punctuation-blind and mints a code on create
+
+**What was decided.** `_resolve_post_office` (`backend/common/contribution_apply.py`) gained three
+behaviours, in this order:
+
+1. **Exact (`iexact`) name match first, unchanged** — the cheap path and the common case.
+2. **Punctuation-blind fallback**: if `iexact` misses, compare on `_town_match_key()` — uppercase,
+   letters and digits only — against the towns already linked to the resolved state region. Among
+   several variants of one name the pick is deterministic: **coded beats uncoded, then most
+   markings, then lowest id.** The count uses `Count("markings", distinct=True)` because the
+   junction join fans out (ISSUE-2026-08-13-05).
+3. **Every auto-created town gets a code**, `_next_post_office_code()` — highest numeric suffix
+   under the region's `USA-XX1-` prefix + 1, the same series rule `import_vphc_reference` uses.
+   `PostOffice.code` is `unique=True`, so a mint race becomes an `IntegrityError`, which the
+   approval path already retries. Also: the generated display name un-mangles possessives
+   (`AYLETT'S` → `Aylett's`, not `.title()`'s `Aylett'S`).
+
+**Why.** Rehearsing the 2,383-row VPHC drain against a copy of the dev DB: approvals succeeded 100%
+and then verification found **74 duplicate towns, all uncoded, carrying 293 markings**. The book
+writes `Accomack C. H.` where the catalog holds `ACCOMACK C.H`; `iexact` treats those as different
+towns, and the created row had no code — making it invisible to `export_state_bundle` and
+`drop_ascc_state`, which key on the code prefix. Third incident traced to this function
+(2026-08-19 region resolution; #119's homonyms), first one caught before reaching a box.
+
+**The boundaries.** Matching stays **region-scoped** — Martinsburg VA and Martinsburg WV are
+different towns (#94) and must never cross-match; a punctuation-only key (e.g. `"..."`) never
+matches anything. The fallback deliberately does NOT merge the 69 pre-existing variant pairs on
+woco.dev — that is a data change with its own review (workspace issue #129); this change only stops
+the fragmentation growing.
+
+**Source or evidence.** `common.tests.test_state_term_resolution.TownNameMatchingTests` — six
+tests, five verified failing against the unfixed code (the sixth, the cross-state guard, passes on
+both by design: it guards against a wrong fix). Rehearsal counts: 69→107 fragmented and 2→77
+uncoded under the old code; expected 69→69 and 2→2-ish under the fix (re-rehearsal pending at time
+of writing).
+
 ## 2026-08-23 — Catalog return path reuses the Issue #87 sessionStorage mirror, not router state
 
 **What was decided.** Returning to the catalog from a marking detail restores the filters, sort and
