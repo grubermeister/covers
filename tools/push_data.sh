@@ -10,6 +10,11 @@
 # override the full target. Files on the server are always owned by wocod
 # regardless of who pushes.
 #
+# With --import, the server-side reload_data.sh now takes a TAGGED BACKUP first
+# (pre-import-<bundle>) and refuses to run if no backup tool is installed. See
+# deploy/install-backup.sh and docs/devel/BACKUP.md. Override, at your own risk,
+# with WOCO_ALLOW_UNBACKED_IMPORT=1.
+#
 # Prereq on the server: your SSH user needs passwordless sudo for exactly the
 # two commands below. Use a scoped drop-in (replace <user> with your SSH user)
 # rather than blanket NOPASSWD -- blanket sudo makes the SSH key root-equivalent:
@@ -55,7 +60,7 @@ while [[ $# -gt 0 ]]; do
       shift
       ;;
     -h|--help)
-      sed -n '2,27p' "$0"; exit 0 ;;
+      sed -n '2,33p' "$0"; exit 0 ;;
     *) echo "Unknown flag: $1" >&2; exit 2 ;;
   esac
   shift

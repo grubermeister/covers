@@ -424,6 +424,14 @@ export interface MarkingRecord {
   citations: MarkingCitation[];
   isRemoved: boolean;
   canRemove: boolean;
+  /**
+   * Recycle-bin metadata: only GET /markings/recycle-bin/ returns these, so they
+   * are optional rather than required -- a marking built from any other endpoint
+   * (or a test fixture) legitimately has no removal record (#89).
+   */
+  removedAt?: string | null;
+  removedByUsername?: string | null;
+  removalReason?: string;
   // Whether a state editor has personally vetted this record (Issue #22).
   isReviewed: boolean;
   /** Submitter opted in to show their name on the public marking detail page. */
@@ -435,6 +443,11 @@ export interface MarkingRecord {
   // who is not that contributor or an editor, so a non-empty value is safe to show.
   commentForEditor: string;
   editorFeedback: string;
+  // Issue #110. The ingest's "[VPHC: ...]" markers are stripped out of `desc`
+  // on approval because `desc` is public; this is the doubt they carried,
+  // returned only to editors and the contributor. Null for everyone else, so a
+  // non-null value is already authorised to render.
+  vphcProvenance: Record<string, unknown> | null;
 }
 
 export interface MarkingChangelogEvent {
@@ -619,16 +632,79 @@ function mapCitationList(raw: unknown): MarkingCitation[] {
 }
 
 /**
+ * Region tiers that are sub-state divisions rather than jurisdictions in their
+ * own right. Mirrors Region.SUBREGION_TIERS on the backend. A marking's
+ * `regions` list carries every link, county rows included, so any consumer
+ * that means "state/territory" has to filter. (issue #103)
+ */
+const SUBREGION_TIERS = new Set(["COUNTY", "CITY"]);
+
+/** The state/territory affiliations of a marking's town, county rows removed. */
+export function primaryRegions(
+  record: Pick<MarkingRecord, "regions">,
+): MarkingRegion[] {
+  return record.regions.filter((r) => !SUBREGION_TIERS.has(r.regionTier.toUpperCase()));
+}
+
+/** The county rows of a marking's town, which render as their own field. */
+export function countyRegions(
+  record: Pick<MarkingRecord, "regions">,
+): MarkingRegion[] {
+  return record.regions.filter((r) => r.regionTier.toUpperCase() === "COUNTY");
+}
+
+/**
  * Display string for the "State/Territory" row: every territory a town belonged
  * to, current-first, comma-separated (multi-territory support, #24). Falls back
  * to the single primary region (`state`) when the regions list is absent (e.g.
  * search-list payloads that don't include it). Exported for unit testing.
+ *
+ * Counties are excluded: since the VPHC ingest every VA/WV town is also linked
+ * to its county, which made this read "Virginia, Accomack". (issue #103)
  */
 export function regionsDisplay(
   record: Pick<MarkingRecord, "regions" | "state">,
 ): string {
-  const names = record.regions.map((r) => r.name.trim()).filter((n) => n !== "");
+  const names = primaryRegions(record)
+    .map((r) => r.name.trim())
+    .filter((n) => n !== "");
   return names.length > 0 ? names.join(", ") : record.state;
+}
+
+/** Display string for the "County" row: comma-separated county names, or "". */
+export function countyDisplay(record: Pick<MarkingRecord, "regions">): string {
+  return countyRegions(record)
+    .map((r) => r.name.trim())
+    .filter((n) => n !== "")
+    .join(", ");
+}
+
+/**
+ * Candidate targets for "move this image to another marking" (issue #104 / C3).
+ *
+ * A VPHC scan can hold two postal devices in one PNG -- a PAID handstamp above
+ * a 10 ratemark. The editor crops the second device out (which lands a new
+ * image on the same marking, because crop deliberately never relocates) and
+ * then reassigns the crop to the marking it actually belongs to. That marking
+ * is always at the same post office, so the picker is scoped to this office.
+ *
+ * `siblings` is expected to come from `getMarkingsPage({ postOfficeId })`, but
+ * the post-office match is re-checked here rather than trusted: a caller that
+ * passed the wrong filter would otherwise offer an unrelated town's markings,
+ * and a mis-targeted move is silent damage to the catalog.
+ *
+ * Exported for unit testing.
+ */
+export function moveTargetCandidates(
+  siblings: MarkingRecord[],
+  current: Pick<MarkingRecord, "id" | "postOfficeId">,
+): MarkingRecord[] {
+  // Without a post office there is no bounded set to offer, so offer nothing
+  // rather than every marking that also happens to lack one.
+  if (current.postOfficeId == null) return [];
+  return siblings.filter(
+    (m) => m.id !== current.id && m.postOfficeId === current.postOfficeId,
+  );
 }
 
 function mapRegionList(raw: unknown): MarkingRegion[] {
@@ -708,6 +784,10 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     citations: mapCitationList(o.citations),
     isRemoved: Boolean((raw as { is_removed?: boolean }).is_removed),
     canRemove: Boolean((raw as { can_remove?: boolean }).can_remove),
+    removedAt: (raw as { removed_at?: string | null }).removed_at ?? null,
+    removedByUsername:
+      (raw as { removed_by_username?: string | null }).removed_by_username ?? null,
+    removalReason: String((raw as { removal_reason?: string }).removal_reason ?? ""),
     isReviewed: Boolean((raw as { is_reviewed?: boolean }).is_reviewed),
     displaySubmitterName: Boolean(o.display_submitter_name),
     submitterName:
@@ -716,6 +796,11 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
         : null,
     commentForEditor: toStr(o.comment_for_editor),
     editorFeedback: toStr(o.editor_feedback),
+    vphcProvenance:
+      o.vphc_provenance && typeof o.vphc_provenance === "object"
+        && !Array.isArray(o.vphc_provenance)
+        ? (o.vphc_provenance as Record<string, unknown>)
+        : null,
   };
 }
 
@@ -731,6 +816,12 @@ export async function getMarkingsPage(
     color?: string;
     state?: string;
     town?: string;
+    /**
+     * Exact post office id. Distinct from `town`, which is a name-contains
+     * match server-side and so cannot be used to enumerate one office's
+     * markings ("Richmond" also matches "New Richmond"). Issue #104 / C3.
+     */
+    postOfficeId?: number;
     beginYear?: string;
     endYear?: string;
     height?: string;
@@ -755,6 +846,9 @@ export async function getMarkingsPage(
   if (opt.color != null && opt.color !== "" && opt.color !== "all") params.color = opt.color;
   if (opt.state != null && opt.state !== "" && opt.state !== "all") params.state = opt.state.trim();
   if (opt.town?.trim()) params.town = opt.town.trim();
+  if (opt.postOfficeId != null && Number.isFinite(opt.postOfficeId)) {
+    params.post_office = String(opt.postOfficeId);
+  }
   if (opt.beginYear?.trim()) params.earliest_use_year_min = opt.beginYear.trim();
   if (opt.endYear?.trim()) params.latest_use_year_max = opt.endYear.trim();
   if (opt.height?.trim()) params.height = opt.height.trim();

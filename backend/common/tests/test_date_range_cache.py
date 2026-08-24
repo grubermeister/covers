@@ -68,7 +68,13 @@ class DateRangeSignalTests(DateRangeCacheBase):
         row = self._date("MARKING", marking.pk, "1850-01-01")
         self.assertEqual(self._range(marking), (date(1850, 1, 1), "YEAR", date(1850, 1, 1), "YEAR"))
 
-        row.date = "1848-06-01"
+        # Update through the component fields, not `date`. Since the partial-date
+        # work, date_year/month/day are authoritative and `date` is derived from
+        # them (DateSeen.generated_date_for_parts), so assigning `date` on a row
+        # that already has components set is ignored and then trips the
+        # granularity cross-check. This mirrors contribution_apply, which keys
+        # every DateSeen write on the components.
+        row.date_year, row.date_month, row.date_day = 1848, 6, None
         row.granularity = "MONTH"
         row.save()
         self.assertEqual(self._range(marking), (date(1848, 6, 1), "MONTH", date(1848, 6, 1), "MONTH"))
@@ -85,6 +91,53 @@ class DateRangeSignalTests(DateRangeCacheBase):
         # Equal earliest boundary: the direct MARKING row supplies granularity.
         self.assertEqual(self._range(marking)[0:2], (date(1850, 1, 1), "YEAR"))
         self.assertEqual(self._range(marking)[2:4], (date(1850, 1, 1), "YEAR"))
+
+    def test_finer_row_inside_the_boundary_year_supplies_the_range(self):
+        # Issue #121, Ian's case: a bare year is stored as a Jan-1 floor, so it
+        # used to beat a real date in the same year. The precise row describes
+        # that boundary better and must supply both ends.
+        marking = self._marking()
+        self._date("MARKING", marking.pk, date(1856, 1, 1), "YEAR")
+        self._date("MARKING", marking.pk, date(1856, 3, 12), "DAY")
+
+        self.assertEqual(
+            self._range(marking),
+            (date(1856, 3, 12), "DAY", date(1856, 3, 12), "DAY"),
+        )
+
+    def test_coarser_but_genuinely_earlier_year_keeps_the_earliest_boundary(self):
+        # Issue #121 open question 1: chronology wins across years. 1855 is
+        # genuinely earlier than 1856-03-12, so precision must not promote the
+        # later row. Flipping this rule should require editing this test.
+        marking = self._marking()
+        self._date("MARKING", marking.pk, date(1855, 1, 1), "YEAR")
+        self._date("MARKING", marking.pk, date(1856, 3, 12), "DAY")
+
+        self.assertEqual(self._range(marking)[0:2], (date(1855, 1, 1), "YEAR"))
+        self.assertEqual(self._range(marking)[2:4], (date(1856, 3, 12), "DAY"))
+
+    def test_month_row_stays_the_latest_when_the_finer_row_is_earlier(self):
+        # Issue #121 open question 2: a month-only row later in the same year is
+        # genuinely later evidence, so "most granular" must not drag the latest
+        # boundary backwards to March.
+        marking = self._marking()
+        self._date("MARKING", marking.pk, date(1860, 3, 5), "DAY")
+        self._date("MARKING", marking.pk, date(1860, 11, 1), "MONTH")
+
+        self.assertEqual(
+            self._range(marking),
+            (date(1860, 3, 5), "DAY", date(1860, 11, 1), "MONTH"),
+        )
+
+    def test_cover_row_refines_a_direct_year_row(self):
+        # The common real shape: the catalog knows only the year, the submitted
+        # cover carries the day. Narrowing is not gated on the source.
+        marking = self._marking()
+        cover = self._cover(marking)
+        self._date("MARKING", marking.pk, date(1856, 1, 1), "YEAR")
+        self._date("COVER", cover.pk, date(1856, 3, 12), "DAY")
+
+        self.assertEqual(self._range(marking)[0:2], (date(1856, 3, 12), "DAY"))
 
     def test_cover_date_widens_and_fans_out_to_all_linked_markings(self):
         m1, m2 = self._marking("A"), self._marking("B")

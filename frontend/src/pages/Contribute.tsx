@@ -53,6 +53,8 @@ import {
 import { WrongImageKindWarning } from "@/components/WrongImageKindWarning";
 import { looksLikeWrongKind, measureImageFile } from "@/lib/imageShape";
 import { useToast } from "@/hooks/use-toast";
+import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
+import { catalogHref } from "@/lib/catalogParams";
 import { useAuth } from "@/hooks/useAuth";
 import {
   sanitizeMmInput,
@@ -1272,7 +1274,7 @@ const Contribute = () => {
       navigate(`/record/${fallbackMarkingId}`);
       return;
     }
-    navigate("/dashboard");
+    navigate(dashboardHref());
   };
 
   const handleBackFromNewMarking = () => {
@@ -1286,7 +1288,7 @@ const Contribute = () => {
       navigate(-1);
       return;
     }
-    navigate("/dashboard");
+    navigate(dashboardHref());
   };
 
   const townOptions = useMemo(() => {
@@ -1783,17 +1785,19 @@ const Contribute = () => {
         if (!isManuscriptSelected && shapeIdVal != null) form.append("shape_id", String(shapeIdVal));
         if (colorIdVal != null) form.append("color_id", String(colorIdVal));
         form.append("color", colorVal);
-        if (widthToSend) form.append("width_mm", widthToSend);
-        if (heightToSend) form.append("height_mm", heightToSend);
+        // Approval merges rather than replaces (RFC 7396), so an omitted key
+        // means "leave this alone" -- which makes an omitted key the wrong way
+        // to say "the contributor emptied this box". Send these unconditionally
+        // and let "" carry the clear.
+        form.append("width_mm", widthToSend);
+        form.append("height_mm", heightToSend);
         form.append("is_manuscript", String(isManuscriptSelected));
+        form.append("impression", isManuscriptSelected ? "" : impression.trim());
         if (!isManuscriptSelected) {
           form.append("is_irreg", String(isIrregular));
-          if (impression.trim()) form.append("impression", impression.trim());
         }
-        if (showRateValueField && rateValueToSend) form.append("rate_val", rateValueToSend);
-        if (description.trim()) {
-          form.append("desc", description.trim());
-        }
+        form.append("rate_val", showRateValueField ? rateValueToSend : "");
+        form.append("desc", description.trim());
         form.append("display_submitter_name", String(displaySubmitterName));
         if (canEditCatalogCode && catalogCodeToSend) {
           form.append("catalog_code", catalogCodeToSend);
@@ -1803,9 +1807,14 @@ const Contribute = () => {
         if (referenceWorkDetailsToSend.length > 0) {
           form.append("reference_work_details", JSON.stringify(referenceWorkDetailsToSend));
         }
-        if (!isManuscriptSelected && letteringId) form.append("lettering_style_id", letteringId);
-        if (!isManuscriptSelected && letteringId) form.append("lettering_id", letteringId);
-        if (showDateFormatField && dateFmtCode) form.append("date_fmt", dateFmtCode);
+        // Both spellings carry the same value on purpose: the backend's
+        // _resolve_lettering accepts either, and older payloads use the other
+        // one. Do not "clean up" to a single key without changing
+        // _LETTERING_KEYS in common/contribution_apply.py first.
+        const letteringToSend = isManuscriptSelected ? "" : letteringId || "";
+        form.append("lettering_style_id", letteringToSend);
+        form.append("lettering_id", letteringToSend);
+        form.append("date_fmt", showDateFormatField ? dateFmtCode : "");
         // ERD/LRD are editor-only (issue #27): never send them from a
         // non-editor, even if stale state lingers. The server also strips them.
         if (isStateEditor && erdToSend) {
@@ -1858,23 +1867,33 @@ const Contribute = () => {
           shape_id: isManuscriptSelected ? null : shapeIdVal ?? null,
           color_id: colorIdVal ?? undefined,
           color: colorVal,
-          width_mm: widthToSend || undefined,
-          height_mm: heightToSend || undefined,
+          // Approval merges rather than replaces (RFC 7396), so an omitted key
+          // means "leave this alone" -- which makes an omitted key the wrong
+          // way to say "the contributor emptied this box". These are always
+          // present, and "" carries the clear. `undefined` would be dropped by
+          // JSON.stringify and read as silence.
+          width_mm: widthToSend,
+          height_mm: heightToSend,
           is_manuscript: isManuscriptSelected,
           is_irreg: isManuscriptSelected ? null : isIrregular,
-          impression: isManuscriptSelected ? null : impression.trim() || undefined,
-          rate_val: showRateValueField ? rateValueToSend || undefined : undefined,
-          desc: description.trim() || undefined,
+          impression: isManuscriptSelected ? null : impression.trim(),
+          // "" when the rate field is not shown is deliberate, not an
+          // oversight: the field is hidden because this marking type carries
+          // no rate, so a rate left over from a previous type should clear.
+          rate_val: showRateValueField ? rateValueToSend : "",
+          desc: description.trim(),
           display_submitter_name: displaySubmitterName,
           ...(canEditCatalogCode && catalogCodeToSend
             ? { catalog_code: catalogCodeToSend }
             : {}),
           inscription_txt: inscriptionToSend || undefined,
-          reference_work_ids: referenceWorkIdsToSend.length > 0 ? referenceWorkIdsToSend : undefined,
-          reference_work_details: referenceWorkDetailsToSend.length > 0 ? referenceWorkDetailsToSend : undefined,
-          lettering_style_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
-          lettering_id: isManuscriptSelected ? null : letteringId ? Number(letteringId) : undefined,
-          date_fmt: showDateFormatField && dateFmtCode ? dateFmtCode : undefined,
+          // An empty list is a real instruction ("remove every citation"), so
+          // it has to be sent rather than collapsed to undefined.
+          reference_work_ids: referenceWorkIdsToSend,
+          reference_work_details: referenceWorkDetailsToSend,
+          lettering_style_id: isManuscriptSelected || !letteringId ? null : Number(letteringId),
+          lettering_id: isManuscriptSelected || !letteringId ? null : Number(letteringId),
+          date_fmt: showDateFormatField ? dateFmtCode : "",
           ...(isStateEditor && erdToSend
             ? markingBoundaryDatePayload("marking_erd", erdToSend)
             : {}),
@@ -1910,7 +1929,7 @@ const Contribute = () => {
       });
 
       if (saveAsDraft) {
-        navigate("/dashboard", { state: { tab: "submissions" } });
+        navigate(dashboardHrefForTab("submissions"));
         return;
       }
 
@@ -1930,11 +1949,14 @@ const Contribute = () => {
         if (result.contributionId != null) {
           navigate(`/contribution/${result.contributionId}`, { state: { fromDashboard: true } });
         } else if (fromDashboardDirect || fromDashboard || fromDashboardViaDetail) {
-          navigate("/dashboard");
+          // Issue #87: back to the dashboard view they left, filters intact.
+          navigate(dashboardHref());
         } else if (fromSearch) {
-          navigate("/search");
+          // Same as the dashboard branch above, for the catalog: restore the
+          // filtered view they were browsing rather than a bare catalog.
+          navigate(catalogHref());
         } else {
-          navigate("/dashboard");
+          navigate(dashboardHref());
         }
         return;
       }
@@ -1951,7 +1973,7 @@ const Contribute = () => {
       } else if (window.history.length > 1) {
         navigate(-1);
       } else {
-        navigate("/dashboard");
+        navigate(dashboardHref());
       }
       return;
     } catch (err: unknown) {
@@ -3178,7 +3200,7 @@ const Contribute = () => {
                             try {
                               await deleteOwnContribution(editContributionId);
                               toast({ title: "Draft deleted" });
-                              navigate("/dashboard");
+                              navigate(dashboardHref());
                             } catch (err: unknown) {
                               toast({
                                 title: "Could not delete draft",

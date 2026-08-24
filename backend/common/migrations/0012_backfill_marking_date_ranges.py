@@ -14,6 +14,15 @@ def backfill_date_ranges(apps, schema_editor):
     # Pure helper shared with the runtime signal path and the recompute
     # management command; it accepts model classes, so historical models
     # (which lack custom managers/methods) work identically.
+    #
+    # This runtime import is INTENTIONALLY not frozen: the columns are a pure
+    # idempotent cache, so a fresh install backfilling with today's rule rather
+    # than the rule of 2026-08-05 is correct, not a regression (0017 makes both
+    # paths converge). The cost is that this signature is a frozen contract --
+    # refresh_marking_date_ranges must keep accepting these kwargs and must keep
+    # reading only fields that exist at this point in the migration graph
+    # (date, granularity, pk, subject_type, subject_id), or a fresh `migrate`
+    # crashes here.
     from common.date_range import refresh_marking_date_ranges
 
     Marking = apps.get_model("common", "Marking")

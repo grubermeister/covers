@@ -7,10 +7,13 @@ A marking's displayed use range is the min/max over two evidence sources:
      (subject_type='COVER'); CoverMarking.review_status is deliberately NOT
      consulted, matching the retired ``with_date_range()`` annotation.
 
-Tie policy (must match the retired annotation exactly): when both sources
-share a boundary date, the direct MARKING row supplies the granularity. Within
-a source, the boundary row is chosen by (date, pk) ascending for earliest and
-(date, pk) descending for latest.
+Tie policy: when both sources share a boundary date, the direct MARKING row
+supplies the granularity, and within a source the lowest pk wins. That rule
+(inherited from the retired annotation) now applies when ``_fold`` collapses
+rows that share a stored date, rather than as a component of the comparison.
+
+Boundary semantics live in ``_resolve`` and nowhere else -- read its docstring
+before changing what a marking displays as its range (issue #121).
 
 These helpers deliberately take model classes as keyword arguments so the same
 code serves the live models, the data migration's historical models (which
@@ -20,10 +23,38 @@ Column writes go through ``QuerySet.update()`` / ``bulk_update()`` only: no
 ``save()``, so no signals fire (no recursion) and django-reversion records no
 Version churn for these derived-value refreshes.
 """
+import calendar
 import threading
 from contextlib import contextmanager
+from datetime import date as date_cls
 
 _state = threading.local()
+
+# Only DAY/MONTH/YEAR rows carry a stored ``date`` and so reach this module
+# (see DateSeen.generated_date_for_parts). Lower rank = more precise.
+GRANULARITY_RANK = {'DAY': 0, 'MONTH': 1, 'YEAR': 2}
+_COARSEST_RANK = 3
+
+
+def _rank(granularity):
+    """Precision of a granularity; unknown values sort as coarsest."""
+    return GRANULARITY_RANK.get(granularity, _COARSEST_RANK)
+
+
+def _interval(d, granularity):
+    """The (first_day, last_day) span a stored (date, granularity) pair covers.
+
+    ``DateSeen.generated_date_for_parts`` stores the FLOOR of the span -- YEAR
+    -> Jan 1, MONTH -> the 1st, DAY -> the day itself -- so ``d`` is always the
+    span's start and only the end varies. That floor is why a bare year used to
+    beat a real date in the same year (issue #121).
+    """
+    if granularity == 'YEAR':
+        return date_cls(d.year, 1, 1), date_cls(d.year, 12, 31)
+    if granularity == 'MONTH':
+        last = calendar.monthrange(d.year, d.month)[1]
+        return date_cls(d.year, d.month, 1), date_cls(d.year, d.month, last)
+    return d, d
 
 
 def recompute_suppressed():
@@ -67,20 +98,85 @@ def markings_affected_by_date_seen(subject_type, subject_id, *, CoverMarking=Non
 
 
 def _fold(bounds, key, date, granularity, pk, source):
-    """Track earliest/latest candidates for one marking.
+    """Collect one DateSeen row as a boundary candidate for one marking.
 
-    bounds[key] = [ (date, pk, gran, source) earliest, (date, -pk...) latest ]
-    Source 0 = direct MARKING row, 1 = cover-derived; on an equal boundary
-    date the direct row must win, so source is the second sort component for
-    date-ties and pk only breaks ties within a source.
+    bounds[key] = {stored_date: (source, pk, granularity)} -- at most one
+    candidate per distinct stored date.
+
+    Which row survives a same-date collision IS the inherited tie policy,
+    unchanged: source 0 (direct MARKING row) beats source 1 (cover-derived),
+    then the lowest pk. The retired keys agreed on that winner at both ends --
+    earliest minimised (date, source, pk) and latest maximised
+    (date, -source, -pk), and both select source 0 / lowest pk -- so one
+    shared per-date representative is behaviour-preserving.
     """
-    entry = bounds.setdefault(key, [None, None])
-    earliest_key = (date, source, pk)
-    latest_key = (date, -source, -pk)
-    if entry[0] is None or earliest_key < entry[0][0]:
-        entry[0] = (earliest_key, date, granularity)
-    if entry[1] is None or latest_key > entry[1][0]:
-        entry[1] = (latest_key, date, granularity)
+    per_date = bounds.setdefault(key, {})
+    current = per_date.get(date)
+    if current is None or (source, pk) < (current[0], current[1]):
+        per_date[date] = (source, pk, granularity)
+
+
+def _boundary_key(item, *, latest):
+    """Sort key for one candidate ``(date, granularity, source, pk)``."""
+    d, gran, source, pk = item
+    start, end = _interval(d, gran)
+    if latest:
+        # maximised: latest span END, then most precise, then latest date.
+        return (end, -_rank(gran), d, -source, -pk)
+    # minimised: earliest span START (== the stored date), then most precise.
+    return (start, _rank(gran), d, source, pk)
+
+
+def _resolve(candidates, *, latest):
+    """Pick a marking's boundary, then descend into the most precise evidence
+    lying inside it.
+
+    ISSUE #121 POLICY POINT -- the only place boundary semantics are decided.
+    No caller, signal, migration or command knows anything about ranking.
+
+    Step 1 -- chronology first (OPEN QUESTION 1, cross-year). The boundary is
+    the candidate whose covered span starts earliest / ends latest. A coarse
+    row that is genuinely earlier still wins: YEAR 1855 beats DAY 1856-03-12 on
+    the earliest end. To make precision beat chronology instead, drop the
+    leading start/end component of ``_boundary_key``; nothing else moves.
+
+    Step 2 -- the #121 fix. A YEAR row is a span, not a day. If another
+    candidate's whole span sits inside the winner's and carries a DIFFERENT
+    stored date, it is more precise evidence about the same boundary and
+    replaces it: 1856 (YEAR, stored 1856-01-01) + 1856-03-12 (DAY) reports
+    1856-03-12 / DAY. Repeat until nothing narrows further.
+
+    "Different stored date" is load-bearing: same-date candidates were already
+    settled by the source rule in ``_fold`` (the direct MARKING row supplies
+    the granularity) and must not be re-litigated here.
+
+    OPEN QUESTION 2 (latest end: DAY 1860-03-05 vs MONTH 1860-11). Ordering by
+    span END keeps 1860-11 as the latest -- the month-only row is genuinely
+    later evidence, and March never enters November's span, so step 2 cannot
+    drag the boundary backwards. If the finest row should instead win anywhere
+    within the year, widen the containment test below to same-year.
+
+    Because the stored date is always the span's start, step 1 reproduces the
+    retired ``min``/``max`` by date exactly and step 2 can only move a boundary
+    FORWARD inside the winning span. No boundary's year can change, so the year
+    filters and the range endpoint are unaffected.
+    """
+    items = [(d, gran, source, pk) for d, (source, pk, gran) in candidates.items()]
+    pick = max if latest else min
+    winner = pick(items, key=lambda i: _boundary_key(i, latest=latest))
+    while True:
+        w_start, w_end = _interval(winner[0], winner[1])
+        inside = []
+        for item in items:
+            if item[0] == winner[0]:
+                continue
+            i_start, i_end = _interval(item[0], item[1])
+            if w_start <= i_start and i_end <= w_end:
+                inside.append(item)
+        if not inside:
+            return winner[0], winner[1]
+        # Each step moves to a strictly narrower span, so this terminates.
+        winner = pick(inside, key=lambda i: _boundary_key(i, latest=latest))
 
 
 def compute_marking_date_ranges(marking_ids, *, DateSeen=None, CoverMarking=None):
@@ -117,11 +213,12 @@ def compute_marking_date_ranges(marking_ids, *, DateSeen=None, CoverMarking=None
 
     result = {}
     for marking_id in marking_ids:
-        entry = bounds.get(marking_id)
-        if entry is None:
+        candidates = bounds.get(marking_id)
+        if not candidates:
             result[marking_id] = (None, None, None, None)
         else:
-            (_, e_date, e_gran), (_, l_date, l_gran) = entry[0], entry[1]
+            e_date, e_gran = _resolve(candidates, latest=False)
+            l_date, l_gran = _resolve(candidates, latest=True)
             result[marking_id] = (e_date, e_gran, l_date, l_gran)
     return result
 
