@@ -160,6 +160,55 @@ class RepairVphcRateTests(TestCase):
         row.refresh_from_db()
         self.assertEqual(row.submitted_data["rate_val"], "3")
 
+    # ------------------------------------------- --sync-approved (issue #120)
+    #
+    # Found on woco.dev after the repair: --audit-live fixed the three approved
+    # markings, and their payloads were left holding the drawing number. The
+    # skip was right while the catalog was wrong and inverted the moment it was
+    # fixed. Nothing can re-apply those payloads (the approve views refuse a
+    # non-pending row), but the verifier could never go green again, and a check
+    # that cannot pass is worse than no check.
+
+    def _approved(self, inscription_txt="1/PAID", rate_val="29"):
+        return self._contribution(
+            payload(inscription_txt=inscription_txt, rate_val=rate_val),
+            status=Contribution.STATUS_APPROVED)
+
+    def test_an_approved_payload_syncs_once_the_catalog_is_clean(self):
+        row = self._approved()
+        self._marking(inscription_txt="1/PAID", rate_val="1")   # already right
+        self.run_repair(commit=True, audit_live=True, sync_approved=True)
+        row.refresh_from_db()
+        self.assertEqual(row.submitted_data["rate_val"], "1")
+
+    def test_it_refuses_while_any_marking_still_carries_a_wrong_rate(self):
+        """The safety property. Syncing payloads while the catalog is wrong
+        would hide the defect from the report without fixing anything."""
+        row = self._approved()
+        self._marking(inscription_txt="1/PAID", rate_val="29")  # still wrong
+        with self.assertRaises(CommandError) as ctx:
+            self.run_repair(audit_live=True, sync_approved=True)
+        self.assertIn("still reports", str(ctx.exception))
+        row.refresh_from_db()
+        self.assertEqual(row.submitted_data["rate_val"], "29")
+
+    def test_it_refuses_without_audit_live_rather_than_assuming(self):
+        row = self._approved()
+        with self.assertRaises(CommandError) as ctx:
+            self.run_repair(commit=True, sync_approved=True)
+        self.assertIn("requires --audit-live", str(ctx.exception))
+        row.refresh_from_db()
+        self.assertEqual(row.submitted_data["rate_val"], "29")
+
+    def test_approved_payloads_are_left_alone_by_default(self):
+        """Pins the pre-existing behaviour: an approved record is never
+        rewritten unless someone asks for it by name."""
+        row = self._approved()
+        self._marking(inscription_txt="1/PAID", rate_val="1")
+        self.run_repair(commit=True, audit_live=True)
+        row.refresh_from_db()
+        self.assertEqual(row.submitted_data["rate_val"], "29")
+
     # ----------------------------------------------------- the live catalog
 
     def test_a_fractional_live_rate_is_not_truncated_into_a_false_match(self):
