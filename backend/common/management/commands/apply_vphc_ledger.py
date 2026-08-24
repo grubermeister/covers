@@ -85,6 +85,46 @@ def dec(value):
         return None
 
 
+# Rule I2: the rate is derived from the `cancel` device vocabulary, which
+# reaches us as the sheet's inscription keys. It is NEVER derived from
+# `cancel_no` -- that is the drawing number, the marking's sequence within its
+# town, and the key that names its scan (rule E5). _contribution() uses it
+# correctly, as a citation page_number: it is a locator, not a rate.
+#
+# Mirrors sheet_identity() in tools/vphc_crossexam.py, which computes exactly
+# this as `sheet_rate` and then drops it on the floor -- CROSSWALK_FIELDS does
+# not carry the column, so the value cannot reach us. Deleting this duplication
+# means emitting sheet_rate into crosswalk.csv; that is filed separately,
+# because regenerating the crosswalk re-runs the whole cross-examination.
+ROMAN_RATE = {"X": "10", "V": "5"}
+# Production spells the same device both ways round -- "PAID/3" and "3/PAID"
+# are one marking -- so both orders must yield the digits, never the word.
+RATE_KEY_RE = re.compile(
+    r"^(?:(PAID|DUE|WAY)[\s/]+(?P<after>\d+)|(?P<before>\d+)[\s/]+(PAID|DUE|WAY))$",
+    re.I)
+
+
+def rate_from_inscription(sheet_insc, sep=";"):
+    """The rate a RATEMARK's device states, or "" if it states none.
+
+    Reads every key rather than first(), because sheet_insc is a sorted set:
+    "3/DUE;DUE 3;DUE/3" leads with "3/DUE", and taking only that one is what
+    sent 276 listings to the drawing number instead (issue #120).
+    """
+    for part in (sheet_insc or "").split(sep):
+        key = part.strip()
+        if not key:
+            continue
+        if key.isdigit():
+            return key
+        if key.upper() in ROMAN_RATE:
+            return ROMAN_RATE[key.upper()]
+        found = RATE_KEY_RE.match(key)
+        if found:
+            return found.group("after") or found.group("before")
+    return ""
+
+
 class Command(BaseCommand):
     help = "Create VPHC marking contributions, attach scans, archive duplicates."
 
@@ -404,11 +444,13 @@ class Command(BaseCommand):
         if colour:
             payload["color"] = colour
         if marking_type == "RATEMARK":
-            rate = re.search(r"\d+", row["cancel_no"] or "")
-            if inscription.isdigit():
-                payload["rate_val"] = inscription
-            elif rate:
-                payload["rate_val"] = rate.group(0)
+            # No rate in the device means no rate. The key stays absent rather
+            # than empty: _apply_marking_edit merges on presence (issue #111),
+            # so absent leaves a live marking's own rate alone where "" would
+            # clear it, and a guess would be wrong while looking deliberate.
+            rate = rate_from_inscription(row["sheet_insc"])
+            if rate:
+                payload["rate_val"] = rate
         self._dates(row, payload)
 
         if images:
