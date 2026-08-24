@@ -17,8 +17,9 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import Min, Max, Q
-from django.db.models.functions import ExtractYear
+from django.db.models import F, Min, Max, OuterRef, Q, Subquery, TextField, Value
+from django.db.models.fields.json import KeyTextTransform
+from django.db.models.functions import ExtractYear, NullIf
 from django.http import Http404
 from django.utils import timezone
 from django.utils.decorators import method_decorator
@@ -72,7 +73,9 @@ from common.audit import (
     restore_marking_from_snapshot,
 )
 from common.filters import (
+    AliasedOrderingFilter,
     CitationAwareMarkingSearchFilter,
+    ContributionListFilter,
     CoverMarkingFilter,
     MarkingListFilter,
 )
@@ -82,6 +85,7 @@ from common.models import (
     CollectionAssignment,
     Color,
     Contribution,
+    ContributionRecycleBin,
     Cover,
     CoverMarking,
     CoverRecycleBin,
@@ -95,6 +99,9 @@ from common.models import (
     MarkingRecycleBin,
     MarkingVersion,
     PostOffice,
+    PostOfficeRegion,
+    Postmaster,
+    PostmasterTenure,
     ReferenceWork,
     Region,
     Shape,
@@ -131,6 +138,9 @@ from .serializers import (
     MarkingListSerializer,
     MarkingSerializer,
     PostOfficeSerializer,
+    PostmasterSerializer,
+    PostmasterTenureSerializer,
+    RecycleBinMarkingSerializer,
     ReferenceWorkSerializer,
     RegionSerializer,
     ShapeSerializer,
@@ -158,6 +168,199 @@ def _user_may_review_contribution(user, contribution) -> bool:
     return contribution.collection_id in user_assigned_collection_ids(user)
 
 
+class _ContributionNotApplied(Exception):
+    """apply_to_catalog returned nothing for a marking submission.
+
+    Distinct from ContributionApplyError, which names a specific bad field and
+    is a 400. This is "the payload produced no marking and we do not know why",
+    which stays a 500 for a single approval and a per-row failure in a batch.
+    """
+
+
+# Issue #101. Extracted from ContributionViewSet.approve so bulk approve runs
+# the SAME path rather than a reimplementation of it. What a second copy would
+# quietly drop, in the order it matters:
+#
+#   * the BEFORE snapshots, which must be read before apply mutates in place
+#   * the cover-vs-marking branch on apply_to_catalog's return TYPE
+#   * consolidate_superseded_contributions, which deletes superseded rows
+#   * the Contribution.marking one-to-one, only claimed if unowned
+#   * log_submission_transaction + create_*_version, the audit trail
+#
+# Callers own the permission and status checks, and own the transaction only in
+# the sense that this opens its own atomic block per contribution -- which is
+# what lets a bulk batch commit the rows that worked and report the ones that
+# did not (#101 AC-4).
+def _approve_contribution(contrib, *, actor, review_notes, requested_catalog_code=None):
+    """Approve one contribution. Returns the response body dict.
+
+    Raises CatalogCodeError / ContributionApplyError for a bad payload, and
+    _ContributionNotApplied when a marking submission yields no marking.
+    """
+    with transaction.atomic():
+        # Capture the BEFORE snapshot for edits (the entity already
+        # exists and apply mutates it in place). build_*_snapshot read
+        # live DB state, so this must run BEFORE apply. CREATE leaves
+        # these empty, so the audit diff for a create stays before={}.
+        sd = contrib.submitted_data or {}
+        edit_marking_id = _parse_int(sd.get("edit_marking_id"))
+        edit_cover_id = _parse_int(sd.get("edit_cover_id"))
+        before_marking_snapshot = {}
+        before_cover_snapshot = {}
+        if edit_cover_id:
+            try:
+                before_cover_snapshot = build_cover_snapshot(
+                    Cover.all_objects.get(pk=edit_cover_id)
+                )
+            except Cover.DoesNotExist:
+                pass
+        elif edit_marking_id:
+            try:
+                before_marking_snapshot = build_marking_snapshot(
+                    Marking.all_objects.get(pk=edit_marking_id)
+                )
+            except Marking.DoesNotExist:
+                pass
+
+        final_code_for_contribution(
+            contrib,
+            requested_code=requested_catalog_code,
+        )
+        result = contrib.apply_to_catalog()
+
+        # apply_to_catalog returns a Marking for marking submissions and
+        # a dict {"kind": "cover", ...} for cover submissions. Branch on
+        # the return type so each path does its own post-processing.
+        if isinstance(result, dict) and result.get("kind") == "cover":
+            cover = result["cover"]
+            cover_marking = result["cover_marking"]
+            parent_marking = result["parent_marking"]
+
+            # apply set review_status=APPROVED and reviewed_at; backfill
+            # the approving editor's identity and notes on the link here
+            # (apply has no access to the actor).
+            cover_marking.reviewer = actor
+            cover_marking.review_notes = review_notes
+            cover_marking.modified_by = actor
+            # Stamp reviewed_at here for BOTH create and edit: the edit
+            # apply path deliberately leaves the link's review fields
+            # alone, so the approve path owns reviewed_at in both cases.
+            cover_marking.reviewed_at = timezone.now()
+            cover_marking.save(
+                update_fields=["reviewer", "review_notes", "modified_by", "reviewed_at"]
+            )
+
+            contrib.status = Contribution.STATUS_APPROVED
+            contrib.reviewer = actor
+            contrib.review_notes = review_notes
+            contrib.modified_by = actor
+            # Delete older cover contributions before checking the
+            # optional parent marking link. An older approved cover
+            # contribution may own that one-to-one link.
+            consolidate_superseded_contributions(
+                current=contrib,
+                target=ContributionTarget("cover", cover.pk),
+                actor=actor,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            )
+            update_fields = [
+                "status",
+                "reviewer",
+                "review_notes",
+                "submitted_data",
+                "modified_date",
+                "modified_by",
+            ]
+            if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
+                contrib.marking = parent_marking
+                update_fields.append("marking")
+            # Stamp traceability so the frontend mapper treats this
+            # contribution as materialized (no longer a pending draft).
+            sd = dict(contrib.submitted_data or {})
+            sd["cover_id"] = cover.pk
+            sd["cover_marking_id"] = cover_marking.pk
+            sd["materialized_cover_marking_id"] = cover_marking.pk
+            contrib.submitted_data = sd
+            contrib.save(update_fields=update_fields)
+            after_snapshot = build_cover_snapshot(cover)
+            txn = log_submission_transaction(
+                action=SubmissionTransaction.ACTION_APPROVE,
+                actor=actor,
+                contribution=contrib,
+                marking=parent_marking,
+                cover=cover,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload=before_cover_snapshot,
+                after_payload=after_snapshot,
+                extra_payload={
+                    "review_notes": review_notes,
+                    "cover_marking_id": cover_marking.pk,
+                },
+            )
+            create_cover_version(cover, txn, actor)
+            return {"detail": "Contribution approved.", "coverId": cover.pk}
+
+        marking = result
+        if not marking:
+            raise _ContributionNotApplied(
+                "Could not apply contribution. Check submitted_data."
+            )
+        contrib.status = Contribution.STATUS_APPROVED
+        contrib.reviewer = actor
+        contrib.review_notes = review_notes
+        contrib.modified_by = actor
+        # Delete older marking contributions before assigning the
+        # one-to-one Contribution.marking link to the latest row.
+        consolidate_superseded_contributions(
+            current=contrib,
+            target=ContributionTarget("marking", marking.pk),
+            actor=actor,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+        )
+        update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
+        if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
+            contrib.marking = marking
+            update_fields.append("marking")
+        contrib.save(update_fields=update_fields)
+        after_snapshot = build_marking_snapshot(marking)
+        txn = log_submission_transaction(
+            action=SubmissionTransaction.ACTION_APPROVE,
+            actor=actor,
+            contribution=contrib,
+            marking=marking,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            before_payload=before_marking_snapshot,
+            after_payload=after_snapshot,
+            extra_payload={"review_notes": review_notes},
+        )
+        create_marking_version(marking, txn, actor)
+        return {"detail": "Contribution approved.", "markingId": marking.pk}
+
+
+def _reject_contribution(contrib, *, actor, review_notes):
+    """Reject one contribution. Extracted alongside _approve_contribution so
+    bulk reject shares the audit-trail write rather than repeating it."""
+    with transaction.atomic():
+        before_submission = dict(contrib.submitted_data or {})
+        contrib.status = Contribution.STATUS_REJECTED
+        contrib.reviewer = actor
+        contrib.review_notes = review_notes
+        contrib.modified_by = actor
+        contrib.save(update_fields=[
+            "status", "reviewer", "review_notes", "modified_date", "modified_by"])
+        log_submission_transaction(
+            action=SubmissionTransaction.ACTION_REJECT,
+            actor=actor,
+            contribution=contrib,
+            marking=contrib.marking,
+            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+            before_payload=before_submission,
+            after_payload=before_submission,
+            extra_payload={"review_notes": review_notes},
+        )
+    return {"detail": "Contribution rejected."}
+
+
 class IsResponsibleForRegion(BasePermission):
     """
     Object-level write check for Marking-bound resources.
@@ -182,16 +385,64 @@ class IsResponsibleForRegion(BasePermission):
         return _user_is_responsible_for_marking(request.user, marking)
 
 
+def _primary_region_subquery(field):
+    """A marking's primary-jurisdiction Region `field`, as a scalar subquery.
+
+    Deliberately a correlated subquery and NOT a join. Ordering across the
+    post_office_regions junction multiplies rows -- Django's own order_by()
+    docs warn that a multi-valued field "could return more items than you were
+    working on to begin with" -- and since the VPHC ingest gave every VA/WV
+    town a county link alongside its state, that is exactly what happened:
+    502 markings emitted twice and 502 different ones pushed off the end by
+    LIMIT/OFFSET, while count() stayed correct because Django strips ordering
+    when it counts (issue #103, LEFT_OFF.md B2).
+
+    .distinct() does not fix it. Ordering by a related field puts that field in
+    the SELECT list, so the Virginia row and the Accomack row of the same
+    marking are not duplicates to DISTINCT -- measured live on woco.dev, where
+    ?state=VA already had .distinct() and still returned 2,309 rows for 1,947
+    markings. It is also the slow path: the issue #59 load test measured 723 of
+    11,493 temp tables spilling to disk at 4,000 rows.
+
+    The ordering mirrors PostOffice.region's tie-break exactly so the sort key
+    and the displayed state can never disagree.
+
+    Cost, measured (EXPLAIN + timings, 3,155 local markings / 1,569 county
+    links): the subquery is `ref` on the unique post_office_region index plus
+    an `eq_ref` PK lookup -- two bounded index lookups per candidate row, so
+    O(1) per row, not a scan. A deep-offset page costs ~17.5 ms against
+    ~15.0 ms for the old (wrong) junction sort. Paying ~2.5 ms for pages that
+    are actually complete. The planned denormalized state_region_id column
+    removes even that; this is its no-migration precursor.
+    """
+    return Subquery(
+        PostOfficeRegion.objects
+        .filter(post_office_id=OuterRef("post_office_id"))
+        .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+        .order_by(
+            F("region__defunct_date").desc(nulls_first=True),
+            F("region__established_date").desc(nulls_last=True),
+        )
+        .values(f"region__{field}")[:1]
+    )
+
+
 def _marking_list_queryset():
     """Optimized queryset for Marking list-style endpoints.
 
     earliest_seen / latest_seen are real columns maintained by
     common.date_range (issue #59), so no annotation is needed here.
+
+    primary_region_name / primary_region_abbrev exist to be ordered by -- see
+    _primary_region_subquery for why they are not a join.
     """
     return Marking.objects.select_related(
         "post_office", "shape", "lettering", "color"
     ).prefetch_related(
         "post_office__post_office_regions__region"
+    ).annotate(
+        primary_region_name=_primary_region_subquery("name"),
+        primary_region_abbrev=_primary_region_subquery("abbrev"),
     )
 
 
@@ -246,7 +497,11 @@ class RegionViewSet(viewsets.ModelViewSet):
     serializer_class = RegionSerializer
     permission_classes = [IsEditorOrAdminWrite]
     filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
-    filterset_fields = ["region_tier", "parent_region"]
+    # `in` as well as exact so a caller can ask for the set of tiers that are
+    # real answers to "which state?" in one request. The Search and Contribute
+    # State/Territory dropdowns do exactly that: without it they page every
+    # Region and offer all 141 VPHC counties as states (issue #103).
+    filterset_fields = {"region_tier": ["exact", "in"], "parent_region": ["exact"]}
     search_fields = ["name", "abbrev"]
     ordering_fields = ["name", "abbrev", "established_date", "defunct_date", "created_date"]
     ordering = ["name"]
@@ -299,19 +554,59 @@ class PostOfficeViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=["get"], url_path="town-options")
     def town_options(self, request):
-        """Lightweight {town, state} payload for autocomplete controls."""
-        rows = (
-            PostOffice.objects.prefetch_related("post_office_regions__region")
-            .exclude(name__isnull=True)
-            .exclude(name__exact="")
-            .values_list("name", "post_office_regions__region__name")
-            .order_by("name", "post_office_regions__region__name")
+        """Lightweight {town, state} payload for autocomplete controls.
+
+        A row is a (town, state) *pair*, so a town linked to its county as
+        well as its state emitted one pair per link and the county one read as
+        a state: 1,553 of 7,305 rows offered a county as the state across 140
+        counties, and ABINGDON came back as Illinois, Maryland, Virginia *and*
+        Washington. .distinct() cannot help -- the pairs genuinely differ.
+        (issue #103)
+
+        Iterate the junction rather than PostOffice. `PostOffice.exclude(
+        post_office_regions__region__region_tier__in=...)` looks like the
+        obvious fix and is a trap: excluding across a to-many relation compiles
+        to NOT EXISTS, so it drops every town that has *any* county link --
+        measured at 593 of 2,162 post offices surviving, i.e. it would have
+        deleted 1,569 towns from the autocomplete. On the junction the same
+        predicate is a forward FK and means what it reads like.
+        """
+        pairs = (
+            PostOfficeRegion.objects
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+            .exclude(post_office__name__isnull=True)
+            .exclude(post_office__name__exact="")
+            .values_list("post_office__name", "region__name")
+            .order_by("post_office__name", "region__name")
             .distinct()
         )
         out = [
             {"town": (town or "").strip(), "state": (state or "").strip()}
-            for town, state in rows
+            for town, state in pairs
         ]
+
+        # A town whose only links are county links (the quarantined towns whose
+        # state could not be resolved -- 3 locally) would otherwise vanish from
+        # the autocomplete entirely. Offer it with a blank state, which the
+        # form already handles, rather than naming its county as its state.
+        # Left unevaluated on purpose: Django inlines it as a subquery, so
+        # this stays one round trip instead of pulling ~5,700 ids into Python.
+        towns_with_a_state = (
+            PostOfficeRegion.objects
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+            .values("post_office_id")
+        )
+        stateless = (
+            PostOffice.objects
+            .exclude(pk__in=towns_with_a_state)
+            .exclude(name__isnull=True)
+            .exclude(name__exact="")
+            .order_by("name")
+            .values_list("name", flat=True)
+            .distinct()
+        )
+        out.extend({"town": name.strip(), "state": ""} for name in stateless)
+        out.sort(key=lambda row: (row["town"], row["state"]))
         return Response(out, status=status.HTTP_200_OK)
 
 
@@ -410,6 +705,34 @@ class ReferenceWorkViewSet(viewsets.ModelViewSet):
             for work in rows
         ]
         return Response(out, status=status.HTTP_200_OK)
+
+
+class PostmasterViewSet(viewsets.ReadOnlyModelViewSet):
+    """Postmasters, read-only. Editing belongs to the source catalogs."""
+    queryset = Postmaster.objects.all()
+    serializer_class = PostmasterSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ["name", "sort_name"]
+    ordering_fields = ["sort_name", "name"]
+    ordering = ["sort_name"]
+
+
+class PostmasterTenureViewSet(viewsets.ReadOnlyModelViewSet):
+    """Appointment events, filterable by office or by person.
+
+    Ordered by date with undated events last, so a town's list reads as a
+    succession rather than starting with the rows nobody could date.
+    """
+    queryset = PostmasterTenure.objects.select_related(
+        "postmaster", "post_office"
+    ).order_by(F("date_appointed").asc(nulls_last=True), "tenure_id")
+    serializer_class = PostmasterTenureSerializer
+    permission_classes = [AllowAny]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = {"post_office": ["exact"], "postmaster": ["exact"],
+                        "event": ["exact"]}
+    ordering_fields = ["date_appointed", "tenure_id"]
 
 
 class FAQEntryViewSet(viewsets.ReadOnlyModelViewSet):
@@ -1345,7 +1668,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
     pagination_class = MarkingListPagination
     queryset = Marking.objects.all()
     permission_classes = [IsEditorOrAdminWrite, IsResponsibleForRegion]
-    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, CitationAwareMarkingSearchFilter, AliasedOrderingFilter]
     filterset_class = MarkingListFilter
     # No raw DELETE: removing a marking goes through the audited, reversible
     # POST /markings/<pk>/remove/ (recycle bin) action instead. Custom POST
@@ -1367,10 +1690,19 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "lettering__name",
         "color__name",
     ]
+    # Retired `?ordering=` spellings, kept working for bookmarked search URLs.
+    # They must be rewritten rather than merely allowed: DRF matches
+    # ordering_fields verbatim, so leaving the junction path in the list would
+    # order across post_office_regions again and restore the fan-out. (#103)
+    ordering_aliases = {
+        "post_office__post_office_regions__region__name": "primary_region_name",
+        "post_office__post_office_regions__region__abbrev": "primary_region_abbrev",
+    }
     ordering_fields = [
-        # Location / identity
-        "post_office__post_office_regions__region__name",
-        "post_office__post_office_regions__region__abbrev",
+        # Location / identity. Annotations, not junction paths -- see
+        # _primary_region_subquery.
+        "primary_region_name",
+        "primary_region_abbrev",
         "post_office__name",
         "code",
         "type",
@@ -1388,10 +1720,17 @@ class MarkingViewSet(viewsets.ModelViewSet):
         "id",
     ]
     ordering = [
-        "post_office__post_office_regions__region__name",
+        "primary_region_name",
         "is_manuscript",
         "post_office__name",
         "earliest_seen",
+        # A unique final key is not optional under LIMIT/OFFSET. Without it,
+        # rows that tie on everything above can swap places between one page
+        # request and the next, so a marking is served twice and another never
+        # at all -- independent of the fan-out, and the failure reported in
+        # DRF issue #6886. The frontend already appends `id`; every other
+        # client was relying on luck.
+        "id",
     ]
 
     def get_queryset(self):
@@ -1539,7 +1878,15 @@ class MarkingViewSet(viewsets.ModelViewSet):
             )
         qs = (
             Marking.all_objects.filter(recycle_bin_entry__isnull=False)
-            .select_related("post_office", "shape", "lettering", "color")
+            .select_related(
+                "post_office",
+                "shape",
+                "lettering",
+                "color",
+                # Issue #89: every row renders who removed it and why.
+                "recycle_bin_entry",
+                "recycle_bin_entry__removed_by",
+            )
             .prefetch_related("post_office__post_office_regions__region")
             .order_by("-recycle_bin_entry__removed_at")
         )
@@ -1553,9 +1900,9 @@ class MarkingViewSet(viewsets.ModelViewSet):
                 qs = qs.none()
         page = self.paginate_queryset(qs)
         if page is not None:
-            serializer = MarkingListSerializer(page, many=True, context=self.get_serializer_context())
+            serializer = RecycleBinMarkingSerializer(page, many=True, context=self.get_serializer_context())
             return self.get_paginated_response(serializer.data)
-        serializer = MarkingListSerializer(qs, many=True, context=self.get_serializer_context())
+        serializer = RecycleBinMarkingSerializer(qs, many=True, context=self.get_serializer_context())
         return Response(serializer.data)
 
     @action(detail=False, methods=["get"], url_path="my-assigned", permission_classes=[IsAuthenticated])
@@ -1816,6 +2163,40 @@ def _get_editor_contribution_queryset(user):
     return base.filter(collection_id__in=assigned_ids).distinct()
 
 
+def _annotate_contribution_sort_keys(queryset):
+    """Lift the JSON sort columns out of submitted_data (issue #109).
+
+    Town, state, shape and colour have no columns of their own -- they live in
+    the submitted_data blob -- so `?ordering=town` needs them as real SELECT
+    expressions. Django emits `submitted_data ->> '$.town'` on MySQL and
+    `JSON_UNQUOTE(JSON_EXTRACT(...))` on MariaDB (it branches on
+    mysql_is_mariadb; MDEV-13594), so this is valid on both deploy targets.
+    Either way it is a full scan, which is fine at queue size -- see
+    ContributionListFilter for the measurements.
+
+    NULLIF is not decoration. An ABSENT key gives SQL NULL, but a key that is
+    present and set to JSON null gives the four-character string 'null', which
+    then sorts in among the words beginning with N. NULLIF folds the two cases
+    together so "no value" is one group however the row was written.
+
+    The sd_ prefix keeps these clear of Contribution's own field names, which
+    also keeps ordering_aliases unambiguous.
+    """
+    def key(name):
+        return NullIf(
+            KeyTextTransform(name, "submitted_data"),
+            Value("null"),
+            output_field=TextField(),
+        )
+
+    return queryset.annotate(
+        sd_town=key("town"),
+        sd_state=key("state"),
+        sd_shape=key("shape"),
+        sd_color=key("color"),
+    )
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ContributionViewSet(
     mixins.CreateModelMixin,
@@ -1834,9 +2215,45 @@ class ContributionViewSet(
     """
     permission_classes = [IsAuthenticated, CanReviewContribution]
     serializer_class = ContributionDetailSerializer
-    filter_backends = [DjangoFilterBackend]
-    filterset_fields = ["status"]
-    ordering = ["-created_date"]
+    # Issue #109: the queue's search, filters and sort all have to run here.
+    # They used to run in the browser over the page it had already fetched,
+    # which at 2,440 rows meant an editor could not find a submission at all.
+    filter_backends = [DjangoFilterBackend, AliasedOrderingFilter]
+    filterset_class = ContributionListFilter
+    # The wire vocabulary -> real columns. `created_at` is what the serializer
+    # emits for created_date, and the dashboard's sort keys are the display
+    # names, so both spellings have to land somewhere real. The sd_* keys are
+    # the annotations from _annotate_contribution_sort_keys and stay private.
+    ordering_aliases = {
+        "created_at": "created_date",
+        "updated_at": "modified_date",
+        "submitted": "created_date",
+        "town": "sd_town",
+        "state": "sd_state",
+        "shape": "sd_shape",
+        "color": "sd_color",
+        "contributor_username": "contributor__username",
+    }
+    ordering_fields = [
+        "status",
+        "created_date",
+        "modified_date",
+        "sd_town",
+        "sd_state",
+        "sd_shape",
+        "sd_color",
+        "contributor__username",
+        "id",
+    ]
+    ordering = [
+        "-created_date",
+        # A unique final key is not optional under LIMIT/OFFSET -- the same
+        # requirement documented on MarkingViewSet (DRF #6886). It matters more
+        # here than there: 2,062 of these rows were written by a single batch
+        # import, so ties on created_date are the normal case, not the corner
+        # case, and page boundaries have been unstable ever since that import.
+        "id",
+    ]
     parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get_permissions(self):
@@ -1923,13 +2340,35 @@ class ContributionViewSet(
                     return base_qs.filter(mine | Q(collection_id__in=assigned_ids)).distinct()
             return base_qs.filter(mine).distinct()
         mode = (self.request.query_params.get("mode") or "").strip().lower()
-        if mode == "editor":
+        if mode in ("editor", "archived"):
             if user.is_superuser:
                 qs = base_qs
             elif user_can_review_contributions(user):
                 qs = _get_editor_contribution_queryset(user)
             else:
                 return base_qs.none()
+            # Issue #89: archiving is editor-side housekeeping. An archived
+            # contribution leaves the review queue and is only reachable through
+            # ?mode=archived -- but the "My Contributions" branch below is
+            # deliberately NOT filtered, so its author keeps seeing it along with
+            # whatever feedback the editor left.
+            qs = qs.filter(recycle_bin_entry__isnull=(mode == "editor"))
+            # Every row renders whether it was archived, and by whom; without
+            # this the serializer's reverse-OneToOne lookup is one query per
+            # row. It used to be applied only to ?mode=archived, which left the
+            # review queue paying it 100 times on a full page.
+            qs = qs.select_related("recycle_bin_entry", "recycle_bin_entry__archived_by")
+            # Issue #109: drafts belong to the contributor's own My Submissions
+            # tab. The dashboard used to drop them AFTER the fetch, so `count`
+            # and the pager described a different set of rows than the ones on
+            # screen. Excluding them here makes the banner honest. The "mine"
+            # branch below is deliberately untouched -- an author keeps seeing
+            # their own drafts.
+            qs = qs.exclude(status=Contribution.STATUS_DRAFT)
+            # `state` stays here rather than moving into ContributionListFilter:
+            # it also matches across the collection's Region relation, and it is
+            # scoped to these two lenses on purpose. DjangoFilterBackend runs
+            # after get_queryset, so it composes with the filterset.
             state = (self.request.query_params.get("state") or "").strip()
             if state:
                 qs = qs.filter(
@@ -1937,8 +2376,8 @@ class ContributionViewSet(
                     | Q(collection__region__abbrev__iexact=state)
                     | Q(submitted_data__state__iexact=state)
                 )
-            return qs
-        return base_qs.filter(contributor=user).distinct()
+            return _annotate_contribution_sort_keys(qs)
+        return _annotate_contribution_sort_keys(base_qs.filter(contributor=user).distinct())
 
     def get_serializer_class(self):
         if self.action == "list":
@@ -1963,154 +2402,181 @@ class ContributionViewSet(
         review_notes = serializer.validated_data.get("review_notes", "")
         requested_catalog_code = serializer.validated_data.get("catalog_code", None)
         try:
-            with transaction.atomic():
-                # Capture the BEFORE snapshot for edits (the entity already
-                # exists and apply mutates it in place). build_*_snapshot read
-                # live DB state, so this must run BEFORE apply. CREATE leaves
-                # these empty, so the audit diff for a create stays before={}.
-                sd = contrib.submitted_data or {}
-                edit_marking_id = _parse_int(sd.get("edit_marking_id"))
-                edit_cover_id = _parse_int(sd.get("edit_cover_id"))
-                before_marking_snapshot = {}
-                before_cover_snapshot = {}
-                if edit_cover_id:
-                    try:
-                        before_cover_snapshot = build_cover_snapshot(
-                            Cover.all_objects.get(pk=edit_cover_id)
-                        )
-                    except Cover.DoesNotExist:
-                        pass
-                elif edit_marking_id:
-                    try:
-                        before_marking_snapshot = build_marking_snapshot(
-                            Marking.all_objects.get(pk=edit_marking_id)
-                        )
-                    except Marking.DoesNotExist:
-                        pass
-
-                final_code_for_contribution(
-                    contrib,
-                    requested_code=requested_catalog_code,
-                )
-                result = contrib.apply_to_catalog()
-
-                # apply_to_catalog returns a Marking for marking submissions and
-                # a dict {"kind": "cover", ...} for cover submissions. Branch on
-                # the return type so each path does its own post-processing.
-                if isinstance(result, dict) and result.get("kind") == "cover":
-                    cover = result["cover"]
-                    cover_marking = result["cover_marking"]
-                    parent_marking = result["parent_marking"]
-
-                    # apply set review_status=APPROVED and reviewed_at; backfill
-                    # the approving editor's identity and notes on the link here
-                    # (apply has no access to request.user).
-                    cover_marking.reviewer = request.user
-                    cover_marking.review_notes = review_notes
-                    cover_marking.modified_by = request.user
-                    # Stamp reviewed_at here for BOTH create and edit: the edit
-                    # apply path deliberately leaves the link's review fields
-                    # alone, so the approve view owns reviewed_at in both cases.
-                    cover_marking.reviewed_at = timezone.now()
-                    cover_marking.save(
-                        update_fields=["reviewer", "review_notes", "modified_by", "reviewed_at"]
-                    )
-
-                    contrib.status = Contribution.STATUS_APPROVED
-                    contrib.reviewer = request.user
-                    contrib.review_notes = review_notes
-                    contrib.modified_by = request.user
-                    # Delete older cover contributions before checking the
-                    # optional parent marking link. An older approved cover
-                    # contribution may own that one-to-one link.
-                    consolidate_superseded_contributions(
-                        current=contrib,
-                        target=ContributionTarget("cover", cover.pk),
-                        actor=request.user,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                    )
-                    update_fields = [
-                        "status",
-                        "reviewer",
-                        "review_notes",
-                        "submitted_data",
-                        "modified_date",
-                        "modified_by",
-                    ]
-                    if not Contribution.objects.filter(marking=parent_marking).exclude(pk=contrib.pk).exists():
-                        contrib.marking = parent_marking
-                        update_fields.append("marking")
-                    # Stamp traceability so the frontend mapper treats this
-                    # contribution as materialized (no longer a pending draft).
-                    sd = dict(contrib.submitted_data or {})
-                    sd["cover_id"] = cover.pk
-                    sd["cover_marking_id"] = cover_marking.pk
-                    sd["materialized_cover_marking_id"] = cover_marking.pk
-                    contrib.submitted_data = sd
-                    contrib.save(update_fields=update_fields)
-                    after_snapshot = build_cover_snapshot(cover)
-                    txn = log_submission_transaction(
-                        action=SubmissionTransaction.ACTION_APPROVE,
-                        actor=request.user,
-                        contribution=contrib,
-                        marking=parent_marking,
-                        cover=cover,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload=before_cover_snapshot,
-                        after_payload=after_snapshot,
-                        extra_payload={
-                            "review_notes": review_notes,
-                            "cover_marking_id": cover_marking.pk,
-                        },
-                    )
-                    create_cover_version(cover, txn, request.user)
-                    approved_response = {"detail": "Contribution approved.", "coverId": cover.pk}
-                else:
-                    marking = result
-                    if not marking:
-                        return Response(
-                            {"detail": "Could not apply contribution. Check submitted_data."},
-                            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                        )
-                    contrib.status = Contribution.STATUS_APPROVED
-                    contrib.reviewer = request.user
-                    contrib.review_notes = review_notes
-                    contrib.modified_by = request.user
-                    # Delete older marking contributions before assigning the
-                    # one-to-one Contribution.marking link to the latest row.
-                    consolidate_superseded_contributions(
-                        current=contrib,
-                        target=ContributionTarget("marking", marking.pk),
-                        actor=request.user,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                    )
-                    update_fields = ["status", "reviewer", "review_notes", "modified_date", "modified_by"]
-                    if not Contribution.objects.filter(marking=marking).exclude(pk=contrib.pk).exists():
-                        contrib.marking = marking
-                        update_fields.append("marking")
-                    contrib.save(update_fields=update_fields)
-                    after_snapshot = build_marking_snapshot(marking)
-                    txn = log_submission_transaction(
-                        action=SubmissionTransaction.ACTION_APPROVE,
-                        actor=request.user,
-                        contribution=contrib,
-                        marking=marking,
-                        source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-                        before_payload=before_marking_snapshot,
-                        after_payload=after_snapshot,
-                        extra_payload={"review_notes": review_notes},
-                    )
-                    create_marking_version(marking, txn, request.user)
-                    approved_response = {
-                        "detail": "Contribution approved.",
-                        "markingId": marking.pk,
-                    }
+            approved_response = _approve_contribution(
+                contrib,
+                actor=request.user,
+                review_notes=review_notes,
+                requested_catalog_code=requested_catalog_code,
+            )
         except (CatalogCodeError, ContributionApplyError) as exc:
             return Response(
                 {"detail": str(exc)},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        except _ContributionNotApplied as exc:
+            return Response(
+                {"detail": str(exc)},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         return Response(approved_response, status=status.HTTP_200_OK)
+
+    # Issue #101. The queue holds 2,443 pending rows; one-at-a-time review is
+    # not a tedious option, it is not an option. Measured cost of one approval
+    # against a full queue is ~174 ms mean / 274 ms worst, so a 25-row batch is
+    # ~4.4 s and the whole queue is ~7 minutes -- chunked from the browser,
+    # because there is no task queue in this project and a single request
+    # cannot span that.
+    #
+    # BULK_ACTION_MAX is a server-side backstop, not the client's batch size.
+    # The dashboard sends 25; this stops a hand-rolled request from re-creating
+    # the timeout the chunking exists to avoid. At the measured worst case, 109
+    # rows would fill a 30 s request, so 50 keeps better than 2x headroom.
+    BULK_ACTION_MAX = 50
+
+    def _bulk_review(self, request, *, apply_row, verb):
+        """Shared body for bulk-approve and bulk-reject.
+
+        ⛔ SECURITY: this is the first detail=False WRITE action in the API, and
+        that changes the permission story. Every other write is detail=True, so
+        get_object() runs check_object_permissions and
+        CanReviewContribution.has_object_permission enforces
+        `obj.collection_id in user_assigned_collection_ids(user)`. A
+        detail=False action never calls get_object(), so NONE of that fires.
+        Without the explicit per-row _user_may_review_contribution below, an
+        editor assigned to Virginia could approve West Virginia submissions 50
+        at a time. Do not remove it, and do not assume the class-level
+        permission covers it -- has_permission() returns True for any
+        authenticated user by design, because contributors list their own rows.
+
+        Each row commits in its own transaction (the helpers open one), so a
+        failure reports that row and leaves the successes standing (#101 AC-4).
+        """
+        raw_ids = request.data.get("ids") if isinstance(request.data, dict) else None
+        if not isinstance(raw_ids, (list, tuple)) or not raw_ids:
+            return Response(
+                {"detail": "ids must be a non-empty list of contribution ids."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(raw_ids) > self.BULK_ACTION_MAX:
+            return Response(
+                {"detail": "Too many ids: {} sent, limit is {} per request.".format(
+                    len(raw_ids), self.BULK_ACTION_MAX)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        ids = []
+        for raw in raw_ids:
+            parsed = _parse_int(raw)
+            if parsed is None:
+                return Response(
+                    {"detail": "ids must all be integers; got {!r}.".format(raw)},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            ids.append(parsed)
+
+        serializer = ContributionApproveRejectSerializer(data=request.data or {})
+        serializer.is_valid(raise_exception=True)
+        review_notes = serializer.validated_data.get("review_notes", "")
+
+        found = {c.pk: c for c in Contribution.objects.filter(pk__in=ids)}
+        succeeded, failed = [], []
+        # Iterate the caller's order, not the queryset's, so the client can pair
+        # results with what it sent. Duplicate ids are processed once; the
+        # second occurrence fails the status check and is reported.
+        for pk in ids:
+            contrib = found.get(pk)
+            if contrib is None:
+                failed.append({"id": pk, "reason": "Contribution not found."})
+                continue
+            if not _user_may_review_contribution(request.user, contrib):
+                failed.append({
+                    "id": pk,
+                    "reason": "You do not have permission to review this contribution.",
+                })
+                continue
+            contrib.refresh_from_db()
+            if contrib.status != Contribution.STATUS_PENDING:
+                failed.append({
+                    "id": pk,
+                    "reason": "Contribution is not pending (status: {}).".format(
+                        contrib.status),
+                })
+                continue
+            try:
+                apply_row(contrib, request.user, review_notes)
+            except (CatalogCodeError, ContributionApplyError,
+                    _ContributionNotApplied, IntegrityError) as exc:
+                failed.append({"id": pk, "reason": str(exc)})
+                continue
+            succeeded.append(pk)
+
+        return Response(
+            {verb: succeeded, "failed": failed,
+             "requested": len(ids), "succeeded": len(succeeded)},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=False, methods=["post"], url_path="bulk-approve")
+    def bulk_approve(self, request):
+        def apply_row(contrib, actor, review_notes):
+            # Retry the catalog-code race here rather than in catalog_codes
+            # (#116 deferred it deliberately). _next_serial reads the max, then
+            # the save writes it -- two approvals racing on one prefix compute
+            # the same serial. Marking.code is unique=True so the loser gets an
+            # IntegrityError rather than a duplicate: a failure, not corruption.
+            # Sequential same-prefix approvals make it far likelier than the
+            # one-at-a-time flow ever did.
+            #
+            # The retry must wrap the WHOLE atomic block. Django marks a
+            # transaction broken after an IntegrityError, so retrying inside it
+            # raises TransactionManagementError instead of working -- which is
+            # why this could not live in _next_serial.
+            attempts = 3
+            for attempt in range(attempts):
+                try:
+                    return _approve_contribution(
+                        contrib, actor=actor, review_notes=review_notes)
+                except IntegrityError:
+                    if attempt == attempts - 1:
+                        raise
+                    # Drop the payload's stale code so the next attempt mints a
+                    # fresh serial instead of re-proposing the taken one.
+                    contrib.refresh_from_db()
+                    payload = dict(contrib.submitted_data or {})
+                    for key in ("catalog_code", "catalogCode", "code"):
+                        payload.pop(key, None)
+                    contrib.submitted_data = payload
+
+        return self._bulk_review(request, apply_row=apply_row, verb="approved")
+
+    @action(detail=False, methods=["post"], url_path="bulk-reject")
+    def bulk_reject(self, request):
+        def apply_row(contrib, actor, review_notes):
+            return _reject_contribution(
+                contrib, actor=actor, review_notes=review_notes)
+
+        return self._bulk_review(request, apply_row=apply_row, verb="rejected")
+
+    @action(detail=False, methods=["get"], url_path="ids")
+    def ids(self, request):
+        """Every id matching the current queue filters (#101 AC-2).
+
+        "Select all matching" has to mean the same set the count banner reports,
+        so this runs filter_queryset(get_queryset()) -- the exact path the list
+        endpoint uses, including ContributionListFilter and the mode=editor
+        visibility rules, and #109's server-side draft exclusion. Deriving the
+        set any other way is how "select all" and "the number on screen" drift
+        apart.
+
+        This criterion was unimplementable before #115: filtering ran in the
+        browser over one fetched page, so there was no server-side notion of a
+        match set for "matching" to refer to.
+
+        Values-only and unpaginated on purpose -- 2,443 integers is ~30 KB,
+        where 2,443 serialized contributions is megabytes.
+        """
+        queryset = self.filter_queryset(self.get_queryset())
+        ids = list(queryset.values_list("pk", flat=True))
+        return Response({"ids": ids, "count": len(ids)}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="catalog-code-suggestion")
     def catalog_code_suggestion(self, request, pk=None):
@@ -2146,6 +2612,100 @@ class ContributionViewSet(
             status=status.HTTP_200_OK,
         )
 
+    # Statuses an editor may clear off the review queue (Issue #89). PENDING is
+    # excluded on purpose: an undecided submission must be approved, rejected or
+    # returned first, so nothing leaves the queue by being hidden.
+    ARCHIVABLE_STATUSES = frozenset({
+        Contribution.STATUS_APPROVED,
+        Contribution.STATUS_REJECTED,
+        Contribution.STATUS_NEEDS_REVISION,
+    })
+
+    @action(detail=True, methods=["post"], url_path="archive")
+    def archive(self, request, pk=None):
+        """
+        Archive this contribution off the editor review dashboard by creating a
+        ContributionRecycleBin sidecar row. The Contribution itself is untouched,
+        so its status, review notes and audit trail survive and it stays visible
+        to its contributor. Reversible via restore. Optional JSON body:
+        {"reason": "..."}.
+        """
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to archive this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        if contrib.status not in self.ARCHIVABLE_STATUSES:
+            return Response(
+                {
+                    "detail": "Only a reviewed contribution can be archived. "
+                              f"Decide this one first (status: {contrib.status})."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if ContributionRecycleBin.objects.filter(contribution=contrib).exists():
+            return Response(
+                {"detail": "Contribution is already archived."},
+                status=status.HTTP_409_CONFLICT,
+            )
+        reason = ""
+        if isinstance(request.data, dict):
+            reason = (request.data.get("reason") or "").strip()
+        with transaction.atomic():
+            ContributionRecycleBin.objects.create(
+                contribution=contrib, archived_by=request.user, reason=reason
+            )
+            log_submission_transaction(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_ARCHIVED,
+                actor=request.user,
+                contribution=contrib,
+                marking=contrib.marking,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload={"status": contrib.status},
+                after_payload={"status": contrib.status},
+                extra_payload={"reason": reason, "archived_contribution_id": contrib.pk},
+            )
+        return Response(
+            {"detail": "Contribution archived.", "contributionId": contrib.pk},
+            status=status.HTTP_200_OK,
+        )
+
+    @action(detail=True, methods=["post"], url_path="restore")
+    def restore(self, request, pk=None):
+        """
+        Return an archived contribution to the editor review dashboard by
+        deleting its ContributionRecycleBin sidecar row.
+        """
+        contrib = self.get_object()
+        if not _user_may_review_contribution(request.user, contrib):
+            return Response(
+                {"detail": "You do not have permission to restore this contribution."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        entry = ContributionRecycleBin.objects.filter(contribution=contrib).first()
+        if not entry:
+            return Response(
+                {"detail": "Contribution is not archived."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        with transaction.atomic():
+            entry.delete()
+            log_submission_transaction(
+                action=SubmissionTransaction.ACTION_CONTRIBUTION_RESTORED,
+                actor=request.user,
+                contribution=contrib,
+                marking=contrib.marking,
+                source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
+                before_payload={"status": contrib.status},
+                after_payload={"status": contrib.status},
+                extra_payload={"restored_contribution_id": contrib.pk},
+            )
+        return Response(
+            {"detail": "Contribution restored.", "contributionId": contrib.pk},
+            status=status.HTTP_200_OK,
+        )
+
     @action(detail=True, methods=["post"], url_path="reject")
     def reject(self, request, pk=None):
         contrib = self.get_object()
@@ -2157,23 +2717,10 @@ class ContributionViewSet(
         serializer = ContributionApproveRejectSerializer(data=request.data or {})
         serializer.is_valid(raise_exception=True)
         review_notes = serializer.validated_data.get("review_notes", "")
-        before_submission = dict(contrib.submitted_data or {})
-        contrib.status = Contribution.STATUS_REJECTED
-        contrib.reviewer = request.user
-        contrib.review_notes = review_notes
-        contrib.modified_by = request.user
-        contrib.save(update_fields=["status", "reviewer", "review_notes", "modified_date", "modified_by"])
-        log_submission_transaction(
-            action=SubmissionTransaction.ACTION_REJECT,
-            actor=request.user,
-            contribution=contrib,
-            marking=contrib.marking,
-            source=SubmissionTransaction.SOURCE_EDITOR_PORTAL,
-            before_payload=before_submission,
-            after_payload=before_submission,
-            extra_payload={"review_notes": review_notes},
+        return Response(
+            _reject_contribution(contrib, actor=request.user, review_notes=review_notes),
+            status=status.HTTP_200_OK,
         )
-        return Response({"detail": "Contribution rejected."}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=["post"], url_path="request-revision")
     def request_revision(self, request, pk=None):
@@ -2337,9 +2884,12 @@ def _resolve_collection_for_submission(
     effective_state = state_value
 
     if state_value:
-        region = Region.objects.filter(
-            Q(name__iexact=state_value) | Q(abbrev__iexact=state_value)
-        ).first()
+        # The third site with the unscoped-abbrev trap (#103). This one routes a
+        # submission to a Collection, and NO collection sits on a COUNTY-tier
+        # region -- so "VA" resolving to Accomack meant `collection` stayed None
+        # and the submission fell through to the draft fallback instead of
+        # landing in the Virginia editors' queue.
+        region = Region.primary_for_state_term(state_value)
         if region:
             collection = Collection.objects.filter(region=region, is_active=True).first()
 

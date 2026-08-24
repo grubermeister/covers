@@ -31,6 +31,20 @@ interface UseFilterOptionsReturn {
 interface UseFilterOptionsOptions {
   /** When true, only states assigned to the user (Dashboard). When false, all states (Search). */
   assignedStatesOnly?: boolean;
+  /**
+   * What a shape option's `value` carries. The two consumers need different
+   * things and neither can be changed to suit the other (issue #109):
+   *
+   * - "id" (default) -- Catalog Search sends it as `?shape=<id>` to
+   *   MarkingListFilter.shape, a NumberFilter. A name there is an HTTP 400.
+   * - "name" -- the dashboard queue matches `submitted_data.shape`, which
+   *   holds the Shape NAME verbatim ("C - Circle"). Contributions have no
+   *   shape FK to compare against.
+   *
+   * The queue's shape filter had never matched anything: it was handed ids and
+   * compared them against names.
+   */
+  shapeValues?: "id" | "name";
 }
 
 export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOptionsReturn => {
@@ -40,6 +54,7 @@ export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOp
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const assignedStatesOnly = options?.assignedStatesOnly ?? false;
+  const shapeValues = options?.shapeValues ?? "id";
 
   const fetchOptions = useCallback(async () => {
     setIsLoading(true);
@@ -51,7 +66,10 @@ export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOp
         getRegions(assignedStatesOnly),
       ]);
       setColorOptions(colors.map((c) => ({ value: c.name, label: c.name })));
-      setShapeOptions(shapes.map((s) => ({ value: String(s.id), label: s.name })));
+      setShapeOptions(shapes.map((s) => ({
+        value: shapeValues === "name" ? s.name : String(s.id),
+        label: s.name,
+      })));
       setStateOptions(states);
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Failed to fetch filter options';
@@ -63,7 +81,7 @@ export const useFilterOptions = (options?: UseFilterOptionsOptions): UseFilterOp
     } finally {
       setIsLoading(false);
     }
-  }, [assignedStatesOnly]);
+  }, [assignedStatesOnly, shapeValues]);
 
   useEffect(() => {
     fetchOptions();

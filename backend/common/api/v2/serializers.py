@@ -36,6 +36,8 @@ from common.models import (
     MarkingRecycleBin,
     MarkingType,
     PostOffice,
+    Postmaster,
+    PostmasterTenure,
     ReferenceWork,
     Region,
     Shape,
@@ -115,6 +117,32 @@ class PostOfficeSerializer(serializers.ModelSerializer):
         model = PostOffice
         fields = "__all__"
         read_only_fields = ["id", "created_date", "modified_date", "created_by", "modified_by"]
+
+
+class PostmasterSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Postmaster
+        fields = ["id", "name", "sort_name"]
+
+
+class PostmasterTenureSerializer(serializers.ModelSerializer):
+    """One appointment event, flattened for display.
+
+    The office keeps its own name alongside the id so a postmaster's career can
+    be listed without a second round trip per town.
+    """
+    postmaster_name = serializers.CharField(
+        source="postmaster.name", read_only=True, default="")
+    post_office_name = serializers.CharField(
+        source="post_office.name", read_only=True, default="")
+
+    class Meta:
+        model = PostmasterTenure
+        fields = [
+            "tenure_id", "post_office", "post_office_name", "postmaster",
+            "postmaster_name", "event", "date_appointed",
+            "date_appointed_granularity", "source_ref",
+        ]
 
 
 class LetteringSerializer(serializers.ModelSerializer):
@@ -830,6 +858,34 @@ class MarkingListSerializer(serializers.ModelSerializer):
         return w or h or None
 
 
+class RecycleBinMarkingSerializer(MarkingListSerializer):
+    """
+    Recycle-bin rows: the normal list shape plus who removed the marking, when,
+    and why (Issue #89 -- the bin previously showed a bare "Removed" badge, so
+    an editor could not tell a duplicate from a mistake without opening each
+    record). Kept as a subclass rather than folded into MarkingListSerializer
+    because these reads would be one extra query per row on every catalog search;
+    the recycle-bin endpoint select_relates the sidecar instead.
+    """
+
+    removed_at = serializers.DateTimeField(
+        source="recycle_bin_entry.removed_at", read_only=True, default=None
+    )
+    removed_by_username = serializers.CharField(
+        source="recycle_bin_entry.removed_by.username", read_only=True, default=None
+    )
+    removal_reason = serializers.CharField(
+        source="recycle_bin_entry.reason", read_only=True, default=""
+    )
+
+    class Meta(MarkingListSerializer.Meta):
+        fields = MarkingListSerializer.Meta.fields + [
+            "removed_at",
+            "removed_by_username",
+            "removal_reason",
+        ]
+
+
 class MarkingSerializer(serializers.ModelSerializer):
     """
     Full Marking serializer used for retrieve / create / update.
@@ -868,6 +924,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     comment_for_editor = serializers.SerializerMethodField()
     editor_feedback = serializers.SerializerMethodField()
     submitter_name = serializers.SerializerMethodField()
+    vphc_provenance = serializers.SerializerMethodField()
 
     class Meta:
         model = Marking
@@ -919,6 +976,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "editor_feedback",
             "display_submitter_name",
             "submitter_name",
+            "vphc_provenance",
         ]
         read_only_fields = ["id", "created_date", "modified_date"]
 
@@ -967,6 +1025,26 @@ class MarkingSerializer(serializers.ModelSerializer):
         if not _viewer_may_see_contribution_notes(user, contribution):
             return ""
         return _comment_for_editor_from(contribution.submitted_data)
+
+    def get_vphc_provenance(self, obj):
+        # Issue #110. contribution_apply strips the ingest's [VPHC: ...] markers
+        # out of `desc` on approval, because `desc` is public. The doubt is not
+        # discarded -- it stays on the contribution -- but nothing linked an
+        # approved marking back to it, so an editor looking at a flagged record
+        # had no way to see why. This is that path.
+        #
+        # SECURITY: this endpoint is AllowAny. Returning the blob ungated would
+        # republish exactly what the strip just removed, in a richer form, so
+        # the gate below is load-bearing rather than defensive. It is the same
+        # one comment_for_editor and editor_feedback use: any editor/admin, or
+        # the contributor; never anonymous.
+        request = self.context.get("request")
+        user = getattr(request, "user", None)
+        contribution = getattr(obj, "contribution", None)
+        if not _viewer_may_see_contribution_notes(user, contribution):
+            return None
+        blob = (contribution.submitted_data or {}).get("vphc")
+        return blob if isinstance(blob, dict) else None
 
     def get_state(self, obj):
         return _marking_state_name(obj)
@@ -1135,6 +1213,12 @@ class ContributionListSerializer(serializers.ModelSerializer):
     # TimestampedModel.
     created_at = serializers.DateTimeField(source="created_date", read_only=True)
     updated_at = serializers.DateTimeField(source="modified_date", read_only=True)
+    # Issue #89 archive state. Present on every row (false / null when live) so
+    # the dashboard can render one list shape for both the queue and the bin.
+    is_archived = serializers.SerializerMethodField()
+    archived_at = serializers.SerializerMethodField()
+    archived_by_username = serializers.SerializerMethodField()
+    archive_reason = serializers.SerializerMethodField()
 
     class Meta:
         model = Contribution
@@ -1157,8 +1241,32 @@ class ContributionListSerializer(serializers.ModelSerializer):
             "town_display",
             "type_display",
             "display_name",
+            "is_archived",
+            "archived_at",
+            "archived_by_username",
+            "archive_reason",
         ]
         read_only_fields = ["id", "created_at", "updated_at"]
+
+    def _archive_entry(self, obj):
+        # OneToOne reverse accessor raises when absent; the viewset does not
+        # select_related it because most rows are live.
+        return getattr(obj, "recycle_bin_entry", None)
+
+    def get_is_archived(self, obj):
+        return self._archive_entry(obj) is not None
+
+    def get_archived_at(self, obj):
+        entry = self._archive_entry(obj)
+        return entry.archived_at if entry else None
+
+    def get_archived_by_username(self, obj):
+        entry = self._archive_entry(obj)
+        return entry.archived_by.username if entry else None
+
+    def get_archive_reason(self, obj):
+        entry = self._archive_entry(obj)
+        return entry.reason if entry else ""
 
     def get_marking_id(self, obj):
         return _contribution_target_marking_id(obj)

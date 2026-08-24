@@ -43,10 +43,12 @@ v2 ContributionSubmitView) under the caller's transaction.
 from __future__ import annotations
 
 import json
+import re
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Count
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 
@@ -74,6 +76,26 @@ _BOOL_FALSE = {"false", "no", "0"}
 
 _MARKING_TYPES = ("TOWNMARK", "RATEMARK", "AUXMARK")
 _COVER_TYPES = ("FC", "FL")
+
+# Every spelling _resolve_lettering understands, so "did the payload mention
+# lettering at all?" and "what does it resolve to?" stay in step.
+_LETTERING_KEYS = (
+    "lettering_style_id",
+    "lettering",
+    "lettering_id",
+    "lettering_style",
+    "letteringStyle",
+)
+
+# Multipart submissions arrive as "reference_work_ids[]" (the browser's array
+# spelling); JSON ones as reference_work_ids / referenceWorkIds. All three are
+# the same field -- catalog_codes._first_reference_work_id already reads all of
+# them, and _sync_citations must agree or it deletes rows it cannot see.
+_CITATION_ID_KEYS = (
+    "reference_work_ids",
+    "referenceWorkIds",
+    "reference_work_ids[]",
+)
 
 
 class ContributionApplyError(ValueError):
@@ -130,11 +152,7 @@ def apply_contribution_to_catalog(contrib):
     width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
     height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
 
-    desc_raw = (payload.get("desc") or payload.get("description") or "")
-    if isinstance(desc_raw, str):
-        desc_raw = desc_raw.strip()
-    else:
-        desc_raw = str(desc_raw).strip()
+    desc_raw = _desc_from_payload(payload)
     display_submitter_name = _coerce_optional_bool(payload, "display_submitter_name", False)
 
     date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
@@ -191,11 +209,22 @@ def apply_contribution_to_catalog(contrib):
 
 def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marking:
     """
-    Apply an approved marking-EDIT contribution in place: re-resolve the
-    marking's scalar fields from submitted_data, overwrite the existing row
-    (no new Marking), then reconcile its Images and Citations against the FULL
-    desired set. Returns the updated Marking -- the same contract as the create
-    path.
+    Apply an approved marking-EDIT contribution in place: merge the submitted
+    scalars into the existing row (no new Marking), then reconcile its Images
+    and Citations. Returns the updated Marking -- the same contract as the
+    create path.
+
+    Scalars follow RFC 7396 merge semantics, matching _apply_cover_edit: a key
+    the payload never mentions leaves the stored value alone, and an explicitly
+    empty value clears it. The submit form states emptiness explicitly (""),
+    so "the contributor cleared this box" still reads as a clear.
+
+    This is load-bearing, not stylistic. Rebuilding the row from the payload
+    instead meant any producer that spoke to a subset of columns silently
+    NULLed the rest -- and full_clean() passed, so the approval returned 200
+    with a clean audit trail. The VPHC ingest speaks to none of impression,
+    date_fmt, rate_val or desc; approving its 310 edits under the old behavior
+    nulled impression on all 288 matched markings.
 
     Marking.all_objects is used so a pending edit still applies even if the
     entry was recycle-binned after the edit was submitted; the removal sidecar
@@ -210,58 +239,84 @@ def _apply_marking_edit(contrib, payload: dict, actor, marking_id: int) -> Marki
             "Unknown marking id for edit: {}".format(marking_id)
         )
 
-    # Re-resolve scalars with the SAME helpers the create path uses, including
-    # the manuscript branch, so create and edit validate identically.
+    # Resolve with the SAME helpers the create path uses so create and edit
+    # validate identically; the difference is only which fields get assigned.
     state = _required_str(payload, "state")
     town = _required_str(payload, "town")
     inscription = _required_str(payload, "inscription_txt")
     is_manuscript = _coerce_required_bool(payload, "is_manuscript")
     post_office = _resolve_post_office(state, town, actor)
 
-    if is_manuscript:
-        shape = None
-        lettering = None
-        is_irreg = None
-    else:
-        shape = _resolve_fk(Shape, payload, "shape_id", "shape")
-        lettering = _resolve_lettering(payload)
-        is_irreg = _coerce_required_bool(payload, "is_irreg")
-
-    color = _resolve_fk(Color, payload, "color_id", "color")
-    width = _parse_decimal(payload.get("width_mm") or payload.get("widthMm"))
-    height = _parse_decimal(payload.get("height_mm") or payload.get("heightMm"))
-
-    desc_raw = (payload.get("desc") or payload.get("description") or "")
-    desc_raw = desc_raw.strip() if isinstance(desc_raw, str) else str(desc_raw).strip()
-
-    date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
-    if isinstance(date_fmt, str):
-        date_fmt = date_fmt.strip() or None
-
-    impression = payload.get("impression") or None
-    if isinstance(impression, str):
-        impression = impression.strip() or None
-
-    # type was validated against _MARKING_TYPES by the dispatch before this ran.
+    # Required by the submission contract, so always restated.
     catalog_code = code_value_from_payload(payload)
     if catalog_code:
         marking.code = catalog_code
-    marking.type = payload.get("type")
     marking.inscription_txt = inscription
-    marking.desc = desc_raw or None
     marking.is_manuscript = is_manuscript
-    marking.shape = shape
-    marking.lettering = lettering
-    marking.is_irreg = is_irreg
-    marking.width = width
-    marking.height = height
-    marking.date_fmt = date_fmt
-    marking.impression = impression
-    marking.rate_val = _parse_decimal(payload.get("rate_val"))
     marking.post_office = post_office
-    # Omitted color means "no change"; explicit blank/null means "clear".
+
+    if is_manuscript:
+        # Derived, not submitted: a manuscript marking has no shape, lettering
+        # or irregularity, so these clear whether or not the payload said so.
+        marking.shape = None
+        marking.lettering = None
+        marking.is_irreg = None
+    else:
+        if _payload_mentions_fk(payload, "shape_id", "shape"):
+            marking.shape = _resolve_fk(Shape, payload, "shape_id", "shape")
+        if _payload_mentions(payload, *_LETTERING_KEYS):
+            marking.lettering = _resolve_lettering(payload)
+        if "is_irreg" in payload:
+            marking.is_irreg = _coerce_optional_bool(
+                payload, "is_irreg", marking.is_irreg
+            )
+
+    # type was validated against _MARKING_TYPES by the dispatch before this ran.
+    if "type" in payload:
+        marking.type = payload.get("type")
     if _payload_mentions_fk(payload, "color_id", "color"):
-        marking.color = color
+        marking.color = _resolve_fk(Color, payload, "color_id", "color")
+    if _payload_mentions(payload, "width_mm", "widthMm"):
+        marking.width = _parse_decimal(
+            payload.get("width_mm") or payload.get("widthMm")
+        )
+    if _payload_mentions(payload, "height_mm", "heightMm"):
+        marking.height = _parse_decimal(
+            payload.get("height_mm") or payload.get("heightMm")
+        )
+    if _payload_mentions(payload, "desc", "description"):
+        desc_raw = _desc_from_payload(payload)
+        # An edit merges rather than replaces, so an explicitly empty value
+        # CLEARS the stored description (B1). Stripping is dangerous in exactly
+        # one shape: a payload whose desc is nothing but a VPHC marker strips to
+        # "" and would then silently null a good description the submission
+        # never spoke to.
+        #
+        # The distinction is WHY the value is empty, not merely that it is:
+        #   desc ""            -> a contributor cleared the box; still clears.
+        #   desc "[VPHC: ...]" -> emptied by us; leave the stored value alone.
+        # Keying on the vphc payload rather than on this would break the first
+        # case, since VPHC payloads can legitimately carry an explicit "".
+        #
+        # The marker-only shape does not occur in the current queue -- all 310
+        # queued edits keep their "Virginia Postal History Catalog <Town> #N
+        # (T1:rNNNN)." lead after stripping -- but a re-emit or a hand-written
+        # payload could produce it, and silently nulling a description is the
+        # exact defect class B1 existed to fix.
+        if desc_raw or not _normalized_desc(payload):
+            marking.desc = desc_raw or None
+    if _payload_mentions(payload, "date_fmt", "dateFmt"):
+        date_fmt = payload.get("date_fmt") or payload.get("dateFmt") or None
+        if isinstance(date_fmt, str):
+            date_fmt = date_fmt.strip() or None
+        marking.date_fmt = date_fmt
+    if "impression" in payload:
+        impression = payload.get("impression") or None
+        if isinstance(impression, str):
+            impression = impression.strip() or None
+        marking.impression = impression
+    if "rate_val" in payload:
+        marking.rate_val = _parse_decimal(payload.get("rate_val"))
     if "display_submitter_name" in payload:
         marking.display_submitter_name = bool(
             _coerce_optional_bool(
@@ -725,9 +780,88 @@ def _resolve_fk(model, payload: dict, id_key: str, name_key: str, *fallback_id_k
     return model.objects.filter(name__iexact=name).first()
 
 
-def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id_keys: str) -> bool:
-    keys = (id_key, name_key) + fallback_id_keys
+def _payload_mentions(payload: dict, *keys: str) -> bool:
+    """
+    Did the submission speak to this field at all? An edit merges rather than
+    replaces (RFC 7396): a key the payload never mentions leaves the stored
+    value alone; only an explicitly empty value clears it.
+    """
     return any(key in payload for key in keys)
+
+
+def _payload_mentions_fk(payload: dict, id_key: str, name_key: str, *fallback_id_keys: str) -> bool:
+    return _payload_mentions(payload, id_key, name_key, *fallback_id_keys)
+
+
+# Issue #110. apply_vphc_ledger._description builds a description that carries
+# two kinds of ingest-internal notation into `desc`:
+#
+#   Virginia Postal History Catalog Wytheville #2 (T1:r6495). [VPHC: ambiguous]
+#                                                 ^^^^^^^^^^  ^^^^^^^^^^^^^^^^^
+#                                                 sheet cell  flag marker
+#
+# `desc` is served by the AllowAny markings API and rendered on the public
+# record page, so approving published both as public catalog text on ~1,500
+# entries. Ian's call, 2026-08-19: keep the doubt, make it editor-only. Both
+# are named in #110's problem statement, and neither means anything to a
+# philatelist reading the catalog -- same objection #111 raises about rule
+# codes leaking into editor-facing prose.
+#
+# Stripped here, at the point of approval, rather than by re-emitting the
+# queue: this text is baked into submitted_data on ~2,084 contributions and
+# apply_vphc_ledger is not idempotent, so a re-emit means a delete-and-rebuild
+# with eight human submissions to protect. The contribution keeps the original
+# text either way, and MarkingDetailSerializer.vphc_provenance is what shows it
+# to editors afterwards -- including the sheet cell, which the provenance blob
+# carries as `src`.
+#
+# MARKER: non-greedy, and every occurrence rather than the last. 118 of the
+# 2,062 contributions measured carry TWO markers -- the crossexam one plus the
+# type_defaulted one apply_vphc_ledger appends separately (:452 and :454), so a
+# trailing-only strip leaves one behind. Verified across 1,730 crosswalk and
+# 1,576 emitted markers that none contains an inner "]", so .*? cannot truncate
+# one mid-marker.
+#
+# SHEET CELL: spelled out rather than a loose \(.*?\), which would eat any
+# parenthetical an editor later writes. Every one of the 2,317 crosswalk rows
+# matches T<digits>:r<digits>, joined by ";" for markings assembled from several
+# sheet rows -- up to 13 of them (e.g. "(T1:r6305;T1:r6306)").
+_VPHC_DESC_MARKER_RE = re.compile(r"\s*\[VPHC:.*?\]")
+_VPHC_SHEET_CELL_RE = re.compile(r"\s*\(T\d+:r\d+(?:;T\d+:r\d+)*\)")
+
+_VPHC_NOTATION_PATTERNS = (_VPHC_DESC_MARKER_RE, _VPHC_SHEET_CELL_RE)
+
+
+def _strip_vphc_notation(text: str, payload: dict) -> str:
+    """Remove the ingest's internal notation from a public description.
+
+    Gated on the `vphc` key rather than on status or on the text itself, which
+    is the standing rule for anything touching this queue (LEFT_OFF section B1):
+    the queue is live and carries real human submissions. Measured on the 2,062
+    ingested rows -- every one carries the key, and no marker-bearing row lacks
+    it -- so a contributor who happens to type "[VPHC: ...]" or cite a sheet
+    cell in a description keeps their text.
+    """
+    if "vphc" not in payload:
+        return text
+    for pattern in _VPHC_NOTATION_PATTERNS:
+        text = pattern.sub("", text)
+    return text.strip()
+
+
+def _normalized_desc(payload: dict) -> str:
+    """The submitted description as sent, before any marker removal."""
+    raw = payload.get("desc") or payload.get("description") or ""
+    return raw.strip() if isinstance(raw, str) else str(raw).strip()
+
+
+def _desc_from_payload(payload: dict) -> str:
+    """The submitted description, normalised and with ingest notation removed.
+
+    Shared by the create and edit paths so the two cannot drift; they already
+    normalised identically before this existed.
+    """
+    return _strip_vphc_notation(_normalized_desc(payload), payload)
 
 
 def _resolve_lettering(payload: dict) -> Lettering | None:
@@ -773,27 +907,91 @@ def _read_nested_id(value: Any, snake: str, camel: str) -> int | None:
         return None
 
 
+def _town_match_key(name: str) -> str:
+    """Comparison key for a town name: blind to case, spacing and punctuation.
+
+    "ACCOMACK C.H.", "Accomack C. H." and "ACCOMACK CH" are one town; iexact
+    matching treated them as three. Letters and digits only, uppercased.
+    """
+    return re.sub(r"[^A-Z0-9]+", "", name.upper())
+
+
+def _next_post_office_code(region) -> str | None:
+    """Continue the region's code series, e.g. USA-VA1-1005.
+
+    Same rule as import_vphc_reference: next serial = highest existing numeric
+    suffix under the region prefix + 1. A region with no code of its own has no
+    series to continue; return None rather than minting "None-1".
+    """
+    if not region.code:
+        return None
+    used = PostOffice.objects.filter(
+        code__startswith=f"{region.code}-").values_list("code", flat=True)
+    top = 0
+    for code in used:
+        tail = code.rsplit("-", 1)[-1]
+        if tail.isdigit():
+            top = max(top, int(tail))
+    return f"{region.code}-{top + 1}"
+
+
 def _resolve_post_office(state_name: str, town_name: str, actor) -> PostOffice:
     """
     Resolve a PostOffice for (state_name, town_name), auto-creating the
     town if it does not yet exist in that state. Regions are NOT
     auto-created; an unknown state is a hard error.
     """
-    region = (
-        Region.objects.filter(name__iexact=state_name).first()
-        or Region.objects.filter(abbrev__iexact=state_name).first()
-    )
+    # Region.primary_for_state_term, not a bare abbrev lookup: the VPHC ingest
+    # gave all 141 county rows their state's abbrev (#103), so "VA" matched 98
+    # regions and Meta.ordering made this resolve to Accomack County every
+    # time. It then found no Lynchburg linked to Accomack and CREATED a
+    # duplicate post office with no state. Ten of those reached woco.dev on
+    # 2026-08-19 before the queue was restored.
+    region = Region.primary_for_state_term(state_name)
     if region is None:
         raise ContributionApplyError("Unknown state: {}".format(state_name))
 
     normalized_name = " ".join(town_name.strip().split()).title()
+    # .title() upcases the letter after EVERY apostrophe, so AYLETT'S became
+    # "Aylett'S". A trailing 'S is a possessive, never a name continuation;
+    # O'BRIEN -> "O'Brien" has no word-final 'S and is untouched.
+    normalized_name = re.sub(r"'S\b", "'s", normalized_name)
+
     po = (
         PostOffice.objects
         .filter(name__iexact=normalized_name, post_office_regions__region=region)
         .first()
     )
     if po is None:
+        # Rehearsing the 2,383-row VPHC drain (2026-08-24) showed iexact alone
+        # creating 74 duplicate towns: the book writes "Accomack C. H." where
+        # the catalog holds "ACCOMACK C.H". Fall back to a punctuation-blind
+        # match -- scoped to the region, because Martinsburg VA and
+        # Martinsburg WV are different towns (#94) and must never cross-match.
+        key = _town_match_key(town_name)
+        if key:
+            candidates = PostOffice.objects.filter(
+                post_office_regions__region=region
+            ).annotate(
+                # distinct=True: the junction join fans out, and a plain Count
+                # over a fanned-out join multiplies (ISSUE-2026-08-13-05).
+                marking_count=Count("markings", distinct=True),
+            )
+            matches = [c for c in candidates if _town_match_key(c.name) == key]
+            if matches:
+                # The catalog already holds spelling variants of one town
+                # (69 fragmented VA/WV names, issue #129), so the pick must be
+                # deterministic: a transferable town (has a code) beats an
+                # uncoded one, then the busiest, then the oldest.
+                matches.sort(key=lambda p: (p.code is None, -p.marking_count, p.pk))
+                po = matches[0]
+    if po is None:
         po = PostOffice.objects.create(
+            # An uncoded town cannot travel: export_state_bundle and
+            # drop_ascc_state both key on the USA-XX1- code prefix. The
+            # unique=True column turns a mint race into an IntegrityError,
+            # which the approval path already retries.
+            code=_next_post_office_code(region),
             name=normalized_name,
             created_by=actor,
             modified_by=actor,
@@ -997,23 +1195,44 @@ def _sync_citations(subject_type: str, subject_id, payload: dict, actor) -> None
     """
     Replace all Citation rows for (subject_type, subject_id) with the set built
     from reference_work_ids + reference_work_details. Deletes the existing rows
-    first, then recreates; zero ids therefore clears citations. On a freshly
-    created subject the delete is a no-op, so this matches the old create-only
-    behavior. subject_type is the Citation subject string ("MARKING" | "COVER").
+    first, then recreates; an explicitly empty id list therefore clears
+    citations. On a freshly created subject the delete is a no-op, so this
+    matches the old create-only behavior. subject_type is the Citation subject
+    string ("MARKING" | "COVER").
+
+    A payload that never mentions the field is not a request to delete: an edit
+    merges rather than replaces (RFC 7396), and an ingest that speaks only to
+    the columns it knows about must not wipe a marking's existing bibliography.
+    Clearing citations requires an explicitly empty list.
     """
+    if not _payload_mentions(payload, *_CITATION_ID_KEYS):
+        return
+
+    ids_raw = None
+    for key in _CITATION_ID_KEYS:
+        if key in payload:
+            ids_raw = payload.get(key)
+            break
+
+    # A multipart QueryDict is flattened to its last value at submit time, so
+    # this arrives as a bare id rather than a list. Treat it as the one-element
+    # list it is instead of discarding it.
+    if isinstance(ids_raw, (str, int)) and not isinstance(ids_raw, bool):
+        ids_raw = [ids_raw] if str(ids_raw).strip() else []
+
+    if ids_raw and not isinstance(ids_raw, (list, tuple)):
+        raise ContributionApplyError(
+            "reference_work_ids must be a list of ids."
+        )
+
+    # Guard, extract and validate all happen above, so there is no path that
+    # deletes without either repopulating or having been told to clear.
     Citation.objects.filter(
         subject_type=subject_type, subject_id=subject_id
     ).delete()
 
-    ids_raw = payload.get("reference_work_ids")
-    if ids_raw is None:
-        ids_raw = payload.get("referenceWorkIds")
     if not ids_raw:
         return
-    if not isinstance(ids_raw, (list, tuple)):
-        raise ContributionApplyError(
-            "reference_work_ids must be a list of ids."
-        )
 
     details_raw = payload.get("reference_work_details")
     if details_raw is None:

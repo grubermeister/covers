@@ -53,7 +53,8 @@ jobs:
       - name: Verify tools
         run: |
           cd tools
-          uv run python -m unittest discover -s tests
+          # pytest, not unittest -- see the same step in build-and-deploy.yml.
+          uv run python -m pytest tests
 
       - name: Django system checks
         env:

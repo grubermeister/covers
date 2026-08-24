@@ -86,4 +86,8 @@ dev = [
     "jinja2",
     "numpy",
     "openai",
+    # tools/tests are pytest-style (parametrize, tmp_path). CI runs them with
+    # pytest, not unittest -- unittest only collects TestCase subclasses, so it
+    # would import those files and silently run none of their assertions.
+    "pytest",
 ]

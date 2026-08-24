@@ -23,6 +23,7 @@ import NotFound from "./pages/NotFound";
 const CoverEdit = lazy(() => import("./pages/CoverEdit"));
 const EntryDetail = lazy(() => import("./pages/EntryDetail"));
 const Dashboard = lazy(() => import("./pages/Dashboard"));
+const PostOfficeDetail = lazy(() => import("./pages/PostOfficeDetail"));
 
 const queryClient = new QueryClient();
 // Scroll to top on every route change so pages open at the top.
@@ -130,6 +131,7 @@ const App = () => (
                 </RequireSuperuser>
               )}
             />
+            <Route path="/post-office/:id" element={<PostOfficeDetail />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

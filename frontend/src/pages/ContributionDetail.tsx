@@ -20,7 +20,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Link, useNavigate, useParams, useLocation } from "react-router-dom";
 import imageNotAvailable from "@/assets/image-not-available.jpg";
+import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
+import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
 import { useAuth } from "@/hooks/useAuth";
 import { normalizeImageUrl } from "@/services/markings";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious, type CarouselApi } from "@/components/ui/carousel";
@@ -36,6 +38,8 @@ import {
   type CatalogFieldValues,
 } from "@/lib/catalogRecordDisplay";
 import { submittedDataToFieldInput } from "@/lib/contributionToFields";
+import { readVphcProvenance } from "@/lib/vphcProvenance";
+import { VphcProvenanceCard } from "@/components/VphcProvenanceCard";
 import type { MarkingFieldInput } from "@/lib/markingFields";
 import {
   type Contribution,
@@ -43,6 +47,7 @@ import {
   decideContribution,
   deleteOwnContribution,
   getContributionCatalogCodeSuggestion,
+  getDirectCatalogCodeSuggestion,
 } from "@/services/contributions";
 
 
@@ -183,13 +188,34 @@ const ContributionDetail = () => {
   const contributionStatus = contribution?.status;
   const contributionSubmittedData = contribution?.submittedData;
 
+  // Preview the code WITHOUT writing it. `getContributionCatalogCodeSuggestion`
+  // persists its answer into submitted_data (catalog_codes.suggest_for_contribution),
+  // so firing it from an effect meant merely OPENING a pending row wrote to the
+  // database -- no click, no intent, outside any transaction, and with no audit
+  // row. That is issue #118: 27 VPHC rows in the review queue were carrying a
+  // minted VPHC1-VA-M#### code purely because someone had looked at them, and
+  // approving one would have made that the permanent Marking.code.
+  //
+  // The direct endpoint computes the same code from the same payload via the
+  // same helpers (_region_from_payload, _reference_code_from_selected_payload)
+  // but takes no contribution and saves nothing. Minting stays where it belongs:
+  // ensureCatalogCode() below, at approve time, deliberately.
   useEffect(() => {
     if (contributionId == null || contributionStatus !== "pending" || !isStateEditor || !user) return;
     if (isCoverContributionData(contributionSubmittedData)) return;
+    const sd = (contributionSubmittedData ?? {}) as Record<string, unknown>;
+    const referenceWorkIds = Array.isArray(sd.reference_work_ids)
+      ? (sd.reference_work_ids as number[])
+      : undefined;
     let cancelled = false;
     setCatalogCodeLoading(true);
     setCatalogCodeError(null);
-    getContributionCatalogCodeSuggestion(contributionId)
+    getDirectCatalogCodeSuggestion({
+      subjectType: "MARKING",
+      state: typeof sd.state === "string" ? sd.state : undefined,
+      markingId: typeof sd.edit_marking_id === "number" ? sd.edit_marking_id : null,
+      referenceWorkIds,
+    })
       .then((suggestion) => {
         if (!cancelled) setCatalogCode(suggestion.catalogCode);
       })
@@ -241,14 +267,24 @@ const ContributionDetail = () => {
         ...(kind === "approve" ? { catalogCode: finalCatalogCode } : {}),
       });
       const actionLabel = kind === "approve" ? "Approved" : kind === "reject" ? "Rejected" : "Submission returned";
-      toast({ title: actionLabel, description: "Your comment was saved for the contributor." });
-      if (kind === "approve" && result.markingId != null) {
-        navigate(`/record/${result.markingId}`, {
-          state: { fromDashboard: true, dashboardTab: dashboardTab ?? "editor" },
-        });
-        return;
-      }
-      navigate("/dashboard", { state: { tab: "editor" } });
+      // Issue #87: every decision returns to the review queue the editor came
+      // from. Approving used to redirect to the new catalog record instead,
+      // which stranded the editor mid-queue; the record is reachable from the
+      // toast action rather than by hijacking the navigation.
+      toast({
+        title: actionLabel,
+        description: "Your comment was saved for the contributor.",
+        action:
+          kind === "approve" && result.markingId != null ? (
+            <ToastAction
+              altText="View the approved record"
+              onClick={() => navigate(`/record/${result.markingId}`)}
+            >
+              View record
+            </ToastAction>
+          ) : undefined,
+      });
+      navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
     } catch (err) {
       toast({
         title: "Could not submit",
@@ -262,8 +298,11 @@ const ContributionDetail = () => {
 
 
   const handleBack = () => {
-    if (fromDashboard) navigate("/dashboard", { state: { tab: dashboardTab ?? "submissions" } });
-    else navigate("/dashboard");
+    // Issue #87: return to the dashboard view the editor actually left, not a
+    // freshly defaulted one. dashboardHrefForTab keeps their filters and page
+    // while pinning the tab they came in on.
+    if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "submissions"));
+    else navigate(dashboardHref());
   };
 
   const handleDeleteConfirm = async () => {
@@ -273,7 +312,7 @@ const ContributionDetail = () => {
       await deleteOwnContribution(contribution.id);
       toast({ title: "Draft deleted" });
       setDeleteOpen(false);
-      navigate("/dashboard");
+      navigate(dashboardHref());
     } catch (err) {
       toast({
         title: "Could not delete",
@@ -335,6 +374,8 @@ const ContributionDetail = () => {
       sd.comment ??
       ""
   ).trim();
+  // Null for anything that did not come from the VPHC ingest.
+  const vphc = readVphcProvenance(sd);
   const baseImageUrl = (import.meta.env.VITE_IMAGE_URL ?? "").replace(/\/+$/, "");
   const imageRoot = baseImageUrl || "/media";
   const resolveStorageImageUrl = (storageFilename: string) =>
@@ -721,6 +762,9 @@ const ContributionDetail = () => {
                       <p className="text-sm text-foreground whitespace-pre-line">{contributorComment}</p>
                     </div>
                   ) : null}
+                  {/* Provenance for ingested records. The fields above are what
+                      the ingest concluded; this is how much of it is guesswork. */}
+                  {vphc ? <VphcProvenanceCard provenance={vphc} /> : null}
                 </CardContent>
               </Card>
 

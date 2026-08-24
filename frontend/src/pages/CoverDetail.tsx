@@ -71,6 +71,8 @@ import { parseMarkingIdInput } from "@/lib/recordLinking";
 import { listCitationsForSubject } from "@/services/citations";
 import { getReferenceWorks, type ReferenceWorkRecord } from "@/services/referenceWorks";
 import { SUBMISSION_LABELS } from "@/labels/submission";
+import { dashboardHrefForTab } from "@/lib/dashboardParams";
+import { catalogHref } from "@/lib/catalogParams";
 
 const EMPTY = "-";
 
@@ -302,12 +304,19 @@ const CoverDetailPage = () => {
   };
 
   const handleBack = () => {
+    // Issue #87: a cover opened from the dashboard (e.g. the recycle bin list)
+    // returns to that dashboard view. Otherwise the parent record is the
+    // natural parent, and catalog search is the last resort.
+    if (state?.fromDashboard) {
+      navigate(dashboardHrefForTab(state.dashboardTab ?? "editor"));
+      return;
+    }
     const associatedMarkingId = markingId ?? associatedMarkings[0]?.marking.id ?? null;
     if (associatedMarkingId != null) {
       navigate(`/record/${associatedMarkingId}`);
       return;
     }
-    navigate("/search");
+    navigate(catalogHref());
   };
 
   useEffect(() => {

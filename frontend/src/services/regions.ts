@@ -50,9 +50,29 @@ function getResponseRows<T>(data: unknown): { rows: T[]; next: string | null } {
   throw new Error("State options API: invalid response (missing results array)");
 }
 
+/**
+ * Tiers that are a legitimate answer to "which state/territory?".
+ *
+ * An allowlist, unlike the backend's Region.SUBREGION_TIERS exclusion, because
+ * this list also has to drop COUNTRY ("United States of America" is not a
+ * state). The cost of that is the reminder below.
+ *
+ * ⚠ A future PROVINCE (Canada) must be added here or it will silently not
+ * appear in the dropdown.
+ *
+ * Without this the endpoint returns every Region and the dropdown reads
+ * "Accomack, Alabama, Alaska, Albemarle, Alexandria, Alleghany, Amelia…" --
+ * 196 entries for 57 real jurisdictions, because the VPHC ingest added 141
+ * county rows. (issue #103)
+ */
+export const STATE_SELECTOR_TIERS = ["STATE", "TERRITORY", "DISTRICT"] as const;
+
 async function collectRegionNames(assignedOnly: boolean): Promise<string[]> {
   const names: string[] = [];
-  const params: Record<string, string> = { page_size: "500" };
+  const params: Record<string, string> = {
+    page_size: "500",
+    region_tier__in: STATE_SELECTOR_TIERS.join(","),
+  };
   if (assignedOnly) params.assigned_only = "true";
 
   let nextUrl: string | null = "/regions/";

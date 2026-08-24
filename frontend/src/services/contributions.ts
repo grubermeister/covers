@@ -125,9 +125,30 @@ export function mapApiItemToContribution(item: ContributionApiItem): Contributio
 
 /** Query filters for GET /contributions/. camelCase here maps to snake_case params. */
 export interface ContributionListParams {
-  mode?: "editor";
+  /** "archived" is the editor recycle bin -- same scoping as "editor" (#89). */
+  mode?: "editor" | "archived";
   status?: string;
   state?: string;
+  /**
+   * Free text (#109). Matches town, state, type, inscription, the VPHC
+   * reference code and the contributor's username, plus the entry number when
+   * the text is all digits.
+   */
+  q?: string;
+  town?: string;
+  /** Shape NAME as stored in submitted_data ("C - Circle"), not the Shape id. */
+  shape?: string;
+  color?: string;
+  /** ISO yyyy-mm-dd. Both ends inclusive; anything else is a 400. */
+  submittedFrom?: string;
+  submittedTo?: string;
+  /**
+   * Where the row came from (#101). "vphc" is the ingest, "human" is a person
+   * who used the submission form. Bulk review defaults to "vphc" so a
+   * select-all cannot sweep up a real submission -- the queue is live, and a
+   * whole-queue operation nearly destroyed eight of them once already.
+   */
+  source?: "vphc" | "human" | "all";
   page?: number;
   pageSize?: number;
   ordering?: string;
@@ -142,13 +163,39 @@ export interface ContributionListResult {
 }
 
 /** GET /contributions/ with optional filters. Handles array or paginated responses. */
-export async function listContributions(
+/**
+ * Wire params for the queue, shared by the list and by "select all matching".
+ *
+ * Both endpoints MUST send the same filters. The backend runs each through the
+ * identical filter_queryset(get_queryset()) path, so if these two callers built
+ * their query differently, "select all 14 matching" would select a different 14
+ * from the ones on screen -- and an editor would approve rows they never saw.
+ * Pagination is excluded: the id list is the whole match set, not a page of it.
+ */
+function buildContributionQuery(
   params?: ContributionListParams,
-): Promise<ContributionListResult> {
+): Record<string, string | number> {
   const query: Record<string, string | number> = {};
   if (params?.mode) query.mode = params.mode;
   if (params?.status) query.status = params.status;
   if (params?.state) query.state = params.state;
+  // Issue #109: these have to reach the API. They used to be applied in the
+  // browser to the page it had already fetched, so at 2,440 rows a search
+  // silently returned "nothing" unless the target was on the current page.
+  if (params?.q?.trim()) query.q = params.q.trim();
+  if (params?.town?.trim()) query.town = params.town.trim();
+  if (params?.shape && params.shape !== "all") query.shape = params.shape;
+  if (params?.color && params.color !== "all") query.color = params.color;
+  if (params?.submittedFrom) query.submitted_from = params.submittedFrom;
+  if (params?.submittedTo) query.submitted_to = params.submittedTo;
+  if (params?.source) query.source = params.source;
+  return query;
+}
+
+export async function listContributions(
+  params?: ContributionListParams,
+): Promise<ContributionListResult> {
+  const query = buildContributionQuery(params);
   if (params?.page != null) query.page = params.page;
   if (params?.pageSize != null) query.page_size = params.pageSize;
   if (params?.ordering) query.ordering = params.ordering;
@@ -246,6 +293,102 @@ export interface DecideResult {
 }
 
 /**
+ * GET /contributions/ids/ -- every id matching the current filters (#101).
+ *
+ * This is what "select all matching" means. It deliberately does NOT reuse the
+ * fetched page: #109's lesson is that anything derived client-side from one
+ * page lies at scale, and here that lie would approve the wrong rows.
+ */
+export async function listContributionIds(
+  params?: ContributionListParams,
+): Promise<{ ids: number[]; count: number }> {
+  const res = await apiClient.get("/contributions/ids/", {
+    params: buildContributionQuery(params),
+  });
+  const data = res.data as { ids?: unknown; count?: unknown };
+  const ids = Array.isArray(data.ids)
+    ? data.ids.filter((v): v is number => typeof v === "number")
+    : [];
+  return { ids, count: typeof data.count === "number" ? data.count : ids.length };
+}
+
+export interface BulkReviewFailure {
+  id: number;
+  reason: string;
+}
+
+export interface BulkReviewResult {
+  succeeded: number[];
+  failed: BulkReviewFailure[];
+}
+
+/**
+ * Rows per request. The server caps at 50; this is the client's working size.
+ *
+ * Measured on a full-size queue (2,443 pending): one approval is ~174 ms mean,
+ * ~274 ms worst, so 25 rows is ~4.4 s and the whole queue is ~7 minutes. Small
+ * enough to stay far clear of any proxy timeout, large enough that draining the
+ * queue is ~98 requests rather than 2,443.
+ */
+export const BULK_REVIEW_BATCH_SIZE = 25;
+
+/**
+ * POST /contributions/bulk-{approve,reject}/ over `ids`, in batches.
+ *
+ * Sequential, not parallel: every row in a batch mints catalog codes off the
+ * same prefix, and concurrent requests would race for the same serial. The
+ * server retries that race, but there is no reason to manufacture it -- and
+ * sequential batches give an honest progress bar.
+ *
+ * Failures never abort the run. Each row commits independently server-side, so
+ * a bad row is reported and the rest still land (#101 AC-4); the caller gets
+ * every failure at the end and can retry just those ids.
+ */
+export async function bulkReviewContributions(
+  action: "approve" | "reject",
+  ids: number[],
+  options?: {
+    reviewNotes?: string;
+    onProgress?: (done: number, total: number) => void;
+    signal?: AbortSignal;
+  },
+): Promise<BulkReviewResult> {
+  const path = action === "approve" ? "bulk-approve" : "bulk-reject";
+  const key = action === "approve" ? "approved" : "rejected";
+  const succeeded: number[] = [];
+  const failed: BulkReviewFailure[] = [];
+
+  for (let i = 0; i < ids.length; i += BULK_REVIEW_BATCH_SIZE) {
+    if (options?.signal?.aborted) break;
+    const slice = ids.slice(i, i + BULK_REVIEW_BATCH_SIZE);
+    try {
+      const res = await apiClient.post(
+        `/contributions/${path}/`,
+        { ids: slice, review_notes: options?.reviewNotes ?? "" },
+        { signal: options?.signal },
+      );
+      const data = res.data as Record<string, unknown>;
+      const ok = Array.isArray(data[key]) ? (data[key] as number[]) : [];
+      succeeded.push(...ok);
+      const bad = Array.isArray(data.failed) ? (data.failed as BulkReviewFailure[]) : [];
+      failed.push(...bad);
+    } catch (err) {
+      // A transport-level failure loses the whole slice, not the run. Report
+      // every id in it so the editor can retry them rather than being told
+      // "1,150 of 2,443" with no account of the missing ones.
+      const detail =
+        (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail ??
+        (err as Error)?.message ??
+        "Request failed.";
+      for (const id of slice) failed.push({ id, reason: detail });
+    }
+    options?.onProgress?.(Math.min(i + slice.length, ids.length), ids.length);
+  }
+
+  return { succeeded, failed };
+}
+
+/**
  * POST /contributions/{id}/{approve|reject|request-revision}/.
  * "revision" maps to the "request-revision" path.
  */
@@ -326,4 +469,46 @@ export async function getDirectCatalogCodeSuggestion(payload: {
 export async function deleteOwnContribution(contributionId: number): Promise<void> {
   await ensureCsrfToken();
   await apiClient.delete(`/contributions/${contributionId}/`);
+}
+
+/** Result shape shared by the archive/restore actions; mirrors removeMarking. */
+type ArchiveResult = { ok: true } | { ok: false; message: string };
+
+function archiveError(err: unknown, fallback: string): ArchiveResult {
+  const ax = err as { response?: { data?: { detail?: string } } };
+  const detail = ax.response?.data?.detail;
+  return { ok: false, message: typeof detail === "string" ? detail : fallback };
+}
+
+/**
+ * Editor: POST /contributions/{id}/archive/ -- clear a reviewed entry off the
+ * review dashboard (Issue #89). Soft: the contribution is untouched and stays
+ * visible to its contributor. The backend rejects a pending contribution.
+ */
+export async function archiveContribution(
+  contributionId: number,
+  reason?: string,
+): Promise<ArchiveResult> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.post(`/contributions/${contributionId}/archive/`, {
+      reason: reason ?? "",
+    });
+    return { ok: true };
+  } catch (err: unknown) {
+    return archiveError(err, "Could not archive this entry.");
+  }
+}
+
+/** Editor: POST /contributions/{id}/restore/ -- put an archived entry back in the queue. */
+export async function restoreContribution(
+  contributionId: number,
+): Promise<ArchiveResult> {
+  await ensureCsrfToken();
+  try {
+    await apiClient.post(`/contributions/${contributionId}/restore/`, {});
+    return { ok: true };
+  } catch (err: unknown) {
+    return archiveError(err, "Could not restore this entry.");
+  }
 }
