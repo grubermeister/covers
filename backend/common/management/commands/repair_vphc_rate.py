@@ -99,6 +99,12 @@ class Command(BaseCommand):
             "--audit-live", action="store_true",
             help="Also report catalog markings already carrying the drawing "
                  "number, from contributions approved before the fix.")
+        parser.add_argument(
+            "--sync-approved", action="store_true",
+            help="Also rewrite the payload of ALREADY-APPROVED contributions "
+                 "to the rate their device states. Requires --audit-live, and "
+                 "refuses unless that audit comes back with zero wrong "
+                 "markings -- a clean catalog is what makes the rewrite safe.")
         parser.add_argument("--actor", type=int, default=1)
 
     # ------------------------------------------------------------------ main
@@ -148,9 +154,11 @@ class Command(BaseCommand):
             change = repaired_rate(row.submitted_data)
             if change is None:
                 continue
-            # An approved row's payload has already been written into the
-            # catalog. Editing it now would desync the two and leave the wrong
-            # rate live regardless -- --audit-live is the repair for those.
+            # An approved row's payload is already in the catalog, so the
+            # catalog is repaired first (--audit-live) and the payload only
+            # afterwards (--sync-approved), never the other way round. Doing
+            # the payload alone would leave the wrong rate live and merely
+            # hide it from this report.
             if row.status == Contribution.STATUS_APPROVED:
                 blocked.append((row, change))
             else:
@@ -158,8 +166,9 @@ class Command(BaseCommand):
 
         for row, (old, new) in blocked:
             self.stdout.write(self.style.WARNING(
-                f"  APPROVED, skipped: id={row.pk} rate {old!r} -> {new!r} "
-                f"-- see --audit-live"))
+                f"  APPROVED: id={row.pk} rate {old!r} -> {new!r} "
+                + ("-- will sync" if opts["sync_approved"]
+                   else "-- skipped; see --audit-live and --sync-approved")))
 
         self.stdout.write(f"rows needing repair: {len(planned)} "
                           f"(plus {len(blocked)} already approved)")
@@ -177,31 +186,97 @@ class Command(BaseCommand):
                 f"--expect {expect} but {len(planned)} rows need repair; "
                 f"refusing to write. Re-census before trusting a stale number.")
 
-        if opts["audit_live"]:
-            self._audit_live(actor, commit)
+        live_wrong = self._audit_live(actor, commit) if opts["audit_live"] \
+            else None
+
+        syncing = []
+        if opts["sync_approved"]:
+            syncing = self._approved_to_sync(
+                blocked, opts["audit_live"], live_wrong)
 
         if not commit:
             self.stdout.write(self.style.SUCCESS("[DRY RUN] nothing written."))
             return
 
         with transaction.atomic():
-            for row, (_old, new) in planned:
-                data = dict(row.submitted_data)
-                if new is None:
-                    data.pop("rate_val", None)
-                else:
-                    data["rate_val"] = new
-                row.submitted_data = data
-                row.modified_by = actor
-                # Per-row save, not bulk_update: bulk_update skips save(),
-                # skips the pre_save/post_save signals and does not respect
-                # auto_now, and Contribution.modified_date is auto_now. At this
-                # row count the speed is worth nothing and the trail is worth a
-                # lot. https://docs.djangoproject.com/en/5.2/ref/models/querysets/#bulk-update
-                row.save(update_fields=["submitted_data", "modified_by",
-                                        "modified_date"])
+            for row, (_old, new) in planned + syncing:
+                self._rewrite_rate(row, new, actor)
         self.stdout.write(self.style.SUCCESS(
             f"repaired {len(planned)} contribution(s)."))
+        if syncing:
+            self.stdout.write(self.style.SUCCESS(
+                f"synced {len(syncing)} approved payload(s) to the catalog."))
+
+    def _rewrite_rate(self, row, new, actor):
+        data = dict(row.submitted_data)
+        if new is None:
+            data.pop("rate_val", None)
+        else:
+            data["rate_val"] = new
+        row.submitted_data = data
+        row.modified_by = actor
+        # Per-row save, not bulk_update: bulk_update skips save(), skips the
+        # pre_save/post_save signals and does not respect auto_now, and
+        # Contribution.modified_date is auto_now. At this row count the speed
+        # is worth nothing and the trail is worth a lot.
+        # https://docs.djangoproject.com/en/5.2/ref/models/querysets/#bulk-update
+        row.save(update_fields=["submitted_data", "modified_by",
+                                "modified_date"])
+
+    def _approved_to_sync(self, blocked, audit_ran, live_wrong):
+        """Which approved payloads may be rewritten, and why the rest may not.
+
+        The safety argument is coverage, not per-row linkage. Every approved
+        VPHC contribution carries a VPHC1 citation by construction, so
+        --audit-live's sweep of VPHC-cited RATEMARKs examines all of them; if
+        it comes back clean, the catalog already states the device's rate
+        everywhere and rewriting a payload to that same rate cannot introduce
+        a disagreement.
+
+        Resolving each contribution to its own Marking would be the obvious
+        alternative and it is wrong here: Contribution.marking is a
+        OneToOneField that the approve view only sets when no sibling
+        contribution already claims that marking, so on a colour fan-out it is
+        legitimately NULL on an approved row -- and a per-row link would
+        silently skip exactly the rows this exists for.
+        """
+        if not audit_ran:
+            raise CommandError(
+                "--sync-approved requires --audit-live: without it nothing has "
+                "checked that the catalog states the right rate, and the "
+                "payload would be rewritten on an assumption.")
+        if live_wrong is None:
+            raise CommandError(
+                f"--sync-approved refused: --audit-live could not run (no "
+                f"{VPHC_REFERENCE_CODE} reference work), so it vouches for "
+                f"nothing.")
+        if live_wrong:
+            # Raises on a dry run too, which is deliberate and matches --expect
+            # one guard above: these say "this invocation's assumptions are
+            # wrong", and that is as true when nothing is being written as when
+            # something is. Note the --commit path rarely reaches here at all --
+            # _audit_live(commit=True) repairs the markings and returns 0, so
+            # the single `sync` invocation works on a dirty catalog too.
+            raise CommandError(
+                f"--sync-approved refused: --audit-live still reports "
+                f"{live_wrong} marking(s) carrying a wrong rate. Repair the "
+                f"catalog first (--audit-live --commit); syncing payloads now "
+                f"would hide the defect from this report without fixing it.")
+
+        syncing, skipped = [], []
+        for row, (old, new) in blocked:
+            # No derivable rate means there is nothing --audit-live verified,
+            # so there is nothing this may safely assert. Dropping the key
+            # would be a guess wearing a repair's clothes.
+            (skipped if new is None else syncing).append((row, (old, new)))
+        for row, (old, _new) in skipped:
+            self.stdout.write(self.style.WARNING(
+                f"  approved id={row.pk} NOT synced: its device states no "
+                f"rate, so {old!r} is not ours to overwrite"))
+        self.stdout.write(
+            f"approved payloads to sync: {len(syncing)}"
+            + (f" ({len(skipped)} left alone)" if skipped else ""))
+        return syncing
 
     # --------------------------------------------------------------- reports
 
@@ -256,7 +331,7 @@ class Command(BaseCommand):
             self.stdout.write(self.style.WARNING(
                 f"--audit-live: no {VPHC_REFERENCE_CODE} reference work; "
                 f"nothing to audit."))
-            return
+            return None  # audited nothing, so vouches for nothing
 
         cited = set(Citation.objects.filter(
             reference_work=reference, subject_type="MARKING",
@@ -285,7 +360,9 @@ class Command(BaseCommand):
                 f"-> {stated}")
 
         if not (commit and suspects):
-            return
+            # How many are STILL wrong when this returns -- which on a dry run
+            # is all of them, because nothing was written.
+            return len(suspects)
         with transaction.atomic():
             for marking, stated in suspects:
                 marking.rate_val = stated
@@ -294,3 +371,7 @@ class Command(BaseCommand):
                                             "modified_date"])
         self.stdout.write(self.style.SUCCESS(
             f"--audit-live: repaired {len(suspects)} marking(s)."))
+        # 0, not len(suspects): the block above is atomic, so reaching this
+        # line means every one of them committed. A failure would have
+        # propagated instead of returning a count that undercounts the damage.
+        return 0
