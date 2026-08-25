@@ -693,6 +693,35 @@ def _marking_state_abbrev(marking) -> str:
     return (region.abbrev or "") if region else ""
 
 
+def _marking_cross_lists_to_virginia(marking) -> bool:
+    """Issue #123 -- is this a West Virginia marking that also lists under VA?
+
+    True only for a WV marking with evidence of use on or before West
+    Virginia's separation from Virginia (1863-06-20). The state filter widens
+    on exactly this predicate; this field is what tells the reader WHY a West
+    Virginia town is showing up in Virginia results.
+
+    Without it the catalogue looks broken: the State column correctly reads
+    "West Virginia" (a marking has one home state -- Ian asked for "one entry
+    with different state classifications"), so 1,066 rows would otherwise
+    appear under Virginia with no explanation at all.
+
+    The list endpoint annotates this (views._marking_list_queryset) so a page
+    of 100 rows costs one correlated subquery, not 100 separate queries. The
+    fallback below is for the detail view and for any caller holding a plain
+    Marking; it is deliberately a query, not a re-implementation, so the two
+    paths cannot drift.
+    """
+    from common.filters import pre_statehood_wv_marking_ids
+
+    annotated = getattr(marking, "cross_listed_pre_statehood", None)
+    if annotated is not None:
+        return bool(annotated)
+    if _marking_state_abbrev(marking).upper() != "WV":
+        return False
+    return pre_statehood_wv_marking_ids().filter(pk=marking.pk).exists()
+
+
 def _marking_regions(marking):
     """All Regions for a marking's PostOffice (current-first), as serializable
     dicts. Empty list when there is no post office. Mirrors the single-region
@@ -771,6 +800,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
     second_image = serializers.SerializerMethodField()
     size_display = serializers.SerializerMethodField()
     is_reviewed = serializers.BooleanField(read_only=True)
+    cross_listed_pre_statehood = serializers.SerializerMethodField()
 
     class Meta:
         model = Marking
@@ -795,6 +825,7 @@ class MarkingListSerializer(serializers.ModelSerializer):
             "color",
             "state",
             "state_abbrev",
+            "cross_listed_pre_statehood",
             "town",
             "shape_name",
             "lettering_name",
@@ -814,6 +845,9 @@ class MarkingListSerializer(serializers.ModelSerializer):
 
     def get_state(self, obj):
         return _marking_state_name(obj)
+
+    def get_cross_listed_pre_statehood(self, obj):
+        return _marking_cross_lists_to_virginia(obj)
 
     def to_representation(self, instance):
         return _redact_catalog_code(self, super().to_representation(instance))
@@ -895,6 +929,7 @@ class MarkingSerializer(serializers.ModelSerializer):
     """
     state = serializers.SerializerMethodField()
     state_abbrev = serializers.SerializerMethodField()
+    cross_listed_pre_statehood = serializers.SerializerMethodField()
     region_name = serializers.SerializerMethodField()
     regions = serializers.SerializerMethodField()
     town = serializers.CharField(source="post_office.name", read_only=True, default="")
@@ -949,6 +984,7 @@ class MarkingSerializer(serializers.ModelSerializer):
             "color",
             "state",
             "state_abbrev",
+            "cross_listed_pre_statehood",
             "town",
             "shape_name",
             "lettering_name",
@@ -1048,6 +1084,9 @@ class MarkingSerializer(serializers.ModelSerializer):
 
     def get_state(self, obj):
         return _marking_state_name(obj)
+
+    def get_cross_listed_pre_statehood(self, obj):
+        return _marking_cross_lists_to_virginia(obj)
 
     def get_state_abbrev(self, obj):
         return _marking_state_abbrev(obj)

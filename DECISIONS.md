@@ -1,5 +1,59 @@
 # Decisions
 
+## 2026-08-25 — WV markings cross-list to Virginia on evidence of pre-statehood use (#123)
+
+**What was decided.** A West Virginia marking also appears under a Virginia state filter **if and
+only if it carries an actual date on or before 1863-06-20**, the day WV separated from Virginia.
+
+- **The boundary is INCLUSIVE.** Ian, 2026-08-24, asked directly about statehood day itself:
+  *"count it as both. So THAT DAY should be under a WV and VA."* A `<` instead of `<=` is the
+  off-by-one; `test_the_boundary_date_itself_appears_under_both_states` exists to catch it.
+- **Evidence is required, never inferred.** Reese, 2026-08-25: *"under no circumstances should it
+  cross unless told. If any date is predated before June 20 1863, then you mark it as cross."*
+  So the **92 undated** WV markings on prod do NOT cross-list. Absence of a date is not evidence
+  of an early one.
+- **One entry, two filter memberships.** The marking's own `state` still reads "West Virginia" --
+  a marking has one home state. Ian asked for *"one entry, but with different state
+  classifications"*, so this is the design, not a bug.
+
+**Effect, measured on live prod:** 1,066 markings qualify, so Virginia goes **4,066 → 5,132**.
+18 are post-statehood and 92 undated, both excluded.
+
+**Why the predicate reads `dates_seen` and not `Marking.earliest_seen`.** Both return 1,066 on
+today's data, which makes the choice look arbitrary. It is not: **#121 changed `earliest_seen` to
+resolve by span containment, so it is no longer a strict minimum** -- a coarse YEAR row can be
+absorbed into a later precise date inside its span. The rule says *any* date, so the code queries
+the dates. Cover dates count too (a cover bearing the marking, dated 1860, is evidence), matching
+the scope `compute_marking_date_ranges` already walks. A bare YEAR stores as its floor,
+`1863-01-01`, so "1863" qualifies -- deliberate, and pinned by a test rather than left to luck.
+
+**Sort is filter-aware.** The default ordering leads with `primary_region_name`, the marking's own
+state, which would put all 1,066 cross-listed rows after every Virginia one -- around page 41 of 51
+-- i.e. effectively hidden. With a state filter active, `MarkingViewSet.ordering` drops that key so
+towns interleave. It is a **property**, not a method: DRF resolves the default sort with
+`getattr(view, "ordering")` and never calls a method. An explicit `?ordering=` is never overridden.
+
+**Two consequences accepted knowingly.** A Virginia editor sees cross-listed WV markings and is
+403'd on write, because `_user_is_responsible_for_marking` resolves through the single primary
+region -- correct (a WV marking is West Virginia's to edit), and the label warns before the click;
+no permission model change. And per-state counts now exceed the unfiltered total, since 1,066 rows
+belong to two filters; no facet UI displays that sum.
+
+**One trap hit while building this, worth recording because the code comments now warn about it.**
+The first implementation resolved WV towns as
+`PostOffice.objects.filter(post_office_regions__region__abbrev="WV").exclude(post_office_regions__region__region_tier__in=SUBREGION_TIERS)`.
+The `.exclude()` crosses the junction, so it compiles to **NOT EXISTS** and means *"this town has
+no county link at all"* -- which silently dropped every WV town that has one, i.e. all of them.
+Same shape as the measured failure in `views.town_options` (593 of 2,162 post offices surviving).
+Fixed by resolving the regions first, on Region's own columns, then matching the junction once.
+
+**Verification.** 16 new tests in `test_marking_list_fanout.py`, all through `assertWalkIsClean`,
+which walks **every page** and asserts `len(ids) == len(set(ids)) == count` -- 4 of them verified
+failing before the fix. The single-page pattern would not do: a cross-listing OR is exactly the
+change that passes a page-1 assertion and breaks pagination. The expected live count (5,132) was
+derived by running the predicate against prod as SQL, independently of the code.
+
+
 ## 2026-08-24 — Town resolution matches punctuation-blind and mints a code on create
 
 **What was decided.** `_resolve_post_office` (`backend/common/contribution_apply.py`) gained three
