@@ -17,7 +17,9 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.db import IntegrityError, ProgrammingError, transaction
-from django.db.models import F, Min, Max, OuterRef, Q, Subquery, TextField, Value
+from django.db.models import (
+    Exists, F, Min, Max, OuterRef, Q, Subquery, TextField, Value,
+)
 from django.db.models.fields.json import KeyTextTransform
 from django.db.models.functions import ExtractYear, NullIf
 from django.http import Http404
@@ -78,6 +80,7 @@ from common.filters import (
     ContributionListFilter,
     CoverMarkingFilter,
     MarkingListFilter,
+    pre_statehood_wv_marking_ids,
 )
 from common.models import (
     Citation,
@@ -443,6 +446,16 @@ def _marking_list_queryset():
     ).annotate(
         primary_region_name=_primary_region_subquery("name"),
         primary_region_abbrev=_primary_region_subquery("abbrev"),
+        # Issue #123. A CORRELATED Exists -- one boolean per marking, so it
+        # cannot fan out. Do NOT rewrite this as a join across
+        # post_office_regions: that puts a multi-valued column in the SELECT
+        # list and .distinct() silently stops collapsing (see the docstring on
+        # _primary_region_subquery and the 502 unreachable markings it
+        # records). Annotating here is also what stops the serializer field
+        # costing one query per row.
+        cross_listed_pre_statehood=Exists(
+            pre_statehood_wv_marking_ids().filter(pk=OuterRef("pk"))
+        ),
     )
 
 
@@ -1719,7 +1732,7 @@ class MarkingViewSet(viewsets.ModelViewSet):
         # Stable fallback
         "id",
     ]
-    ordering = [
+    default_ordering = [
         "primary_region_name",
         "is_manuscript",
         "post_office__name",
@@ -1732,6 +1745,36 @@ class MarkingViewSet(viewsets.ModelViewSet):
         # client was relying on luck.
         "id",
     ]
+
+    @property
+    def ordering(self):
+        """Issue #123 -- interleave cross-listed markings when a state is filtered.
+
+        This is a PROPERTY, not a method, because DRF resolves the default sort
+        with `getattr(view, "ordering")` and never calls a method.
+
+        The default leads with `primary_region_name`, which is the marking's
+        OWN state. Under `?state=Virginia` that buries every cross-listed West
+        Virginia marking after all 4,066 Virginia ones -- around page 41 of 51
+        at live counts, which is indistinguishable from not showing them.
+
+        With a state filter active, drop that key so `post_office__name` leads
+        and Berkeley Springs sits beside Berryville. This SWAPS the leading
+        key; it does not add a path across post_office_regions, which would
+        reintroduce the #113 fan-out. `id` stays the unique final key
+        (DRF #6886, force-appended in AliasedOrderingFilter.get_ordering).
+        """
+        default = list(self.default_ordering)
+        request = getattr(self, "request", None)
+        if request is None:
+            return default
+        params = request.query_params
+        if not str(params.get("state") or "").strip():
+            return default
+        # An explicit ?ordering= is the user's choice; never override it.
+        if params.get("ordering"):
+            return default
+        return [key for key in default if key != "primary_region_name"]
 
     def get_queryset(self):
         return _marking_list_queryset()
