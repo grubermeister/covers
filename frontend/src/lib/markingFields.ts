@@ -33,6 +33,14 @@ export interface MarkingFieldInput {
   type: MarkingTypeValue | null;
   isManuscript: boolean;
   state: string;
+  /**
+   * Issue #123. True for a West Virginia marking that also lists under
+   * Virginia (in use on or before WV's separation, 1863-06-20). The
+   * State/Territory row keeps reading "West Virginia" -- a marking has one
+   * home state -- and this appends the reason so a reader who found it under
+   * a Virginia filter is not left guessing.
+   */
+  crossListedPreStatehood?: boolean;
   // All territory/state affiliations as chips for the State/Territory row,
   // current-first. Optional: only RecordDetail supplies them (from
   // record.regions); ContributionDetail omits them and the comma-joined
@@ -102,7 +110,9 @@ export function buildMarkingFields(
     { label: "Manuscript", value: i.isManuscript ? "Yes" : "No", alwaysShow: false },
     {
       label: "State/Territory",
-      value: i.state,
+      value: i.crossListedPreStatehood
+        ? `${i.state} - also listed under Virginia (pre-statehood)`
+        : i.state,
       alwaysShow: false,
       tags: i.regionTags && i.regionTags.length > 0 ? i.regionTags : undefined,
     },

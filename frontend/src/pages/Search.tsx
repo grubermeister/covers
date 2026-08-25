@@ -1215,6 +1215,11 @@ const Search = () => {
                                   {row.title}
                                 </h3>
                               </div>
+                              {row.crossListedNote && (
+                                <p className="text-xs text-muted-foreground mb-2 italic">
+                                  {row.crossListedNote}
+                                </p>
+                              )}
                               <CatalogRecordFields row={row} record={record} variant="list" />
                             </div>
                           </div>

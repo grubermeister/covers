@@ -36,17 +36,113 @@ def regions_matching_state_term(value):
     return Region.matching_state_term(value)
 
 
+# Issue #123. West Virginia separated from Virginia on this date, so a marking
+# used at a WV town on or before it was, at the time, a Virginia marking.
+WV_STATEHOOD_DATE = date(1863, 6, 20)
+
+# INCLUSIVE. Ian, 2026-08-24, asked directly about the boundary day itself:
+# "count it as both. So THAT DAY should be under a WV and VA." A `<` here is
+# the off-by-one that test_the_boundary_date_itself_appears_under_both_states
+# exists to catch.
+PRE_STATEHOOD_PREDICATE = Q(date__lte=WV_STATEHOOD_DATE)
+
+
+def pre_statehood_wv_marking_ids():
+    """Markings at West Virginia towns with evidence of pre-statehood use.
+
+    EVIDENCE REQUIRED, never inferred. Reese, 2026-08-25: "under no
+    circumstances should it cross unless told. If any date is predated before
+    June 20 1863, then you mark it as cross." So an UNDATED marking does not
+    cross-list -- 92 of them on prod at the time of writing. Absence of a date
+    is not evidence of an early one.
+
+    Three implementation constraints, each a documented failure in this repo:
+
+    * `dates_seen` is POLYMORPHIC -- (subject_type, subject_id), no FK
+      (models.py) -- so it cannot be joined. A `pk__in` subquery is the only
+      option, and it is also what keeps this off the post_office_regions join
+      path, where a second multi-valued relation would fan the result out.
+
+    * ANY date qualifies, so this queries dates_seen directly rather than
+      Marking.earliest_seen. The two agree on today's data (1,066 either way),
+      which makes the choice look arbitrary -- it is not. #121 changed
+      earliest_seen to resolve by SPAN CONTAINMENT, so it is no longer a strict
+      minimum: a coarse YEAR row can be absorbed into a later precise date
+      inside its span. Reading the dates says what the rule says.
+
+    * A bare YEAR is stored as its floor, 1863-01-01
+      (DateSeen.generated_date_for_parts), so "1863" qualifies. That is
+      deliberate and pinned by test_a_year_only_1863_date_cross_lists.
+
+    Cover dates count too: a cover bearing the marking, dated 1860, is evidence
+    the marking existed pre-statehood. Same scope compute_marking_date_ranges
+    already walks (date_range.py).
+    """
+    from .models import Cover, DateSeen, PostOffice
+
+    # Resolve WV's primary-tier regions FIRST, on Region's own columns, then
+    # match the junction against that set in a single filter().
+    #
+    # ⛔ The obvious spelling is wrong and was written here first:
+    #     PostOffice.objects.filter(post_office_regions__region__abbrev="WV")
+    #       .exclude(post_office_regions__region__region_tier__in=SUBREGION_TIERS)
+    # The .exclude() crosses the junction, so it compiles to NOT EXISTS and
+    # means "this town has NO county link at all" -- which dropped every WV
+    # town that has one, i.e. all of them. Same shape as the measured failure
+    # in views.py town_options, where it left 593 of 2,162 post offices.
+    wv_regions = Region.objects.filter(abbrev__iexact="WV").exclude(
+        region_tier__in=Region.SUBREGION_TIERS)
+    wv_towns = PostOffice.objects.filter(
+        post_office_regions__region__in=wv_regions).values("pk")
+
+    direct = DateSeen.objects.filter(
+        PRE_STATEHOOD_PREDICATE,
+        subject_type=DateSeen.SUBJECT_MARKING,
+    ).values("subject_id")
+
+    dated_covers = DateSeen.objects.filter(
+        PRE_STATEHOOD_PREDICATE,
+        subject_type=DateSeen.SUBJECT_COVER,
+    ).values("subject_id")
+    via_cover = CoverMarking.objects.filter(
+        cover__in=Cover.objects.filter(pk__in=dated_covers),
+    ).values("marking_id")
+
+    return Marking.objects.filter(
+        Q(pk__in=direct) | Q(pk__in=via_cover),
+        post_office__in=wv_towns,
+    ).values("pk")
+
+
 def filter_markings_by_state_term(queryset, value):
     """Shared body of the `state` filter on both marking FilterSets.
 
     A blank term is a no-op, not "match nothing" -- django-filter calls the
     method for an empty `?state=` and the list must stay whole.
+
+    Issue #123: when the term resolves to Virginia, pre-statehood West Virginia
+    markings are included as well. One entry, two filter memberships -- the
+    marking's own state stays West Virginia.
+
+    ONE .filter() with an OR'd Q, not two chained .filter() calls. Two calls
+    against the same to-many emit two separate joins on post_office_region and
+    multiply the rows; .distinct() cannot always save that, because ordering by
+    a related column puts it in the SELECT list and the copies stop being
+    duplicates (views.py:400-405, measured live: 2,309 rows for 1,947 markings
+    WITH .distinct() applied).
     """
     if not str(value or "").strip():
         return queryset
-    return queryset.filter(
-        post_office__post_office_regions__region__in=regions_matching_state_term(value),
-    ).distinct()
+
+    regions = regions_matching_state_term(value)
+    predicate = Q(post_office__post_office_regions__region__in=regions)
+
+    if regions.filter(abbrev__iexact="VA").exclude(
+        region_tier__in=Region.SUBREGION_TIERS
+    ).exists():
+        predicate |= Q(pk__in=pre_statehood_wv_marking_ids())
+
+    return queryset.filter(predicate).distinct()
 
 
 class AliasedOrderingFilter(filters.OrderingFilter):

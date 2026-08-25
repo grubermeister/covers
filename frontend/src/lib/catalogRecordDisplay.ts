@@ -187,6 +187,15 @@ export type CatalogFieldValues = {
   type: string;
   town: string;
   state: string;
+  /**
+   * Issue #123. Set for a West Virginia marking that also lists under Virginia
+   * because it was in use on or before WV's separation (1863-06-20).
+   *
+   * `state` deliberately still reads "West Virginia": a marking has ONE home
+   * state. Without this note a reader filtering Virginia sees a West Virginia
+   * town in the results with no explanation and reports it as a bug.
+   */
+  crossListedNote?: string;
   regionAbbrev: string;
   manuscript: string;
   desc: string;
@@ -239,6 +248,9 @@ export function buildCatalogFieldValues(record: MarkingRecord): CatalogFieldValu
     type: displayCatalogField(markingTypeLabel(record.type) || "Townmark"),
     town: displayCatalogField(record.town),
     state: displayCatalogField(record.state),
+    crossListedNote: record.crossListedPreStatehood
+      ? "Also listed under Virginia (pre-statehood)"
+      : "",
     regionAbbrev: displayCatalogField(record.stateAbbrev),
     manuscript: displayCatalogField(record.isManuscript ? "Yes" : "No"),
     desc: displayCatalogField(record.desc),
