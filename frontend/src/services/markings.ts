@@ -399,6 +399,14 @@ export interface MarkingRecord {
   colorId: number | null;
   state: string;
   stateAbbrev: string;
+  /**
+   * Issue #123. True when this is a West Virginia marking with evidence of use
+   * on or before WV's separation from Virginia (1863-06-20), so it ALSO appears
+   * under a Virginia state filter. `state` still reads "West Virginia" -- a
+   * marking has one home state; this is a second filter membership, not a
+   * second classification of the record.
+   */
+  crossListedPreStatehood?: boolean;
   town: string;
   shapeName: string;
   letteringName: string;
@@ -756,6 +764,7 @@ export function mapApiMarkingToRecord(raw: unknown): MarkingRecord {
     colorId: toIdOrNull(o.color),
     state: toStr(o.state),
     stateAbbrev: toStr(o.state_abbrev),
+    crossListedPreStatehood: Boolean(o.cross_listed_pre_statehood),
     town: toStr(o.town),
     shapeName: toStr(o.shape_name),
     letteringName: toStr(o.lettering_name),
