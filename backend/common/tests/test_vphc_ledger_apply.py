@@ -47,7 +47,13 @@ def cw_row(**kw):
     return row
 
 
-class ApplyVphcLedgerTests(TestCase):
+class VphcLedgerFixture(TestCase):
+    """Catalog scaffolding plus one Phase 2 create, on disk and ready to apply.
+
+    Split out so the Phase 6 (manuscript) tests can build on the same fixture
+    without inheriting -- and re-running -- every assertion below it.
+    """
+
     def setUp(self):
         self.user = get_user_model().objects.create_user("importer", password="x")
         self.va = Region.objects.create(
@@ -114,8 +120,8 @@ class ApplyVphcLedgerTests(TestCase):
         call_command("apply_vphc_ledger", vphc_dir=self.dir, actor=self.user.pk,
                      verbosity=0, **kw)
 
-    # ------------------------------------------------------------------ tests
 
+class ApplyVphcLedgerTests(VphcLedgerFixture):
     def test_creates_a_pending_contribution_that_approves_cleanly(self):
         self.run_apply()
         contribution = Contribution.objects.get()
@@ -643,3 +649,99 @@ class ApplyVphcLedgerTests(TestCase):
         apply_contribution_to_catalog(contribution)
         self.doomed.refresh_from_db()
         self.assertEqual(int(self.doomed.rate_val), 3)
+
+
+class ManuscriptLedgerTests(VphcLedgerFixture):
+    """Phase 6 -- the manuscript half.
+
+    Phases 2-5 hardcoded ``is_manuscript: False`` in every payload; that one
+    line is what scoped them. The decision travels on the ledger line now, so
+    these pin both directions: a manuscript lands as one, and a Phase 2 line
+    that says nothing still lands exactly as it did when it was applied.
+    """
+
+    def manuscript_row(self, **kw):
+        row = dict(
+            vphc_key="ABINGDON#12", vphc_code="VPHC-VA-ABINGDON-12",
+            src="T1:r40", state="VA", county="Washington", town="ABINGDON",
+            town_key="ABINGDON", cancel_no="12", sheet_type="TOWNMARK",
+            sheet_insc="ABINGDON", sheet_colors="BLACK", sheet_earliest="1797",
+            sheet_latest="1799", landing="create", verdict="create_manuscript",
+            flags="manuscript_no_inscription",
+            catalog_marker="[VPHC: create manuscript]",
+        )
+        row.update(kw)
+        return cw_row(**row)
+
+    def manuscript_line(self, **kw):
+        line = dict(
+            run="test", mode="dryrun", applied=False, src="T1:r40",
+            town="ABINGDON", county="Washington", cancel="12", action="create",
+            target="marking", target_code=None, marking_id=None, rule="C1",
+            rule_version=2, confidence=1.0,
+            fields=["type", "inscription_txt", "is_manuscript", "color"],
+            before={}, after={"is_manuscript": True}, rejected={},
+            why_unmatched="create_manuscript", editor_comment="",
+        )
+        line.update(kw)
+        return line
+
+    def only_manuscript(self):
+        self.rows = [self.manuscript_row()]
+        self.lines = [self.manuscript_line()]
+        self.write()
+
+    def test_a_manuscript_lands_as_a_manuscript(self):
+        self.only_manuscript()
+        self.run_apply()
+
+        contribution = Contribution.objects.get()
+        self.assertTrue(contribution.submitted_data["is_manuscript"])
+        # "Not irregular" is a different claim from "irregularity does not
+        # apply", and the review UI reads submitted_data back verbatim.
+        self.assertNotIn("is_irreg", contribution.submitted_data)
+        self.assertTrue(contribution.submitted_data["no_marking_image"])
+
+        marking = apply_contribution_to_catalog(contribution)
+        self.assertTrue(marking.is_manuscript)
+        # marking_manuscript_consistency requires all three to be NULL. If the
+        # payload had leaked a value through, the save would have raised here.
+        self.assertIsNone(marking.shape)
+        self.assertIsNone(marking.lettering)
+        self.assertIsNone(marking.is_irreg)
+        # A manuscript still has a colour and a town -- only the physical
+        # description of a handstamp is absent.
+        self.assertEqual(marking.color.name, "BLACK")
+        self.assertEqual(marking.inscription_txt, "ABINGDON")
+
+    def test_a_phase_2_line_is_still_not_a_manuscript(self):
+        """The shipped path, unchanged: no is_manuscript in `after` means False."""
+        self.run_apply()
+        contribution = Contribution.objects.get()
+        self.assertFalse(contribution.submitted_data["is_manuscript"])
+        self.assertIs(contribution.submitted_data["is_irreg"], False)
+
+        marking = apply_contribution_to_catalog(contribution)
+        self.assertFalse(marking.is_manuscript)
+        self.assertIs(marking.is_irreg, False)
+
+    def test_the_ledger_and_crosswalk_paths_are_overridable(self):
+        """Phase 6 keeps its own pair so it cannot disturb the shipped files."""
+        os.makedirs(os.path.join(self.dir, "manuscripts"))
+        with open(os.path.join(self.dir, "manuscripts", "crosswalk-va.csv"), "w",
+                  newline="", encoding="utf-8") as fh:
+            w = csv.DictWriter(fh, fieldnames=CW_FIELDS, lineterminator="\n")
+            w.writeheader()
+            w.writerow(self.manuscript_row())
+        with open(os.path.join(self.dir, "manuscripts", "ledger-va.jsonl"), "w",
+                  encoding="utf-8") as fh:
+            fh.write(json.dumps(self.manuscript_line()) + "\n")
+
+        self.run_apply(ledger="manuscripts/ledger-va.jsonl",
+                       crosswalk="manuscripts/crosswalk-va.csv")
+
+        # Exactly one contribution, and it came from the override -- the Phase 2
+        # fixture written by setUp() is still on disk and was not read.
+        contribution = Contribution.objects.get()
+        self.assertTrue(contribution.submitted_data["is_manuscript"])
+        self.assertEqual(contribution.submitted_data["vphc"]["cancel_no"], "12")
