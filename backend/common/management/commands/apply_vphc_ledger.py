@@ -63,6 +63,11 @@ from common.models import (
 VPHC_REFERENCE_CODE = "VPHC1"
 DEFAULT_TYPE = "TOWNMARK"
 
+# Phase 2's outputs. Overridable so Phase 6 can point at its own pair without
+# either pass being able to disturb the other's files.
+DEFAULT_LEDGER = "crossexam/ledger/proposed.jsonl"
+DEFAULT_CROSSWALK = "crossexam/crosswalk.csv"
+
 
 def read_csv(path):
     if not os.path.exists(path):
@@ -138,6 +143,17 @@ class Command(BaseCommand):
             "--auto-approve", default="",
             help="Comma-separated verdict buckets to approve immediately "
                  "instead of queueing (e.g. create_no_town)")
+        # Phase 6 (manuscripts) emits its own ledger and crosswalk into
+        # <vphc-dir>/manuscripts/ rather than reusing the Phase 2 files, so the
+        # shipped artifacts stay exactly as they were applied. Both default to
+        # the Phase 2 paths, which keeps the shipped invocation byte-identical.
+        parser.add_argument(
+            "--ledger", default=DEFAULT_LEDGER,
+            help=f"Ledger path, relative to --vphc-dir (default {DEFAULT_LEDGER})")
+        parser.add_argument(
+            "--crosswalk", default=DEFAULT_CROSSWALK,
+            help=f"Crosswalk path, relative to --vphc-dir "
+                 f"(default {DEFAULT_CROSSWALK})")
         parser.add_argument("--dry-run", action="store_true")
 
     # ------------------------------------------------------------------ main
@@ -162,9 +178,8 @@ class Command(BaseCommand):
                 "cite it")
 
         ledger = [json.loads(line) for line in
-                  open(os.path.join(vphc, "crossexam", "ledger", "proposed.jsonl"),
-                       encoding="utf-8")]
-        crosswalk = read_csv(os.path.join(vphc, "crossexam", "crosswalk.csv"))
+                  open(os.path.join(vphc, opts["ledger"]), encoding="utf-8")]
+        crosswalk = read_csv(os.path.join(vphc, opts["crosswalk"]))
         self.media_src = os.path.join(vphc, "extract", "media")
 
         # Resolved on demand: a run covering only Virginia should not need West
@@ -406,14 +421,24 @@ class Command(BaseCommand):
               state, flags, marking_type, inscription, colours, unrecognised,
               colour, images):
         """Build and create one contribution. False means stop the whole row."""
+        # Phase 6. The ledger line is the authority on what happens, so the
+        # manuscript decision rides there rather than in a new crosswalk column:
+        # a Phase 2 line has no `is_manuscript` in `after` and so still reads
+        # False, which is exactly what it did when it was applied.
+        #
+        # is_irreg is omitted entirely for a manuscript rather than sent as
+        # False. contribution_apply forces it to None either way (the model's
+        # marking_manuscript_consistency constraint requires NULL), but
+        # submitted_data is read back by the review UI, and "not irregular" is a
+        # different claim from "irregularity does not apply to this marking".
+        is_manuscript = bool(line.get("after", {}).get("is_manuscript", False))
         payload = {
             "submission_kind": "marking",
             "type": marking_type,
             "state": state,
             "town": row["town"].strip().title(),
             "inscription_txt": inscription,
-            "is_manuscript": False,
-            "is_irreg": False,
+            "is_manuscript": is_manuscript,
             "desc": self._description(
                 row, flags,
                 unplaced_colours=colours if edit_code else (),
@@ -435,6 +460,8 @@ class Command(BaseCommand):
             },
             "contributor_comment": line.get("editor_comment", ""),
         }
+        if not is_manuscript:
+            payload["is_irreg"] = False
         if dec(row["sheet_width"]):
             payload["width_mm"] = dec(row["sheet_width"])
         if dec(row["sheet_height"]):
