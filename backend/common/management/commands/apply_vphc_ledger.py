@@ -67,6 +67,7 @@ DEFAULT_TYPE = "TOWNMARK"
 # either pass being able to disturb the other's files.
 DEFAULT_LEDGER = "crossexam/ledger/proposed.jsonl"
 DEFAULT_CROSSWALK = "crossexam/crosswalk.csv"
+DEFAULT_APPLIED_LOG = "LEDGER.jsonl"
 
 
 def read_csv(path):
@@ -154,6 +155,12 @@ class Command(BaseCommand):
             "--crosswalk", default=DEFAULT_CROSSWALK,
             help=f"Crosswalk path, relative to --vphc-dir "
                  f"(default {DEFAULT_CROSSWALK})")
+        parser.add_argument(
+            "--applied-log", default=DEFAULT_APPLIED_LOG,
+            help=f"Where applied lines are appended, relative to --vphc-dir "
+                 f"(default {DEFAULT_APPLIED_LOG}). A pass reading its own "
+                 f"ledger should write its own log, so a rehearsal cannot "
+                 f"append to the record of a run that already shipped.")
         parser.add_argument("--dry-run", action="store_true")
 
     # ------------------------------------------------------------------ main
@@ -225,8 +232,9 @@ class Command(BaseCommand):
         for key in sorted(totals):
             self.stdout.write(f"  {key:<40} {totals[key]:>6}")
         if not dry and applied:
-            self._write_ledger(vphc, applied)
-            self.stdout.write(f"  appended {len(applied)} lines to LEDGER.jsonl")
+            self._write_ledger(vphc, applied, opts["applied_log"])
+            self.stdout.write(
+                f"  appended {len(applied)} lines to {opts['applied_log']}")
         if self.skipped:
             path = self._write_skipped(vphc)
             self.stdout.write(self.style.WARNING(
@@ -659,10 +667,18 @@ class Command(BaseCommand):
 
     # ---------------------------------------------------------------- ledger
 
-    def _write_ledger(self, vphc, applied):
+    def _write_ledger(self, vphc, applied, log=DEFAULT_APPLIED_LOG):
         """README.md: no write happens that is not first a ledger line. The
-        reviewed proposal is appended verbatim, with applied flipped true."""
-        path = os.path.join(vphc, "LEDGER.jsonl")
+        reviewed proposal is appended verbatim, with applied flipped true.
+
+        The path is settable because this file is an *audit trail*, and a pass
+        that reads its own ledger must write its own log. Phase 6 rehearses on
+        a scratch schema before it runs for real; with a single shared log,
+        every rehearsal would append to the record of the August run and there
+        would be no honest way to tell a rehearsal from the thing it rehearsed.
+        """
+        path = os.path.join(vphc, log)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             for line in applied:
                 fh.write(json.dumps(line, sort_keys=True) + "\n")
