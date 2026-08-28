@@ -67,11 +67,37 @@ describe("PostmastersCard", () => {
     expect(screen.queryByText("Postmasters (14)")).not.toBeNull();
     expect(screen.queryByText("Leonard Bangh")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Show all 14" }));
+    fireEvent.click(screen.getByRole("button", { name: "Show 9 more" }));
     expect(screen.queryByText("Leonard Bangh")).not.toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Show fewer" }));
     expect(screen.queryByText("Leonard Bangh")).toBeNull();
+  });
+
+  // The heading counts people. A dateless postmaster is still a postmaster;
+  // the office being discontinued is nobody.
+  it("counts people, not entries, in the heading", () => {
+    renderCard({
+      tenures: [
+        tenure({ id: 1, postmasterId: 1, postmasterName: "Gerrard T. Conn" }),
+        tenure({
+          id: 2,
+          postmasterId: null,
+          postmasterName: "",
+          event: "discontinued",
+          dateAppointed: "1796-07-01",
+        }),
+        tenure({
+          id: 3,
+          postmasterId: 3,
+          postmasterName: "Josiah Kelly",
+          dateAppointed: null,
+          granularity: "",
+        }),
+      ],
+    });
+    // Conn + Kelly are people; the discontinuation folds into Conn's term.
+    expect(screen.queryByText("Postmasters (2)")).not.toBeNull();
   });
 
   // The whole reason this card exists rather than a link to the town page.

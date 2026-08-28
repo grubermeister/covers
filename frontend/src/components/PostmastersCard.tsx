@@ -54,7 +54,10 @@ export function PostmastersCard({
   const hidden = rows.length - visible.length;
   const earlier = expanded ? 0 : windowStart;
   const later = expanded ? 0 : rows.length - (windowStart + visible.length);
-  const postmasterCount = rows.filter((row) => row.kind === "tenure").length;
+  // People, not entries. An undated row is still a postmaster -- we just do
+  // not know when he served -- while an `event` row is the office opening or
+  // closing and is nobody.
+  const postmasterCount = rows.filter((row) => row.kind !== "event").length;
 
   return (
     <Card className="shadow-archival-md">
@@ -111,7 +114,10 @@ export function PostmastersCard({
             className="mt-2"
             onClick={() => setExpanded((v) => !v)}
           >
-            {expanded ? "Show fewer" : `Show all ${rows.length}`}
+            {/* States what the click does, so it can never disagree with the
+                heading -- which counts people, while `rows` also holds the
+                office's own opening and closing events. */}
+            {expanded ? "Show fewer" : `Show ${hidden} more`}
           </Button>
         )}
         <p className="mt-3 text-xs text-muted-foreground">

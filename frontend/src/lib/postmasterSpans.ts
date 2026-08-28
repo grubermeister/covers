@@ -59,11 +59,25 @@ const SKIPPED_EVENTS = new Set(["unknown"]);
  * office, or the office closed, so letting the incumbent's span run through it
  * would assert a term the source contradicts.
  *
- * A `reappointment` deliberately does NOT terminate: it is the re-commissioning
- * of the incumbent, and ending the span there would manufacture a gap that the
- * card cannot name anybody in -- all 45 are person-less, so there is no
- * successor to name. If Ian reads it the other way this predicate is the only
- * thing to change.
+ * Two clauses, and the second one matters more than it looks:
+ *
+ *  - By event: an `appointment` or a `discontinued` always ends the standing
+ *    term. A **person-less `reappointment` does NOT** -- it is the
+ *    re-commissioning of the incumbent, and ending the term there would
+ *    manufacture a gap the card cannot name anybody in. All 45 reappointments
+ *    in the data today are person-less, so this is the case that fires.
+ *
+ *  - By name: ANY row carrying a name ends the standing term, including a
+ *    reappointment. This is not a contradiction of the rule above, it is the
+ *    other half of it: if a row names somebody, that person holds the office
+ *    from that date, whatever the event is called.
+ *
+ * ⛔ Do not "simplify" this to `if (event === "reappointment") return false`.
+ * A *named* reappointment would then fail to close the previous term while
+ * still opening its own, leaving two open-ended spans -- which the corpus
+ * invariant forbids. `a named reappointment ends the previous term` in the
+ * tests locks this down. There are 0 named reappointments today; the ingest
+ * could produce one.
  */
 function terminatesIncumbent(tenure: PostmasterTenure, name: string): boolean {
   return (
@@ -165,7 +179,11 @@ export function buildPostmasterSpans(
   let openIndex: number | null = null;
 
   for (const tenure of dated) {
-    const identity = `${tenure.postmasterId ?? ""}|${tenure.dateAppointed}|${tenure.event}`;
+    // Dedupe is for the same *person* listed twice, so a person-less row falls
+    // back to its own id and can never collapse against another one. Keying
+    // them all on "" would silently merge two distinct office events that
+    // happened to share a date.
+    const identity = `${tenure.postmasterId ?? `#${tenure.id}`}|${tenure.dateAppointed}|${tenure.event}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
 
@@ -213,7 +231,7 @@ export function buildPostmasterSpans(
     );
   }
 
-  for (const tenure of [...undated].sort((a, b) => a.id - b.id)) {
+  for (const tenure of undated.sort((a, b) => a.id - b.id)) {
     rows.push(
       blankRow({
         key: `undated-${tenure.id}`,
@@ -247,7 +265,13 @@ export function buildPostmasterSpans(
 /**
  * Flag the term containing `focusYear`. Containment is half-open -- a marking
  * struck in the year of a handover belongs to the incoming postmaster, not the
- * outgoing one -- so at most one row can ever match.
+ * outgoing one -- so at most one row can ever match on its own merits.
+ *
+ * Taking the FIRST match is therefore not an ordering assumption, but the
+ * `return` does make one visible: it relies on `rows` being chronological,
+ * which the sweep above guarantees by construction. Undated rows cannot
+ * interfere whatever order they land in -- they have no `startDate` and are
+ * skipped below.
  */
 function markFocus(rows: WorkingRow[], focusYear?: number | null): void {
   if (focusYear == null || !Number.isFinite(focusYear)) return;

@@ -136,6 +136,40 @@ describe("buildPostmasterSpans — office-level events", () => {
     expect(rows.map((r) => r.label)).toContain("Reappointed");
   });
 
+  // The other half of the reappointment rule, and the reason the predicate
+  // cannot be reduced to `event === "reappointment" -> false`: doing that
+  // would leave Conn's term open while opening a second one, and an office
+  // must never have two open terms. There are 0 named reappointments in the
+  // data today; the ingest could produce one.
+  it("ends the incumbent's term at a reappointment that names somebody", () => {
+    const rows = buildPostmasterSpans([
+      conn,
+      tenure({
+        id: 9,
+        postmasterId: 9,
+        postmasterName: "Josiah Kelly",
+        event: "reappointment",
+        dateAppointed: "1796-07-01",
+      }),
+    ]);
+    expect(rows.map((r) => [r.label, r.years])).toEqual([
+      ["Gerrard T. Conn", "1793 – 1796"],
+      ["Josiah Kelly", "1796 –"],
+    ]);
+    expect(rows.filter((r) => r.isOpenEnded)).toHaveLength(1);
+  });
+
+  // Two office events sharing a date are two events, not one listed twice.
+  // Dedupe exists to collapse the same *person*, so a person-less row keys on
+  // its own id.
+  it("keeps two distinct person-less events that share a date", () => {
+    const rows = buildPostmasterSpans([
+      tenure({ id: 1, postmasterId: null, postmasterName: "", event: "reappointment", dateAppointed: "1804-01-01" }),
+      tenure({ id: 2, postmasterId: null, postmasterName: "", event: "reappointment", dateAppointed: "1804-01-01" }),
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
   // Somebody demonstrably took office, so the previous term cannot run on.
   it("ends the incumbent's term at an appointment whose name was lost", () => {
     const rows = buildPostmasterSpans([
