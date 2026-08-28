@@ -18,7 +18,12 @@ import {
 import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ImageOrPlaceholder } from "@/components/ImageOrPlaceholder";
 import { CropImageDialog } from "@/components/CropImageDialog";
-import { formatDateSeen, formatDatesSeenList, markingTypeLabel } from "@/lib/catalogRecordDisplay";
+import {
+  formatDateSeen,
+  formatDatesSeenList,
+  markingTypeLabel,
+  yearFromCatalogDate,
+} from "@/lib/catalogRecordDisplay";
 import { dashboardHrefForTab } from "@/lib/dashboardParams";
 import { catalogHref } from "@/lib/catalogParams";
 import { buildMarkingFields } from "@/lib/markingFields";
@@ -79,6 +84,8 @@ import { createCoverMarking, getCoverById } from "@/services/covers";
 import { parseCoverIdInput } from "@/lib/recordLinking";
 import { readVphcProvenance } from "@/lib/vphcProvenance";
 import { VphcProvenanceCard } from "@/components/VphcProvenanceCard";
+import { getTenuresForPostOffice, type PostmasterTenure } from "@/services/postmasters";
+import { PostmastersCard } from "@/components/PostmastersCard";
 
 type GalleryImage = {
   imageUrl: string | null;
@@ -312,6 +319,7 @@ const RecordDetail = () => {
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [historyExpanded, setHistoryExpanded] = useState(false);
+  const [postmasterTenures, setPostmasterTenures] = useState<PostmasterTenure[]>([]);
   // Disables the editor's reorder buttons while a PATCH round-trip is in
   // flight. Without this an editor can fire two overlapping reorders before
   // the first one resolves, producing inconsistent display_order values.
@@ -475,6 +483,32 @@ const RecordDetail = () => {
       cancelled = true;
     };
   }, [userIsStaff, recordId, recordPostOfficeId]);
+
+  // Postmasters who served this office (#125). Public, unlike the move-target
+  // lookup above, and it depends on the same primitive rather than on `record`
+  // for the same reason. There is no loading state on purpose: outside VA/WV
+  // no office has postmasters, so a spinner would flash and vanish on almost
+  // every page view. Late-appearing content beats a phantom card.
+  useEffect(() => {
+    if (recordPostOfficeId == null) {
+      setPostmasterTenures([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const tenures = await getTenuresForPostOffice(recordPostOfficeId);
+        if (!cancelled) setPostmasterTenures(tenures);
+      } catch {
+        // Supplementary context, never a page failure: on a miss the card
+        // simply does not appear.
+        if (!cancelled) setPostmasterTenures([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [recordPostOfficeId]);
 
   // Record History (audit trail). Only fires for editor-class users since the
   // backend `markings/{id}/changelog/` endpoint requires
@@ -786,6 +820,12 @@ const RecordDetail = () => {
     earliestValue,
     latestValue,
   ]);
+  // Opens the Postmasters card on whoever was serving when this was struck
+  // (#125). Earliest Seen is the marking's own date and is present on 98% of
+  // the markings that have postmasters at all; without it the card falls back
+  // to the earliest terms.
+  const postmasterFocusYear =
+    Number(yearFromCatalogDate(record.earliestSeen)) || null;
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression
@@ -1423,6 +1463,12 @@ const RecordDetail = () => {
                   )}
                 </CardContent>
               </Card>
+
+              <PostmastersCard
+                tenures={postmasterTenures}
+                postOfficeId={recordPostOfficeId}
+                focusYear={postmasterFocusYear}
+              />
 
               <Card className="shadow-archival-md">
                 <CardHeader>

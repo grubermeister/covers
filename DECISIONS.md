@@ -1,5 +1,41 @@
 # Decisions
 
+## 2026-08-28 — A postmaster's term of service is derived for display, never stored (#125, #93)
+
+**What was decided.** `PostmasterTenure` continues to hold one row per appointment **event** and
+gains no end-date field. The Postmasters card on the marking detail screen shows terms
+(`1793 – 1796`) by deriving each end from the next record at that office, in
+`frontend/src/lib/postmasterSpans.ts`. Nothing about that derivation reaches the model, the
+serializer, or the API payload.
+
+**Why.** The source catalogs record appointments and never departures. An end date is therefore
+always an inference, and an inference stored beside recorded dates — in the same column, with the
+same shape — reads as a recorded fact. Every future consumer of the API would inherit the guess
+without the caveat that makes it honest. Confining it to one pure frontend function keeps it
+testable, keeps it reversible, and keeps it physically next to the on-screen disclosure that says
+the ends are inferred.
+
+⛔ **This will look like an obvious missing feature to the next person reading the model. It is
+not. Do not add `date_ended` to `PostmasterTenureSerializer`.**
+
+**Two judgment calls, each behind a named predicate so it flips in one line:**
+- A `reappointment` does **not** terminate the incumbent's term — it re-commissions them. All 45
+  such rows are person-less, so terminating would manufacture a gap the card cannot name anybody in.
+- `unknown` events are dropped from the card. All 17 are person-less; a row on a card headed
+  *Postmasters* that names no postmaster asserts nothing. They remain in full on `/post-office/:id`,
+  which stays the exhaustive view.
+
+**Evidence.** Run over the whole corpus rather than fixtures — all **1,366 offices / 11,426
+tenures** from a local copy of the catalog. Zero backwards spans, zero duplicate React keys, zero
+offices with more than one open term, and every input row accounted for: 10,249 rendered as terms,
+390 as undated tail rows (the `Late` cohort, #102), 54 as office-level events, 668 folded into the
+term they close, 65 dropped as having neither a name nor a date. Sums to 11,426 exactly.
+
+**Related:** `PostmastersCard` returns `null` rather than an empty shell, because outside Virginia
+and West Virginia **every** marking has zero postmasters — that is the common path, not the edge.
+
+**Date.** 2026-08-28
+
 ## 2026-08-25 — WV markings cross-list to Virginia on evidence of pre-statehood use (#123)
 
 **What was decided.** A West Virginia marking also appears under a Virginia state filter **if and
