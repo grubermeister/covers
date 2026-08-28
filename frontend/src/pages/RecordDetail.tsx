@@ -501,7 +501,10 @@ const RecordDetail = () => {
         if (!cancelled) setPostmasterTenures(tenures);
       } catch {
         // Supplementary context, never a page failure: on a miss the card
-        // simply does not appear.
+        // simply does not appear. Clearing rather than keeping the last good
+        // list is deliberate -- this only re-runs when the office CHANGES, so
+        // holding stale rows would show one town's postmasters under another
+        // town's marking.
         if (!cancelled) setPostmasterTenures([]);
       }
     })();
@@ -824,8 +827,10 @@ const RecordDetail = () => {
   // (#125). Earliest Seen is the marking's own date and is present on 98% of
   // the markings that have postmasters at all; without it the card falls back
   // to the earliest terms.
-  const postmasterFocusYear =
-    Number(yearFromCatalogDate(record.earliestSeen)) || null;
+  const earliestSeenYear = Number(yearFromCatalogDate(record.earliestSeen));
+  const postmasterFocusYear = Number.isFinite(earliestSeenYear)
+    ? earliestSeenYear
+    : null;
   const impressionValue =
     record.impression && record.impression.trim().toLowerCase() !== "normal"
       ? record.impression

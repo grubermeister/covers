@@ -57,7 +57,9 @@ export function PostmastersCard({
   // People, not entries. An undated row is still a postmaster -- we just do
   // not know when he served -- while an `event` row is the office opening or
   // closing and is nobody.
-  const postmasterCount = rows.filter((row) => row.kind !== "event").length;
+  const postmasterCount = rows.filter(
+    (row) => row.kind === "tenure" || row.kind === "undated",
+  ).length;
 
   return (
     <Card className="shadow-archival-md">

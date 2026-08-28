@@ -179,10 +179,11 @@ export function buildPostmasterSpans(
   let openIndex: number | null = null;
 
   for (const tenure of dated) {
-    // Dedupe is for the same *person* listed twice, so a person-less row falls
-    // back to its own id and can never collapse against another one. Keying
-    // them all on "" would silently merge two distinct office events that
-    // happened to share a date.
+    // Dedupe is for the same *person* listed twice. A person-less row falls
+    // back to its own id, which means office events NEVER deduplicate against
+    // each other -- deliberately: two discontinuations sharing a date are two
+    // events, not one listed twice, and only the source can say otherwise.
+    // Keying them all on "" would silently merge them.
     const identity = `${tenure.postmasterId ?? `#${tenure.id}`}|${tenure.dateAppointed}|${tenure.event}`;
     if (seen.has(identity)) continue;
     seen.add(identity);
@@ -231,7 +232,8 @@ export function buildPostmasterSpans(
     );
   }
 
-  for (const tenure of undated.sort((a, b) => a.id - b.id)) {
+  undated.sort((a, b) => a.id - b.id);
+  for (const tenure of undated) {
     rows.push(
       blankRow({
         key: `undated-${tenure.id}`,
