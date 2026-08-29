@@ -2,8 +2,13 @@
  * Postmasters (v2): GET /postmasters/ and GET /postmaster-tenures/.
  *
  * A tenure is one appointment *event*, not a span -- that is what the source
- * catalogs record. An end date is implied by the next appointment at the same
- * office and is deliberately not asserted here.
+ * catalogs record, and nothing here invents an end date for one. An end is
+ * implied by the next appointment at the same office, and lib/postmasterSpans.ts
+ * derives one for *display only*, where it can be labelled as inferred.
+ *
+ * Keep that derivation out of this layer and out of the API payload. A derived
+ * end date sitting beside recorded ones reads as recorded, and every future
+ * consumer would inherit the guess without seeing the caveat.
  */
 import apiClient from "@/lib/api";
 
@@ -83,7 +88,11 @@ export async function getTenuresForPostOffice(
   postOfficeId: number
 ): Promise<PostmasterTenure[]> {
   const all: PostmasterTenure[] = [];
-  let nextUrl: string | null = `/postmaster-tenures/?post_office=${postOfficeId}`;
+  // Ask for the largest page the API allows (PageSizePagination.max_page_size).
+  // The default is 10, and the loop below awaits each page in turn, so a busy
+  // office like Abingdon cost four serial round trips for one short list.
+  let nextUrl: string | null =
+    `/postmaster-tenures/?post_office=${postOfficeId}&page_size=100`;
   let safetyCounter = 0;
 
   while (nextUrl && safetyCounter < 50) {
