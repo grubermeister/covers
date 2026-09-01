@@ -29,6 +29,7 @@ import { useAuth } from "@/hooks/useAuth";
 import { useToast } from "@/hooks/use-toast";
 import { ToastAction } from "@/components/ui/toast";
 import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
+import { readReturnTo } from "@/lib/returnTo";
 import {
   coverContributionDisplayName,
   isCoverContributionData,
@@ -211,6 +212,11 @@ export default function CoverContributionDetail({ initialContribution = null }: 
   } | null;
   const fromDashboard = locationState?.fromDashboard === true;
   const dashboardTab = locationState?.dashboardTab;
+  // Issue #147, same contract as ContributionDetail: `?from=` names the listing
+  // the editor came from and survives a direct link, where location.state and
+  // the sessionStorage mirror do not. Null when absent or off-origin, and every
+  // caller falls back to issue #87's behaviour.
+  const returnTo = readReturnTo(new URLSearchParams(location.search));
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser === true;
 
@@ -372,6 +378,10 @@ export default function CoverContributionDetail({ initialContribution = null }: 
 
   const handleBack = () => {
     // Issue #87: keep the dashboard's page, page size and filters on the way back.
+    if (returnTo) {
+      navigate(returnTo);
+      return;
+    }
     if (fromDashboard) {
       navigate(dashboardHrefForTab(dashboardTab ?? (isStateEditor ? "editor" : "submissions")));
       return;
@@ -464,7 +474,7 @@ export default function CoverContributionDetail({ initialContribution = null }: 
           </ToastAction>
         ) : undefined,
       });
-      navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
+      navigate(returnTo ?? dashboardHrefForTab(dashboardTab ?? "editor"));
     } catch (err) {
       toast({
         title: "Could not submit",
@@ -542,7 +552,9 @@ export default function CoverContributionDetail({ initialContribution = null }: 
         title: "Submission deleted",
         description: "Your cover submission has been removed.",
       });
-      navigate(dashboardHrefForTab(dashboardTab ?? (isStateEditor ? "editor" : "submissions")));
+      navigate(
+        returnTo ?? dashboardHrefForTab(dashboardTab ?? (isStateEditor ? "editor" : "submissions")),
+      );
     } catch (err) {
       toast({
         title: "Could not delete submission",
