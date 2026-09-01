@@ -266,6 +266,10 @@ class MarkingListFilter(django_filters.FilterSet):
         label='Shape id',
     )
     has_images = django_filters.CharFilter(method='filter_has_images', label='Has images')
+    has_covers = django_filters.CharFilter(
+        method='filter_has_covers',
+        label='Has at least one cover',
+    )
     institutional = django_filters.CharFilter(
         method='filter_institutional',
         label='Has an institutionally owned cover',
@@ -354,6 +358,28 @@ class MarkingListFilter(django_filters.FilterSet):
             subject_type=Image.SUBJECT_MARKING,
         ).values_list('subject_id', flat=True)
         return queryset.filter(pk__in=marking_ids_with_images)
+
+    @staticmethod
+    def filter_has_covers(queryset, name, value):
+        # Issue #133. "Does this marking have a cover at all?" -- deliberately a
+        # DIFFERENT question from `institutional` below, which asks whether one
+        # of those covers is institutionally owned. They are not folded together:
+        # a marking can have covers and none of them institutional, and the two
+        # controls compose (both true = has a cover AND one of them is
+        # institutional).
+        #
+        # Routed through Cover.objects (the default manager) for the same reason
+        # filter_institutional is: an FK traversal like cover_markings__isnull
+        # or cover__... resolves through base_manager_name='all_objects' and
+        # would count recycle-binned covers as if they were still there, so a
+        # marking whose only cover had been removed would answer "yes". (#29)
+        if not value or str(value).strip().lower() != 'true':
+            return queryset
+        from .models import Cover, CoverMarking
+        marking_ids_with_covers = CoverMarking.objects.filter(
+            cover__in=Cover.objects.all(),
+        ).values_list('marking_id', flat=True)
+        return queryset.filter(pk__in=marking_ids_with_covers)
 
     @staticmethod
     def filter_institutional(queryset, name, value):

@@ -836,6 +836,8 @@ export async function getMarkingsPage(
     height?: string;
     width?: string;
     hasImages?: boolean;
+    /** Only markings carrying at least one non-removed cover (issue #133). */
+    hasCovers?: boolean;
     institutional?: boolean;
     referenceWorkCode?: string;
     reviewed?: "reviewed" | "unreviewed";
@@ -863,6 +865,7 @@ export async function getMarkingsPage(
   if (opt.height?.trim()) params.height = opt.height.trim();
   if (opt.width?.trim()) params.width = opt.width.trim();
   if (opt.hasImages === true) params.has_images = "true";
+  if (opt.hasCovers === true) params.has_covers = "true";
   if (opt.institutional === true) params.institutional = "true";
   if (opt.referenceWorkCode?.trim()) params.reference_work_code = opt.referenceWorkCode.trim();
   if (opt.reviewed === "reviewed") params.reviewed = "true";
