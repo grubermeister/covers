@@ -1,7 +1,7 @@
 import { Star } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Carousel,
@@ -24,8 +24,15 @@ export function EntryImageGalleryCard({
   canSetDefaultImage,
   settingDefaultImage,
   onSetDefaultImage,
+  title,
 }: {
   images: EntryGalleryImage[];
+  /**
+   * Names what the image is of (issue #138). Optional: callers that have their
+   * own surrounding heading omit it and the card renders headerless, exactly as
+   * it did before #138.
+   */
+  title?: string;
   /** When true, show subject label badge (marking detail). Cover detail omits this. */
   showSubjectBadge: boolean;
   placeholderSubjectLabel?: string;
@@ -51,7 +58,12 @@ export function EntryImageGalleryCard({
 
   return (
     <Card className="shadow-archival-lg">
-      <CardContent className="p-6">
+      {title && (
+        <CardHeader>
+          <CardTitle className="font-heading text-lg">{title}</CardTitle>
+        </CardHeader>
+      )}
+      <CardContent className={title ? "p-6 pt-0" : "p-6"}>
         <Carousel setApi={setCarouselApi} className="w-full">
           <CarouselContent>
             {slides.map((img, index) => {

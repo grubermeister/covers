@@ -687,6 +687,9 @@ const CoverDetailPage = () => {
           <>
             <EntryImageGalleryCard
               images={galleryImages}
+              // Issue #138: the marking screen labels its image "Marking"; this
+              // is the other half of telling the two screens apart.
+              title="Cover"
               showSubjectBadge={false}
               carouselApi={api}
               setCarouselApi={setApi}
@@ -699,6 +702,8 @@ const CoverDetailPage = () => {
               images={galleryImages}
               carouselApi={api}
               currentIndex={current}
+              // Issue #138: must not read the same as the marking screen's card.
+              title="Associated Cover Thumbnails"
               emptyMessage="No images linked to this cover yet."
               canReorder={canManageImages && galleryImages.length > 1}
               reorderingImages={reorderingImages}

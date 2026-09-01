@@ -56,10 +56,12 @@ import { useFilterOptions } from "@/hooks/useFilterOptions";
 import {
   buildDashboardParams,
   dashboardHref,
+  DEFAULT_SOURCE,
   editorOrderingParam,
   parseDashboardParams,
   rememberDashboardLocation,
   type DashboardParams,
+  type DashboardSource,
 } from "@/lib/dashboardParams";
 import { useDebounce } from "@/hooks/useDebounce";
 
@@ -533,11 +535,18 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     initialParams.editor.status,
   );
   const [editorStateFilter, setEditorStateFilter] = useState(initialParams.editor.state);
-  // Issue #101. Bulk review defaults to the ingest rows. The queue is live: on
-  // 2026-08-16 a "delete all pending" would have destroyed two real human
-  // submissions, and a later census found eight. Keeping them out of the
-  // default match set makes that a control rather than a habit.
-  const [editorSourceFilter, setEditorSourceFilter] = useState<"vphc" | "human" | "all">("vphc");
+  // Issue #136: the queue defaults to every source. It used to default to the
+  // VPHC ingest rows (issue #101, when that ingest was live and a "delete all
+  // pending" would have swept up real human submissions), but the ingest is
+  // drained and the default now hides the only rows anyone is waiting on --
+  // a default that hides rows reads as missing data.
+  //
+  // ⚠ #101's protection has not gone away, it has moved: BulkReviewBar's
+  // "Select all N matching" now spans human submissions by default, so the
+  // count it shows is the control. Narrow the source before bulk-reviewing.
+  const [editorSourceFilter, setEditorSourceFilter] = useState<DashboardSource>(
+    initialParams.editor.source,
+  );
   const [selectedContributionIds, setSelectedContributionIds] = useState<number[]>([]);
   const [editorSearchQuery, setEditorSearchQuery] = useState(initialParams.editor.q);
   const [editorTownFilter, setEditorTownFilter] = useState(initialParams.editor.town);
@@ -1145,6 +1154,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         town: townFilter,
         shape: shapeFilter,
         color: colorFilter,
+        // My Submissions has no source control; it stays at the default so the
+        // key never reaches the URL for this tab.
+        source: DEFAULT_SOURCE,
         from: dateFrom,
         to: dateTo,
         sort: mySubmissionsSort,
@@ -1158,6 +1170,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
         town: editorTownFilter,
         shape: editorShapeFilter,
         color: editorColorFilter,
+        source: editorSourceFilter,
         from: editorDateFrom,
         to: editorDateTo,
         sort: submissionQueueSort,
@@ -1176,7 +1189,7 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
     searchQuery, statusFilter, stateFilter, townFilter, shapeFilter, colorFilter,
     dateFrom, dateTo, mySubmissionsSort, currentPage, itemsPerPage,
     editorSearchQuery, editorHistoryStatusFilter, editorStateFilter, editorTownFilter,
-    editorShapeFilter, editorColorFilter, editorDateFrom, editorDateTo,
+    editorShapeFilter, editorColorFilter, editorSourceFilter, editorDateFrom, editorDateTo,
     submissionQueueSort, editorHistoryPage, editorHistoryPageSize,
     searchParams, setSearchParams,
   ]);
@@ -2025,9 +2038,9 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                         id="editor-source-filter"
                         value={editorSourceFilter}
                         onValueChange={(v) =>
-                          setEditorSourceFilter(v as "vphc" | "human" | "all")
+                          setEditorSourceFilter(v as DashboardSource)
                         }
-                        placeholder="VPHC ingest"
+                        placeholder="All sources"
                         options={[
                           { value: "vphc", label: "VPHC ingest" },
                           { value: "human", label: "Submitted by a person" },
@@ -2137,6 +2150,10 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
                         setEditorTownFilter("");
                         setEditorShapeFilter("all");
                         setEditorColorFilter("all");
+                        // Issue #136: a reset returns every source, not the
+                        // ingest rows. Reset has to land on the same view a
+                        // first load gives you, or "clear filters" is a lie.
+                        setEditorSourceFilter(DEFAULT_SOURCE);
                         setEditorDateFrom("");
                         setEditorDateTo("");
                       }}

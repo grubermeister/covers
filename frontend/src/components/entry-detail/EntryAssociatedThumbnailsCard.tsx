@@ -18,11 +18,20 @@ export function EntryAssociatedThumbnailsCard({
   onDeleteImage,
   onMoveImage,
   moveImageLabel,
+  title = "Associated Thumbnails",
 }: {
   images: EntryGalleryImage[];
   carouselApi: CarouselApi | undefined;
   currentIndex: number;
   emptyMessage: string;
+  /**
+   * Names the screen this card sits on (issue #138). The marking and cover
+   * detail screens look alike, and an identical "Associated Thumbnails" on
+   * both left people unsure which one they were on. Callers pass the noun for
+   * their own screen; the default is the pre-#138 wording so any other caller
+   * keeps its current heading.
+   */
+  title?: string;
   canReorder?: boolean;
   reorderingImages?: boolean;
   deletingImageId?: number | null;
@@ -36,7 +45,7 @@ export function EntryAssociatedThumbnailsCard({
   return (
     <Card className="shadow-archival-md">
       <CardHeader>
-        <CardTitle className="font-heading text-lg">Associated Thumbnails</CardTitle>
+        <CardTitle className="font-heading text-lg">{title}</CardTitle>
       </CardHeader>
       <CardContent>
         {images.length === 0 ? (
