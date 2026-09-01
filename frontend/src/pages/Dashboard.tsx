@@ -50,6 +50,7 @@ import {
   restoreContribution,
 } from "@/services/contributions";
 import { BulkReviewBar } from "@/components/BulkReviewBar";
+import { withReturnTo } from "@/lib/returnTo";
 import { Checkbox } from "@/components/ui/checkbox";
 import { SearchableSelect } from "@/components/ui/searchable-select";
 import { useFilterOptions } from "@/hooks/useFilterOptions";
@@ -487,7 +488,15 @@ const Dashboard = ({ initialTab = "submissions" }: DashboardProps) => {
       goEditDraft(item as DashboardItem);
       return;
     }
-    navigate(`/contribution/${item.id}`, { state: dashboardReturnState() });
+    // Issue #147: state alone was not enough. It is dropped by a reload and
+    // never present when someone opens the row in a new tab or follows a
+    // mailed link, and the editor was then returned to a defaulted queue --
+    // "repeat the entire search process again including changing the number of
+    // records shown" (Todd Hause, AL editor, 2026-08-31). dashboardFrom() is
+    // the view currently on screen, query string and all.
+    navigate(withReturnTo(`/contribution/${item.id}`, dashboardFrom()), {
+      state: dashboardReturnState(),
+    });
   };
   // `?tab=` wins when present; otherwise fall back to the route's initialTab so
   // the Navigation menu's location-state links keep working unchanged.

@@ -23,6 +23,7 @@ import imageNotAvailable from "@/assets/image-not-available.jpg";
 import { ToastAction } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { dashboardHref, dashboardHrefForTab } from "@/lib/dashboardParams";
+import { readReturnTo } from "@/lib/returnTo";
 import { useAuth } from "@/hooks/useAuth";
 import { normalizeImageUrl } from "@/services/markings";
 import { Carousel, CarouselContent, CarouselItem, CarouselNext, CarouselPrevious, type CarouselApi } from "@/components/ui/carousel";
@@ -115,6 +116,19 @@ const ContributionDetail = () => {
   } | null;
   const fromDashboard = locationState?.fromDashboard === true;
   const dashboardTab = locationState?.dashboardTab;
+  // Issue #147: the listing the editor came from, carried in `?from=`. Unlike
+  // location.state and the sessionStorage mirror, this survives a direct link --
+  // which is how editors most often arrive, because Ian mails contribution URLs.
+  // Null whenever the param is absent or fails the same-origin check, and every
+  // caller below falls back to the pre-#147 dashboard behaviour in that case.
+  const returnTo = readReturnTo(new URLSearchParams(location.search));
+  /**
+   * Where a finished action should land. `?from=` wins because it is the most
+   * specific signal available: the caller stated it explicitly. Everything else
+   * keeps issue #87's behaviour exactly.
+   */
+  const returnHref = (fallbackTab: "submissions" | "editor") =>
+    returnTo ?? dashboardHrefForTab(dashboardTab ?? fallbackTab);
   const isStateEditor =
     user?.role === "editor" || user?.role === "administrator" || user?.is_superuser;
   /** True if the logged-in user is the person who submitted this contribution (edit/review UI is for other editors only). */
@@ -284,7 +298,7 @@ const ContributionDetail = () => {
             </ToastAction>
           ) : undefined,
       });
-      navigate(dashboardHrefForTab(dashboardTab ?? "editor"));
+      navigate(returnHref("editor"));
     } catch (err) {
       toast({
         title: "Could not submit",
@@ -301,7 +315,8 @@ const ContributionDetail = () => {
     // Issue #87: return to the dashboard view the editor actually left, not a
     // freshly defaulted one. dashboardHrefForTab keeps their filters and page
     // while pinning the tab they came in on.
-    if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "submissions"));
+    if (returnTo) navigate(returnTo);
+    else if (fromDashboard) navigate(dashboardHrefForTab(dashboardTab ?? "submissions"));
     else navigate(dashboardHref());
   };
 
@@ -312,7 +327,9 @@ const ContributionDetail = () => {
       await deleteOwnContribution(contribution.id);
       toast({ title: "Draft deleted" });
       setDeleteOpen(false);
-      navigate(dashboardHref());
+      // Issue #147: a finished action returns to the listing it started from,
+      // whichever action it was.
+      navigate(returnTo ?? dashboardHref());
     } catch (err) {
       toast({
         title: "Could not delete",
