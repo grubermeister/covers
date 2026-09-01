@@ -125,6 +125,12 @@ from .permissions import (
     user_can_review_contributions,
 )
 from .serializers import (
+    # Private by name, shared by intent: the queue's parent-marking prefetch
+    # (issue #135) has to pick the same marking the serializer will render, and
+    # a second copy of the parent_marking_id/marking_id fallback here would be a
+    # silent way for the two to disagree.
+    _contribution_submitted_data_is_cover,
+    _contribution_target_marking_id,
     CitationSerializer,
     CollectionSerializer,
     ColorSerializer,
@@ -2240,6 +2246,73 @@ def _annotate_contribution_sort_keys(queryset):
     )
 
 
+def _contribution_parent_locations(instances):
+    """{marking_id: (town, state)} for the cover drafts on one page (#135/#137).
+
+    A cover contribution has no town in its submitted_data -- the town belongs
+    to the marking the cover was filed against -- so the dashboard could not
+    name the record an editor was looking at. Resolving that per row is an N+1
+    on the busiest editor screen, and the queue is 2,440+ rows, so every parent
+    on the page is fetched together and handed to the serializer via context.
+
+    Two queries, whatever the page size, and none at all when the page holds no
+    cover drafts.
+
+    The second query is not a convenience. It reproduces PostOffice.region --
+    same SUBREGION_TIERS exclusion, same ordering -- rather than reading the
+    property, because the property issues its own query per post office, which
+    is the N+1 this exists to avoid. The exclusion is the load-bearing part:
+    since the VPHC ingest a VA/WV town is linked to its county as well as its
+    state (issue #103), and the county link is the one that reads as a state if
+    you take the first row you are given. That mistake is measured elsewhere in
+    this file -- 1,553 of 7,305 rows offered a county as the state.
+    """
+    marking_ids = set()
+    for obj in instances or ():
+        # Only cover drafts need this; _contribution_target_marking_id returns
+        # the parent for those and the edited marking for everything else, and
+        # a marking contribution already carries its own town.
+        if not _contribution_submitted_data_is_cover(obj.submitted_data or {}):
+            continue
+        marking_id = _contribution_target_marking_id(obj)
+        if marking_id is not None:
+            marking_ids.add(marking_id)
+    if not marking_ids:
+        return {}
+
+    markings = Marking.objects.filter(id__in=marking_ids).select_related("post_office")
+    post_office_by_marking = {m.id: m.post_office for m in markings}
+
+    states_by_post_office = {}
+    post_office_ids = {po.id for po in post_office_by_marking.values() if po is not None}
+    if post_office_ids:
+        links = (
+            PostOfficeRegion.objects.filter(post_office_id__in=post_office_ids)
+            .exclude(region__region_tier__in=Region.SUBREGION_TIERS)
+            .select_related("region")
+            .order_by(
+                F("region__defunct_date").desc(nulls_first=True),
+                F("region__established_date").desc(nulls_last=True),
+            )
+        )
+        for link in links:
+            # Ordered active-first, so the first link seen for a post office is
+            # the one PostOffice.region would have picked.
+            states_by_post_office.setdefault(
+                link.post_office_id, link.region.abbrev or link.region.name or ""
+            )
+
+    locations = {}
+    for marking_id, post_office in post_office_by_marking.items():
+        if post_office is None:
+            continue
+        locations[marking_id] = (
+            post_office.name or "",
+            states_by_post_office.get(post_office.id, ""),
+        )
+    return locations
+
+
 @method_decorator(csrf_exempt, name="dispatch")
 class ContributionViewSet(
     mixins.CreateModelMixin,
@@ -2426,6 +2499,21 @@ class ContributionViewSet(
         if self.action == "list":
             return ContributionListSerializer
         return ContributionDetailSerializer
+
+    def get_serializer(self, *args, **kwargs):
+        # Issue #135/#137: hand the list serializer the town and state of every
+        # cover draft's parent marking, resolved for the whole page in one go.
+        #
+        # This hook rather than list(): it sees the page DRF actually serializes
+        # whether or not pagination is in play, and it is the one place both
+        # branches of ListModelMixin.list pass through. Only the list action
+        # needs it -- ContributionDetailSerializer does not render a display
+        # name -- so nothing else pays for the lookup.
+        if self.action == "list" and args:
+            context = kwargs.get("context") or self.get_serializer_context()
+            context["parent_marking_locations"] = _contribution_parent_locations(args[0])
+            kwargs["context"] = context
+        return super().get_serializer(*args, **kwargs)
 
     @action(detail=True, methods=["post"], url_path="approve")
     def approve(self, request, pk=None):

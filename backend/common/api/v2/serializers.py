@@ -1323,11 +1323,43 @@ class ContributionListSerializer(serializers.ModelSerializer):
     def get_cover_id(self, obj):
         return _contribution_target_cover_id(obj)
 
+    def _parent_location(self, obj):
+        """(town, state) inherited from a cover draft's parent marking.
+
+        Issue #135/#137. A cover contribution carries no town of its own --
+        CoverEdit never sends one, and it must not:
+        _contribution_submitted_data_is_cover keys "this is a cover" partly on
+        the ABSENCE of a town, so denormalizing one into submitted_data would
+        reclassify every cover draft as a marking. The town lives on the parent
+        marking and has to be looked up.
+
+        The map is built once per page by the viewset
+        (_contribution_parent_locations) and arrives through context, so this is
+        a dict hit rather than a query per row. An empty pair is the honest
+        answer when the map is absent (a serializer used outside the list view)
+        or the parent cannot be resolved -- callers degrade, never fail.
+        """
+        marking_id = _contribution_target_marking_id(obj)
+        if marking_id is None:
+            return "", ""
+        locations = (self.context or {}).get("parent_marking_locations") or {}
+        return locations.get(marking_id, ("", ""))
+
     def get_state_display(self, obj):
-        return (obj.submitted_data or {}).get("state", "-")
+        sd = obj.submitted_data or {}
+        if _contribution_submitted_data_is_cover(sd) and not str(sd.get("state") or "").strip():
+            _, state = self._parent_location(obj)
+            if state:
+                return state
+        return sd.get("state", "-")
 
     def get_town_display(self, obj):
-        return (obj.submitted_data or {}).get("town", "-")
+        sd = obj.submitted_data or {}
+        if _contribution_submitted_data_is_cover(sd) and not str(sd.get("town") or "").strip():
+            town, _ = self._parent_location(obj)
+            if town:
+                return town
+        return sd.get("town", "-")
 
     def get_type_display(self, obj):
         return (obj.submitted_data or {}).get("type", "-")
@@ -1341,7 +1373,20 @@ class ContributionListSerializer(serializers.ModelSerializer):
             type_label = cover_types.get(type_code, type_code or "Cover")
             date = _submitted_cover_date_label(sd)
             parent = sd.get("parent_marking_id") or sd.get("marking_id")
-            parts = ["Cover draft", type_label]
+            # Issue #137: the identifying facts lead and the record type trails,
+            # so an editor scanning the dashboard reads "which town" before
+            # "which kind of record". Issue #135 is the same complaint: the town
+            # was not there at all. Both come from the parent marking. The draft
+            # keeps priority where it does carry a state (CoverEdit sends one
+            # when the route names it) -- that is what the submitter chose.
+            parent_town, parent_state = self._parent_location(obj)
+            town = str(sd.get("town") or "").strip() or parent_town
+            state = str(sd.get("state") or "").strip() or parent_state
+            location = ", ".join([x for x in [town, state] if x])
+            # An unresolvable parent leaves location empty and the label falls
+            # back to the type-first form it had before #137. A draft whose
+            # marking was deleted still has to render.
+            parts = [location, "Cover draft", type_label]
             if date:
                 parts.append(date)
             if parent not in (None, ""):

@@ -8,6 +8,7 @@
  */
 import {
   DEFAULT_PAGE_SIZE,
+  DEFAULT_SOURCE,
   buildDashboardParams,
   dashboardHref,
   dashboardHrefForTab,
@@ -54,6 +55,24 @@ describe("dashboard URL params", () => {
     expect(parsed.submissions.page).toBe(2);
     expect(parsed.editor.status).toBe("approved");
     expect(parsed.editor.page).toBe(7);
+  });
+
+  // Issue #136. The default is the whole point of the issue: it used to be
+  // "vphc", which hid every human submission behind a control nobody had
+  // touched, so the queue read as empty when it was not.
+  it("defaults the editor source to all sources and keeps it out of the URL", () => {
+    expect(defaultTabParams().source).toBe("all");
+    expect(DEFAULT_SOURCE).toBe("all");
+    expect(buildDashboardParams(defaults()).toString()).toBe("");
+  });
+
+  it("round-trips an explicitly chosen source so a bookmarked view keeps it", () => {
+    const state = defaults();
+    state.tab = "editor";
+    state.editor = { ...defaultTabParams(), source: "vphc" };
+    const serialized = buildDashboardParams(state).toString();
+    expect(serialized).toContain("e_source=vphc");
+    expect(parseDashboardParams(buildDashboardParams(state)).editor.source).toBe("vphc");
   });
 
   it("persists an explicitly cleared sort instead of restoring the default", () => {

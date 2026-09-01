@@ -46,6 +46,25 @@ export function getSearchParam(
   return v ?? defaultValue;
 }
 
+/**
+ * Submission source for the editor queue (issue #136). Mirrors the backend's
+ * ContributionListFilter.source choices; the union is what keeps a hand-edited
+ * `?e_source=` out of a request the API would reject.
+ *
+ * "all" is the default. It used to be "vphc" -- issue #101's guard, from when
+ * the ingest was live -- but a default that hides rows reads as missing data,
+ * which is exactly how it read once the ingest had drained.
+ */
+export type DashboardSource = "vphc" | "human" | "all";
+
+const SOURCES: readonly DashboardSource[] = ["vphc", "human", "all"];
+
+export const DEFAULT_SOURCE: DashboardSource = "all";
+
+function parseSource(raw: string | null): DashboardSource {
+  return SOURCES.includes(raw as DashboardSource) ? (raw as DashboardSource) : DEFAULT_SOURCE;
+}
+
 /** Per-tab filter/sort/pagination state. One shape, used twice. */
 export interface DashboardTabParams {
   q: string;
@@ -54,6 +73,8 @@ export interface DashboardTabParams {
   town: string;
   shape: string;
   color: string;
+  /** Submission source; editor tab only, ignored by My Submissions. */
+  source: DashboardSource;
   from: string;
   to: string;
   sort: SortEntry[];
@@ -75,6 +96,7 @@ export function defaultTabParams(): DashboardTabParams {
     town: "",
     shape: "all",
     color: "all",
+    source: DEFAULT_SOURCE,
     from: "",
     to: "",
     sort: [...DEFAULT_DASHBOARD_SORT],
@@ -175,6 +197,7 @@ function readTab(params: URLSearchParams, prefix: string): DashboardTabParams {
     town: getSearchParam(params, k("town"), ""),
     shape: getSearchParam(params, k("shape"), "all"),
     color: getSearchParam(params, k("color"), "all"),
+    source: parseSource(params.get(k("source"))),
     from: getSearchParam(params, k("from"), ""),
     to: getSearchParam(params, k("to"), ""),
     sort: parseSort(params.get(k("order"))),
@@ -191,6 +214,7 @@ function writeTab(out: URLSearchParams, prefix: string, tab: DashboardTabParams)
   if (tab.town.trim()) out.set(k("town"), tab.town);
   if (tab.shape !== "all") out.set(k("shape"), tab.shape);
   if (tab.color !== "all") out.set(k("color"), tab.color);
+  if (tab.source !== DEFAULT_SOURCE) out.set(k("source"), tab.source);
   if (tab.from) out.set(k("from"), tab.from);
   if (tab.to) out.set(k("to"), tab.to);
   if (!isDefaultSort(tab.sort)) out.set(k("order"), serializeSort(tab.sort));

@@ -1062,7 +1062,16 @@ const RecordDetail = () => {
           <div className="grid items-start lg:grid-cols-2 gap-8">
             <div className="space-y-6">
               <Card className="shadow-archival-lg">
-                <CardContent className="p-6">
+                {/*
+                  Issue #138: the marking and cover detail screens are laid out
+                  alike, and this card carried no heading at all, so the primary
+                  image was the one thing on the page that did not say what it
+                  was. Naming it is what tells you which screen you are on.
+                */}
+                <CardHeader>
+                  <CardTitle className="font-heading text-lg">Marking</CardTitle>
+                </CardHeader>
+                <CardContent className="p-6 pt-0">
                   <Carousel setApi={setApi} className="w-full">
                     <CarouselContent>
                       {(galleryImages.length
@@ -1163,7 +1172,10 @@ const RecordDetail = () => {
 
               <Card className="shadow-archival-md">
                 <CardHeader>
-                  <CardTitle className="font-heading text-lg">Associated Thumbnails</CardTitle>
+                  {/* Issue #138: names this screen, not the cover screen. */}
+                  <CardTitle className="font-heading text-lg">
+                    Associated Marking Thumbnails
+                  </CardTitle>
                 </CardHeader>
                 <CardContent>
                   {galleryImages.length === 0 ? (
